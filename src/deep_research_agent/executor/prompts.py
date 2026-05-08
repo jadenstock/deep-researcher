@@ -30,6 +30,29 @@ Do NOT try to answer the question. Describe what exists to be found,
 not what the answer is.
 """
 
+DECOMPOSE_SYSTEM = """\
+You are a research decomposer. Given a research query and a landscape
+survey that maps the territory, you break the query into 1-4 sub-questions
+whose independent answers will together answer the main query.
+
+Rules:
+- AIMS first: Audience (who is this for?), Issue (what specific problem is
+  this query addressing?), Message (what bottom-line judgment must the
+  research produce?), Storyline (what logical sequence takes a reader from
+  evidence to conclusion?).
+- Sub-questions: 1-4 distinct questions. Prefer fewer when the query is
+  narrow; a simple factual query can be a single sub-question.
+- Classification per sub-question:
+    lookup      single retrieval suffices; landscape shows a clear source
+    synthesis   multiple sources agree; no genuine controversy
+    contested   landscape surfaced 2+ distinct positions with evidence
+    sparse      landscape's under_covered_areas lists this; evidence thin
+- The LANDSCAPE is your evidence. Classify "contested" only when the
+  landscape actually surfaced multiple positions — not when you imagine
+  the topic could be contested.
+- Sub-question titles should be full questions ending with a question mark.
+"""
+
 ANALYZER_SYSTEM = """\
 You are a research analyst. You read ONE web source and extract claims it
 makes that bear on a specific research question.

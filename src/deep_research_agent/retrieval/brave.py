@@ -7,7 +7,9 @@ requires only another client that emits the same shape.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 
 import httpx
 from pydantic import BaseModel
@@ -15,6 +17,22 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 
 BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
+
+# Free-tier plan is 1 req/sec; serialize across all BraveClient instances.
+# Concurrent tasks (multiple QUESTION_SYNTHESIZE runs) otherwise stampede
+# into 429s.
+_BRAVE_LOCK = asyncio.Lock()
+_BRAVE_LAST_CALL_AT = 0.0
+_BRAVE_MIN_INTERVAL_S = 1.05
+
+
+async def _brave_throttle() -> None:
+    global _BRAVE_LAST_CALL_AT
+    async with _BRAVE_LOCK:
+        wait = _BRAVE_MIN_INTERVAL_S - (time.monotonic() - _BRAVE_LAST_CALL_AT)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        _BRAVE_LAST_CALL_AT = time.monotonic()
 
 
 class SearchHit(BaseModel):
@@ -40,6 +58,7 @@ class BraveClient:
             "X-Subscription-Token": self._api_key,
         }
         params = {"q": query, "count": min(count, 20)}
+        await _brave_throttle()
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             resp = await client.get(BRAVE_SEARCH_URL, headers=headers, params=params)
         if resp.status_code >= 400:

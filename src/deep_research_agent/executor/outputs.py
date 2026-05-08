@@ -6,6 +6,8 @@ output shapes can be reused across patterns in later milestones.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -111,4 +113,41 @@ class LandscapeOutput(BaseModel):
     under_covered_areas: list[str] = Field(
         default_factory=list,
         description="Aspects of the query the snippets do not seem to address.",
+    )
+
+
+class AIMSSpec(BaseModel):
+    """Analytic Pyramid scoping for the research."""
+
+    audience: str = Field(..., description="Who is this research for?")
+    issue: str = Field(..., description="What specific problem is this query addressing?")
+    message: str = Field(
+        ..., description="What's the bottom-line judgment this research must produce?"
+    )
+    storyline: str = Field(
+        ..., description="What logical sequence takes a reader from evidence to conclusion?"
+    )
+
+
+class SubQuestionSpec(BaseModel):
+    title: str = Field(..., description="Concise title of the sub-question (one sentence).")
+    description: str = Field(
+        ..., description="1-2 sentences elaborating what the sub-question needs to answer."
+    )
+    classification: Literal["lookup", "synthesis", "contested", "sparse"] = Field(
+        ...,
+        description=(
+            "lookup: single retrieval suffices. synthesis: multiple sources agree. "
+            "contested: landscape shows 2+ distinct positions. sparse: evidence thin."
+        ),
+    )
+
+
+class DecomposeOutput(BaseModel):
+    aims: AIMSSpec
+    sub_questions: list[SubQuestionSpec] = Field(
+        ...,
+        min_length=1,
+        max_length=5,
+        description="1-4 sub-questions. Don't over-decompose.",
     )

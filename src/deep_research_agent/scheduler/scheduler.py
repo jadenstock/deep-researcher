@@ -98,7 +98,13 @@ class Scheduler:
         self._on_task_done = on_task_done
 
     async def run(self) -> None:
-        """Dispatch ready tasks until every task is terminal."""
+        """Dispatch ready tasks until every task is terminal.
+
+        All tasks ready in the same tick run concurrently via
+        asyncio.gather. Note-graph writes stay serialized behind the
+        scheduler's write lock; task-graph mutations happen under the
+        same lock (via _apply_result).
+        """
         while not self.task_graph.all_terminal():
             ready = self.task_graph.get_ready()
             if not ready:
@@ -111,8 +117,7 @@ class Scheduler:
                     f"No ready tasks and {len(blocked)} still PENDING. "
                     f"Blocked tasks and their dep edges: {blocked}"
                 )
-            for task in ready:
-                await self._run_one(task)
+            await asyncio.gather(*(self._run_one(t) for t in ready))
 
     async def _run_one(self, task: Task) -> None:
         self.task_graph.update_status(task.id, TaskStatus.RUNNING)

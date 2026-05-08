@@ -77,10 +77,11 @@ def emit_question_synthesize(
 
 
 def emit_write_report(
-    question_note_id: NoteID,
-    upstream_synth_task_id: TaskID,
+    question_note_ids: list[NoteID],
+    upstream_synth_task_ids: list[TaskID],
     parent_task_id: TaskID,
 ) -> Task:
+    """Emit a WRITE_REPORT task with deps on every sub-question's synthesis."""
     return Task(
         id=new_task_id(),
         parent_id=parent_task_id,
@@ -88,9 +89,10 @@ def emit_write_report(
         type=TaskType.WRITE_REPORT,
         role=RoleClass.GENERATIVE,
         tier=TaskTier.HIGH,
-        reads_notes=[question_note_id],
+        reads_notes=list(question_note_ids),
         depends_on=[
-            DepEdge(upstream=upstream_synth_task_id, kind=DependencyType.PRODUCES_CONTEXT_FOR)
+            DepEdge(upstream=t_id, kind=DependencyType.PRODUCES_CONTEXT_FOR)
+            for t_id in upstream_synth_task_ids
         ],
         success_criteria="emit a final markdown report",
         created_at=_now(),

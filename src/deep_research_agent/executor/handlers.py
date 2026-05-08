@@ -52,9 +52,16 @@ from ..schemas import (
 from ..schemas.enums import NoteType, QuestionClassification, TaskType
 from ..tiering.simple import quick_tier
 from .executor import AgentExecutor, HandlerContext
-from .outputs import AnalyzerOutput, LandscapeOutput, ReportOutput, SynthesizerOutput
+from .outputs import (
+    AnalyzerOutput,
+    DecomposeOutput,
+    LandscapeOutput,
+    ReportOutput,
+    SynthesizerOutput,
+)
 from .prompts import (
     ANALYZER_SYSTEM,
+    DECOMPOSE_SYSTEM,
     LANDSCAPE_SYSTEM,
     REPORT_SYSTEM,
     SYNTHESIZER_SYSTEM,
@@ -135,28 +142,121 @@ async def handle_landscape_survey(ctx: HandlerContext) -> TaskResult:
 # --- DECOMPOSE --------------------------------------------------------------
 
 
+def _format_landscape_for_decomposer(landscape: Note) -> str:
+    meta = landscape.metadata
+    parts: list[str] = []
+    parts.append(f"Summary: {landscape.description}")
+    parts.append("")
+    parts.append("Discussion:")
+    parts.append(landscape.content)
+    if meta.themes:
+        parts.append("")
+        parts.append("Themes:")
+        for t in meta.themes:
+            parts.append(f"  - {t.name}: {t.description}")
+    if meta.positions:
+        parts.append("")
+        parts.append("Positions surfaced:")
+        for p in meta.positions:
+            parts.append(f"  - {p.label}: {p.description}")
+    if meta.under_covered_areas:
+        parts.append("")
+        parts.append("Under-covered areas:")
+        for a in meta.under_covered_areas:
+            parts.append(f"  - {a}")
+    return "\n".join(parts)
+
+
 async def handle_decompose(ctx: HandlerContext) -> TaskResult:
-    """v1.1: still trivial (one question, no LLM decomposition). v1.2 uses
-    the landscape_note for evidence-grounded decomposition."""
+    """Evidence-grounded decomposition (TDD §5.2).
+
+    Reads the landscape_note to classify sub-questions grounded in what
+    the landscape actually surfaced (ADR 0001). Emits AIMS as a
+    decision_note, one question_note per sub-question, one
+    QUESTION_SYNTHESIZE task per sub-question, and one WRITE_REPORT
+    depending on all syntheses.
+    """
     query = ctx.task.goal
-    q_note_id = new_note_id("question")
-    q_note = Note(
-        id=q_note_id,
-        type=NoteType.QUESTION,
-        title=query,
-        description="Primary research question (v0 single-question pipeline).",
-        content=query,
-        metadata=QuestionMetadata(classification=QuestionClassification.SYNTHESIS),
+
+    if not ctx.task.reads_notes:
+        raise RuntimeError("DECOMPOSE expected a landscape_note in reads_notes")
+    landscape = ctx.notes.get(ctx.task.reads_notes[0])
+    if landscape.type != NoteType.LANDSCAPE:
+        raise RuntimeError(
+            f"DECOMPOSE reads_notes[0] is {landscape.type.value}, expected landscape_note"
+        )
+
+    agent = Agent(
+        make_model(ctx.model_id, ctx.local),
+        output_type=DecomposeOutput,
+        system_prompt=DECOMPOSE_SYSTEM,
+    )
+    user_prompt = f"Query: {query}\n\n" f"Landscape:\n{_format_landscape_for_decomposer(landscape)}"
+    r = await agent.run(user_prompt)
+    out = r.output
+
+    mutations: list[NoteMutation] = []
+    spawned: list = []
+
+    # AIMS decision note
+    aims_body = (
+        f"**Audience:** {out.aims.audience}\n\n"
+        f"**Issue:** {out.aims.issue}\n\n"
+        f"**Message:** {out.aims.message}\n\n"
+        f"**Storyline:** {out.aims.storyline}"
+    )
+    aims_note = Note(
+        id=new_note_id("decision"),
+        type=NoteType.DECISION,
+        title="AIMS scoping",
+        description=out.aims.message,
+        content=aims_body,
+        metadata=DecisionMetadata(
+            category="aims_scoping",
+            rationale="emitted by DECOMPOSE",
+            relates_to_task=ctx.task.id,
+        ),
         created_by=ctx.task.id,
         created_at=_now(),
         last_modified_at=_now(),
     )
-    q_synth = emit_question_synthesize(query, q_note_id, ctx.task.id)
-    report = emit_write_report(q_note_id, q_synth.id, ctx.task.id)
+    mutations.append(NoteMutation(kind="create", note=aims_note))
+
+    question_note_ids = []
+    synth_task_ids = []
+
+    for sq in out.sub_questions:
+        q_note_id = new_note_id("question")
+        q_note = Note(
+            id=q_note_id,
+            type=NoteType.QUESTION,
+            title=sq.title,
+            description=sq.description,
+            content=sq.title,
+            metadata=QuestionMetadata(
+                classification=QuestionClassification(sq.classification),
+            ),
+            created_by=ctx.task.id,
+            created_at=_now(),
+            last_modified_at=_now(),
+        )
+        mutations.append(NoteMutation(kind="create", note=q_note))
+        question_note_ids.append(q_note_id)
+
+        q_synth = emit_question_synthesize(sq.title, q_note_id, ctx.task.id)
+        spawned.append(q_synth)
+        synth_task_ids.append(q_synth.id)
+
+    report = emit_write_report(question_note_ids, synth_task_ids, ctx.task.id)
+    spawned.append(report)
+
     return TaskResult(
-        note_mutations=[NoteMutation(kind="create", note=q_note)],
-        spawned_tasks=[q_synth, report],
-        verdict=f"decomposed as single question {q_note_id}",
+        note_mutations=mutations,
+        spawned_tasks=spawned,
+        verdict=(
+            f"decomposed into {len(out.sub_questions)} sub-question(s); "
+            f"spawned {len(synth_task_ids)} QUESTION_SYNTHESIZE + 1 WRITE_REPORT"
+        ),
     )
 
 
