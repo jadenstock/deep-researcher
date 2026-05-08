@@ -35,7 +35,15 @@ from ..patterns.single_researcher import (
     emit_question_synthesize,
     emit_write_report,
 )
-from ..retrieval import BraveClient, fetch_and_extract
+from ..retrieval import (
+    BraveClient,
+    build_structured_content,
+    fetch_and_extract,
+    is_long_source,
+    render_outline,
+    rerank,
+    search_academic,
+)
 from ..scheduler import DepEdgeAdd, NoteMutation, TaskResult
 from ..scheduler.ids import new_note_id
 from ..schemas import (
@@ -55,10 +63,12 @@ from ..schemas.enums import (
     DependencyType,
     NoteType,
     QuestionClassification,
+    RoleClass,
+    TaskTier,
     TaskType,
     VerificationStatus,
 )
-from ..tiering.simple import quick_tier
+from ..tiering.classifier import classify_source
 from .executor import AgentExecutor, HandlerContext
 from .outputs import (
     AnalyzerOutput,
@@ -292,32 +302,97 @@ async def handle_question_synthesize(ctx: HandlerContext) -> TaskResult:
         raise RuntimeError("no brave_api_key configured in local.toml")
 
     brave = BraveClient(api_key=brave_key)
-    hits = await brave.search(question, count=5)
-    logger.info("brave hits=%d question=%r", len(hits), question[:60])
+    brave_hits, academic_hits = await asyncio.gather(
+        brave.search(question, count=5),
+        search_academic(question, local=ctx.local, limit_per_source=3),
+    )
+
+    # Academic hits first so their richer metadata wins on URL dedup ties.
+    combined: list = []
+    seen_urls: set[str] = set()
+    for h in [*academic_hits, *brave_hits]:
+        if h.url and h.url not in seen_urls:
+            combined.append(h)
+            seen_urls.add(h.url)
+
+    # Rerank by lexical snippet relevance before paying the fetch cost,
+    # then cap at the top FETCH_LIMIT hits. Academic hits get a small
+    # base bonus in score_hit() so they don't get outranked by
+    # SEO-optimized Brave titles.
+    FETCH_LIMIT = 8
+    reranked = rerank(combined, question)
+    hits = reranked[:FETCH_LIMIT]
+    logger.info(
+        "hits brave=%d academic=%d dedup=%d reranked_kept=%d question=%r",
+        len(brave_hits),
+        len(academic_hits),
+        len(combined),
+        len(hits),
+        question[:60],
+    )
 
     fetches = await asyncio.gather(*(fetch_and_extract(h.url) for h in hits))
 
-    source_notes: list[Note] = []
+    usable = [
+        (hit, fetch)
+        for hit, fetch in zip(hits, fetches, strict=True)
+        if fetch is not None and fetch.markdown
+    ]
     for hit, fetch in zip(hits, fetches, strict=True):
         if fetch is None or not fetch.markdown:
             logger.info("skip url=%s (fetch failed or no markdown)", hit.url)
-            continue
-        tier, rationale = quick_tier(hit.url)
+
+    # Classify each usable source in parallel on the cheap_deterministic
+    # LOW-tier model (ADR 0003). Routing is resolved once here rather than
+    # per-call to keep the invariant check centralized; the tier classifier
+    # is out of scope for cross-family so no forbidden_family is needed.
+    tier_model_id = ctx.routing.model_id_for(RoleClass.CHEAP_DETERMINISTIC, TaskTier.LOW)
+    tier_results = await asyncio.gather(
+        *(
+            classify_source(
+                title=fetch.title or hit.title or hit.url,
+                url=hit.url,
+                snippet=hit.snippet,
+                content=fetch.markdown,
+                model_id=tier_model_id,
+                local=ctx.local,
+            )
+            for hit, fetch in usable
+        )
+    )
+
+    source_notes: list[Note] = []
+    for (hit, fetch), (tier, rationale, confidence, peer_reviewed) in zip(
+        usable, tier_results, strict=True
+    ):
+        title = fetch.title or hit.title or hit.url
+        markdown = fetch.markdown
+        # Size-first source routing (ADR 0007): long sources get a
+        # StructuredContent view so the analyzer can see the shape of the
+        # document without consuming its full content budget. The raw
+        # markdown still lives on the note so a future tool call can pull
+        # specific sections.
+        structured = build_structured_content(title, markdown) if is_long_source(markdown) else None
         source_notes.append(
             Note(
                 id=new_note_id("source"),
                 type=NoteType.SOURCE,
-                title=fetch.title or hit.title or hit.url,
+                title=title,
                 description=hit.snippet[:280],
-                content=fetch.markdown[:20000],
+                content=markdown[:40000],
                 metadata=SourceNoteMetadata(
                     url=hit.url,
                     title=fetch.title or hit.title or "Untitled",
+                    authors=list(hit.authors),
+                    venue=hit.venue,
+                    year=hit.year,
+                    citation_count=hit.citation_count,
                     tier=tier,
                     tier_rationale=rationale,
-                    classifier_confidence=0.5,
-                    peer_reviewed=False,
+                    classifier_confidence=confidence,
+                    peer_reviewed=peer_reviewed,
                     summary=hit.snippet,
+                    structured_content=structured,
                 ),
                 created_by=ctx.task.id,
                 created_at=_now(),
@@ -337,10 +412,24 @@ async def handle_question_synthesize(ctx: HandlerContext) -> TaskResult:
     )
 
     async def _analyze(note: Note) -> AnalyzerOutput | None:
+        # For long sources, send the StructuredContent outline + a
+        # capped excerpt of the full body so the analyzer can still pull
+        # verbatim quotes but doesn't have to scan 40K chars of raw
+        # markdown. Short sources send the whole content inline.
+        if note.metadata.structured_content is not None:
+            outline = render_outline(note.metadata.structured_content)
+            excerpt = note.content[:6000]
+            body = (
+                f"Structured outline (this source is long; the full "
+                f"markdown follows the outline, truncated):\n\n{outline}"
+                f"\n\n---\n\nRaw excerpt (first 6000 chars):\n{excerpt}"
+            )
+        else:
+            body = f"Content:\n{note.content}"
         user = (
             f"Question: {question}\n\n"
             f"Source: {note.title}\nURL: {note.metadata.url}\n\n"
-            f"Content:\n{note.content}"
+            f"{body}"
         )
         try:
             r = await analyzer.run(user)
@@ -353,8 +442,16 @@ async def handle_question_synthesize(ctx: HandlerContext) -> TaskResult:
 
     analyzer_family = ctx.routing.family_of(ctx.model_id)
     enriched: list[Note] = []
+    dropped_off_topic = 0
     for note, out in zip(source_notes, analyses, strict=True):
-        if out is None or out.off_topic:
+        # Drop off-topic sources entirely — they shouldn't appear in the
+        # report, feed the synthesizer, or get linked to the synthesis.
+        # Analyzer failures (out is None) are kept with no claims; the
+        # source may still be worth citing even if extraction failed.
+        if out is not None and out.off_topic:
+            dropped_off_topic += 1
+            continue
+        if out is None:
             enriched.append(note)
             continue
         claims = [
@@ -369,6 +466,8 @@ async def handle_question_synthesize(ctx: HandlerContext) -> TaskResult:
         ]
         new_meta = note.metadata.model_copy(update={"claims": claims})
         enriched.append(note.model_copy(update={"metadata": new_meta}))
+    if dropped_off_topic:
+        logger.info("dropped_off_topic n=%d question=%r", dropped_off_topic, question[:60])
 
     synth_agent = Agent(
         make_model(ctx.model_id, ctx.local),

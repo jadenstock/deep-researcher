@@ -172,6 +172,10 @@ class DecomposeOutput(BaseModel):
     sub_questions: list[SubQuestionSpec] = Field(
         ...,
         min_length=1,
-        max_length=5,
-        description="1-4 sub-questions. Don't over-decompose.",
+        max_length=7,
+        description=(
+            "1-6 sub-questions. Bias toward 3-6 for non-trivial queries; "
+            "recall beats parsimony for research. Single sub-question only "
+            "when the query is genuinely narrow."
+        ),
     )

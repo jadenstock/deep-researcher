@@ -42,9 +42,25 @@ async def _brave_throttle() -> None:
 
 
 class SearchHit(BaseModel):
+    """Normalized search hit across providers (Brave, Semantic Scholar, arXiv).
+
+    Core fields (title/url/snippet) are populated by every provider.
+    Academic fields (authors/venue/year/citation_count/doi/pdf_url) are
+    optional; Brave leaves them empty, academic clients fill them in so
+    the tier classifier sees abstract-quality snippets and so the
+    source_note can record authors/venue without a second fetch.
+    """
+
     title: str
     url: str
     snippet: str = ""
+    source: str = "brave"  # provider name — brave / semantic_scholar / arxiv
+    authors: list[str] = []
+    venue: str | None = None
+    year: int | None = None
+    citation_count: int | None = None
+    doi: str | None = None
+    pdf_url: str | None = None
 
 
 class BraveSearchError(RuntimeError):
@@ -76,6 +92,7 @@ class BraveClient:
                 title=r.get("title", ""),
                 url=r.get("url", ""),
                 snippet=r.get("description", ""),
+                source="brave",
             )
             for r in results
         ]

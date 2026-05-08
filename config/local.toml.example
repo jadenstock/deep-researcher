@@ -36,6 +36,12 @@ brave_api_key = ""
 # but works for small runs.
 # semantic_scholar_api_key = ""
 
+# Unpaywall — optional. Unpaywall is public but requires a contact email
+# in every request. When set, the academic search pipeline rescues
+# paywalled DOI hits to open-access PDFs when available. Leave unset to
+# skip the Unpaywall rescue step entirely.
+# unpaywall_email = "you@example.com"
+
 [observability]
 # Optional Pydantic Logfire token for tracing PydanticAI agent calls.
 # logfire_token = ""
