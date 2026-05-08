@@ -25,6 +25,7 @@ from .task_graph import TaskGraph
 logger = logging.getLogger(__name__)
 
 TaskCallback = Callable[[Task], None]
+TaskDoneCallback = Callable[[Task, "TaskResult"], None]
 
 
 # --- Read-only note view handed to executors --------------------------------
@@ -88,7 +89,7 @@ class Scheduler:
         note_graph: NoteGraph,
         executor: Executor,
         on_task_start: TaskCallback | None = None,
-        on_task_done: TaskCallback | None = None,
+        on_task_done: TaskDoneCallback | None = None,
     ) -> None:
         self.task_graph = task_graph
         self.note_graph = note_graph
@@ -134,7 +135,7 @@ class Scheduler:
             self._apply_result(task, result)
         self._finish(task)
         if self._on_task_done is not None:
-            self._on_task_done(task)
+            self._on_task_done(task, result)
 
     def _apply_result(self, task: Task, result: TaskResult) -> None:
         for mut in result.note_mutations:

@@ -250,13 +250,11 @@ async def handle_decompose(ctx: HandlerContext) -> TaskResult:
     report = emit_write_report(question_note_ids, synth_task_ids, ctx.task.id)
     spawned.append(report)
 
+    titles_preview = " | ".join(sq.title[:50] for sq in out.sub_questions)
     return TaskResult(
         note_mutations=mutations,
         spawned_tasks=spawned,
-        verdict=(
-            f"decomposed into {len(out.sub_questions)} sub-question(s); "
-            f"spawned {len(synth_task_ids)} QUESTION_SYNTHESIZE + 1 WRITE_REPORT"
-        ),
+        verdict=f"{len(out.sub_questions)} sub-question(s) — {titles_preview}",
     )
 
 
@@ -404,7 +402,7 @@ async def handle_question_synthesize(ctx: HandlerContext) -> TaskResult:
 
     return TaskResult(
         note_mutations=mutations,
-        verdict=f"synthesized {len(enriched)} sources → {synth_note_id}",
+        verdict=(f"{len(enriched)} sources synthesized — " f"BLUF: {synth_out.bottom_line[:140]}"),
     )
 
 

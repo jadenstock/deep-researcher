@@ -15,7 +15,7 @@ from .config import load_local_config, load_routing_config
 from .executor import AgentExecutor, register_handlers
 from .export import export_run
 from .observability import setup_logfire
-from .scheduler import NoteGraph, Scheduler, TaskGraph, new_run_id, new_task_id
+from .scheduler import NoteGraph, Scheduler, TaskGraph, TaskResult, new_run_id, new_task_id
 from .schemas import Task
 from .schemas.enums import RoleClass, TaskTier, TaskType
 
@@ -112,12 +112,13 @@ async def _run_research(args: argparse.Namespace) -> int:
                 f"[cyan]running [bold]{task.type.value}[/] " f"[dim]id={task.id[-6:]}[/]..."
             )
 
-        def _on_done(task: Task) -> None:
-            status.update(
-                f"[green]finished [bold]{task.type.value}[/] "
-                f"[dim]wrote {len(task.writes_notes)} note(s),"
-                f" spawned {len(task.spawned_sub_tasks)}[/]"
+        def _on_done(task: Task, result: TaskResult) -> None:
+            verdict = result.verdict or f"wrote {len(task.writes_notes)} note(s)"
+            console.print(
+                f"  [dim]✓[/] [bold green]{task.type.value}[/] "
+                f"[dim]{task.id[-6:]}[/] — {verdict}"
             )
+            status.update("[cyan]working...")
 
         sched = Scheduler(tg, ng, ex, on_task_start=_on_start, on_task_done=_on_done)
         try:
