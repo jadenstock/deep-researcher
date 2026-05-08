@@ -26,6 +26,7 @@ from ..scheduler import (
 )
 from ..schemas import Task
 from ..schemas.enums import NoteType, RoleClass, TaskTier, TaskType
+from ..token_usage import TokenUsageTracker
 from .events import (
     RunSession,
     event_note_created,
@@ -54,13 +55,15 @@ async def run_session(
     """
     session.publish(event_run_started(session.run_id, session.query))
     run_dir = runs_dir / session.run_id
+    tracker = TokenUsageTracker()
+    # Initialize graphs outside the try so the failure-path export can
+    # read them even if setup itself raised.
+    tg = TaskGraph()
+    ng = NoteGraph()
 
     try:
-        ex = AgentExecutor(routing=routing, local=local)
+        ex = AgentExecutor(routing=routing, local=local, tracker=tracker)
         register_handlers(ex)
-
-        tg = TaskGraph()
-        ng = NoteGraph()
         root_task = Task(
             id=new_task_id(),
             goal=session.query,
@@ -87,7 +90,9 @@ async def run_session(
                 session.publish(event_note_replaced(mut.note))
 
         async def _replanner(task_graph: TaskGraph, note_graph: NoteGraph):
-            return await run_replanner(task_graph, note_graph, routing, local, root_task.id)
+            return await run_replanner(
+                task_graph, note_graph, routing, local, root_task.id, tracker=tracker
+            )
 
         sched = Scheduler(
             tg,
@@ -119,6 +124,24 @@ async def run_session(
         )
     except Exception as exc:
         logger.exception("run failed run_id=%s", session.run_id)
+        # Export whatever state we have so a failed run is still
+        # autopsy-able from disk (notes + tasks snapshot). Without
+        # this, a stall/kill leaves nothing behind and the only
+        # forensics come from the live log stream.
+        try:
+            run_dir.mkdir(parents=True, exist_ok=True)
+            export_run(run_dir, ng, tg)
+        except Exception:
+            logger.exception("partial export failed run_id=%s", session.run_id)
         session.publish(event_run_failed(f"{type(exc).__name__}: {exc}"))
     finally:
+        # Token usage + summary are always recorded — costs don't care
+        # whether the run finished, and we want visibility into where
+        # the tokens went on stalls.
+        try:
+            run_dir.mkdir(parents=True, exist_ok=True)
+            tracker.save_json(run_dir / "token_usage.json")
+        except Exception:
+            logger.exception("token_usage save failed run_id=%s", session.run_id)
+        logger.info("run_id=%s %s", session.run_id, tracker.format_table())
         session.finished = True

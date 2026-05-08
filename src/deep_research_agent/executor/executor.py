@@ -14,13 +14,19 @@ nothing about individual task semantics — it just dispatches.
 
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Any
 
 from ..config import LocalConfig, RoutingConfig
 from ..scheduler import NoteReader, TaskResult
 from ..schemas import Task, TaskType
+from ..token_usage import TokenUsageTracker
 from .routing import select_model
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -32,6 +38,38 @@ class HandlerContext:
     model_id: str
     routing: RoutingConfig
     local: LocalConfig
+    tracker: TokenUsageTracker
+
+    async def track(self, agent: Any, user_input: Any) -> Any:
+        """Run an agent and record its token usage against this task's model.
+
+        Thin wrapper around `agent.run(user_input)` — returns whatever
+        pydantic_ai returns — but books the usage into the tracker and
+        logs a structured line so every LLM call is visible in the log
+        stream without needing a tracing backend.
+        """
+        t0 = time.monotonic()
+        result = await agent.run(user_input)
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        usage = result.usage() if hasattr(result, "usage") else None
+        if usage is not None:
+            await self.tracker.record(self.model_id, usage, task_type=self.task.type.value)
+            logger.info(
+                "llm_call model=%s task=%s in=%d out=%d ms=%d",
+                self.model_id,
+                self.task.type.value,
+                getattr(usage, "input_tokens", 0) or 0,
+                getattr(usage, "output_tokens", 0) or 0,
+                elapsed_ms,
+            )
+        else:
+            logger.info(
+                "llm_call model=%s task=%s usage=unavailable ms=%d",
+                self.model_id,
+                self.task.type.value,
+                elapsed_ms,
+            )
+        return result
 
 
 HandlerFn = Callable[[HandlerContext], Awaitable[TaskResult]]
@@ -44,9 +82,19 @@ class UnhandledTaskType(RuntimeError):
 class AgentExecutor:
     """Dispatcher implementing the scheduler's Executor protocol."""
 
-    def __init__(self, routing: RoutingConfig, local: LocalConfig) -> None:
+    def __init__(
+        self,
+        routing: RoutingConfig,
+        local: LocalConfig,
+        tracker: TokenUsageTracker | None = None,
+    ) -> None:
         self.routing = routing
         self.local = local
+        # The tracker is per-run. Callers (runner.py / cli.py) pass one
+        # in so they can emit a summary and save JSON at end of run; if
+        # nothing is passed (e.g. in a unit test), we create a local
+        # one so handlers don't have to branch on None.
+        self.tracker = tracker or TokenUsageTracker()
         self._handlers: dict[TaskType, HandlerFn] = {}
 
     def register(self, task_type: TaskType, handler: HandlerFn) -> None:
@@ -78,6 +126,7 @@ class AgentExecutor:
             model_id=model_id,
             routing=self.routing,
             local=self.local,
+            tracker=self.tracker,
         )
         return await handler(ctx)
 

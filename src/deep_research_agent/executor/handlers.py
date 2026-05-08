@@ -141,7 +141,7 @@ async def handle_landscape_survey(ctx: HandlerContext) -> TaskResult:
         output_type=LandscapeOutput,
         system_prompt=LANDSCAPE_SYSTEM,
     )
-    r = await agent.run(f"Query: {query}\n\nSearch hit snippets:\n\n{snippets_text}")
+    r = await ctx.track(agent, f"Query: {query}\n\nSearch hit snippets:\n\n{snippets_text}")
     out = r.output
 
     landscape_id = new_note_id("landscape")
@@ -228,7 +228,7 @@ async def handle_decompose(ctx: HandlerContext) -> TaskResult:
         system_prompt=DECOMPOSE_SYSTEM,
     )
     user_prompt = f"Query: {query}\n\n" f"Landscape:\n{_format_landscape_for_decomposer(landscape)}"
-    r = await agent.run(user_prompt)
+    r = await ctx.track(agent, user_prompt)
     out = r.output
 
     mutations: list[NoteMutation] = []
@@ -363,7 +363,7 @@ async def _run_ach_flow(
     gen_user = (
         f"Question: {question}\n\nEvidence digest ({len(enriched)} sources):\n\n{evidence_digest}"
     )
-    gen_r = await gen_agent.run(gen_user)
+    gen_r = await ctx.track(gen_agent, gen_user)
     hypotheses = gen_r.output.hypotheses
     logger.info("ach generated n=%d hypotheses", len(hypotheses))
 
@@ -382,7 +382,7 @@ async def _run_ach_flow(
             f"Return one verdict per source above (use the `Source X` IDs)."
         )
         try:
-            r = await cons_agent.run(user)
+            r = await ctx.track(cons_agent, user)
             return r.output.verdicts
         except Exception as exc:
             logger.warning("ach consistency failed hypothesis=%s err=%s", h.label, exc)
@@ -406,7 +406,9 @@ async def _run_ach_flow(
         output_type=AchAdjudicationOutput,
         system_prompt=ACH_ADJUDICATION_SYSTEM,
     )
-    adj_r = await adj_agent.run(f"Question: {question}\n\nConsistency matrix:\n\n{matrix_text}")
+    adj_r = await ctx.track(
+        adj_agent, f"Question: {question}\n\nConsistency matrix:\n\n{matrix_text}"
+    )
     adj = adj_r.output
     logger.info("ach adopted=%r", adj.adopted_label)
 
@@ -519,6 +521,7 @@ async def handle_question_synthesize(ctx: HandlerContext) -> TaskResult:
                 content=fetch.markdown,
                 model_id=tier_model_id,
                 local=ctx.local,
+                tracker=ctx.tracker,
             )
             for hit, fetch in usable
         )
@@ -620,7 +623,7 @@ async def handle_question_synthesize(ctx: HandlerContext) -> TaskResult:
         user = _analyzer_user_message(note)
         agent = framing_agents[framing_name]
         try:
-            r = await agent.run(user)
+            r = await ctx.track(agent, user)
             return note, framing_name, r.output
         except Exception as exc:
             logger.warning("analyzer failed id=%s framing=%s err=%s", note.id, framing_name, exc)
@@ -718,7 +721,7 @@ async def handle_question_synthesize(ctx: HandlerContext) -> TaskResult:
                 lines.append(f"  Snippet: {n.metadata.summary or n.description}")
                 lines.append("")
         synth_user = f"Question: {question}\n\n" + "\n".join(lines)
-        synth_r = await synth_agent.run(synth_user)
+        synth_r = await ctx.track(synth_agent, synth_user)
         synth_out = synth_r.output
 
     # Triangulation score: distinct sources that contributed at least
@@ -876,7 +879,7 @@ async def handle_verify_claim(ctx: HandlerContext) -> TaskResult:
             f"Primary source URL (NOT independent): {primary_url}\n\n"
             f"Independent sources:\n\n" + "\n\n---\n\n".join(excerpts)
         )
-        r = await verifier.run(user_prompt)
+        r = await ctx.track(verifier, user_prompt)
         vout = r.output
         verdict_label = vout.verdict
         rationale_text = vout.rationale
@@ -1109,7 +1112,7 @@ async def handle_validate_completion(ctx: HandlerContext) -> TaskResult:
             output_type=ValidateCompletionOutput,
             system_prompt=VALIDATE_COMPLETION_SYSTEM,
         )
-        r = await agent.run(user)
+        r = await ctx.track(agent, user)
         out = r.output
     except Exception as exc:
         # If the audit itself fails, log and treat as PASS-with-warning
@@ -1230,7 +1233,7 @@ async def handle_write_report(ctx: HandlerContext) -> TaskResult:
         output_type=ReportOutput,
         system_prompt=REPORT_SYSTEM,
     )
-    r = await report_agent.run("\n".join(parts))
+    r = await ctx.track(report_agent, "\n".join(parts))
 
     report_note = Note(
         id=new_note_id("report"),

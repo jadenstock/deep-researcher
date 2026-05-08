@@ -33,12 +33,29 @@ def set_brave_min_interval(interval_s: float) -> None:
 
 
 async def _brave_throttle() -> None:
+    """Acquire the shared Brave throttle slot.
+
+    Logs the queue wait whenever a caller blocked on the throttle (not
+    the sleep itself — that's enforced pacing, not the bug). A long
+    wait means many QS tasks are queued behind a single Brave budget.
+    """
     global _BRAVE_LAST_CALL_AT
+    enter_at = time.monotonic()
     async with _BRAVE_LOCK:
-        wait = _BRAVE_MIN_INTERVAL_S - (time.monotonic() - _BRAVE_LAST_CALL_AT)
+        acquired_at = time.monotonic()
+        wait = _BRAVE_MIN_INTERVAL_S - (acquired_at - _BRAVE_LAST_CALL_AT)
         if wait > 0:
             await asyncio.sleep(wait)
         _BRAVE_LAST_CALL_AT = time.monotonic()
+    queue_ms = int((acquired_at - enter_at) * 1000)
+    pace_ms = int(max(wait, 0.0) * 1000)
+    if queue_ms > 100 or pace_ms > 100:
+        logger.info(
+            "brave_throttle queue_ms=%d pace_ms=%d interval_s=%.2f",
+            queue_ms,
+            pace_ms,
+            _BRAVE_MIN_INTERVAL_S,
+        )
 
 
 class SearchHit(BaseModel):
@@ -67,34 +84,120 @@ class BraveSearchError(RuntimeError):
     """Brave API returned a non-2xx response."""
 
 
+# 429 retry policy. Brave's Free tier is 1 QPS — the in-process
+# throttle (1.5s default) handles steady-state pacing, but concurrent
+# QS dispatches plus any in-flight lag will still occasionally trip
+# a 429. Retrying a handful of times with Retry-After clears those
+# without failing the task. Cap on total wait keeps a degenerate plan
+# exhaustion from blocking the run indefinitely.
+MAX_429_RETRIES = 3
+MAX_429_TOTAL_WAIT_S = 20.0
+DEFAULT_429_BACKOFF_S = 2.0
+
+
+def _parse_retry_after(value: str | None) -> float | None:
+    """Parse a Retry-After header. Brave returns seconds; HTTP also
+    allows an HTTP-date but Brave doesn't use that. Returns None on
+    unparseable input so the caller can fall back to a default."""
+    if not value:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
 class BraveClient:
     def __init__(self, api_key: str, timeout: float = 15.0) -> None:
         self._api_key = api_key
         self._timeout = timeout
 
     async def search(self, query: str, count: int = 10) -> list[SearchHit]:
-        """Return up to `count` web results for `query`."""
+        """Return up to `count` web results for `query`.
+
+        Retries up to MAX_429_RETRIES times on 429, honoring Retry-After
+        when present. Other 4xx/5xx responses raise BraveSearchError
+        immediately — retrying a 403 won't help, and retrying a 500 is
+        debatable but not worth the complexity for v0.
+        """
         headers = {
             "Accept": "application/json",
             "Accept-Encoding": "gzip",
             "X-Subscription-Token": self._api_key,
         }
         params = {"q": query, "count": min(count, 20)}
-        await _brave_throttle()
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            resp = await client.get(BRAVE_SEARCH_URL, headers=headers, params=params)
-        if resp.status_code >= 400:
-            raise BraveSearchError(f"Brave search {resp.status_code}: {resp.text[:200]}")
-        data = resp.json()
-        results = data.get("web", {}).get("results", []) or []
-        hits = [
-            SearchHit(
-                title=r.get("title", ""),
-                url=r.get("url", ""),
-                snippet=r.get("description", ""),
-                source="brave",
+        logger.debug("brave_search_start query=%r count=%d", query[:80], params["count"])
+        total_wait = 0.0
+        attempt = 0
+        while True:
+            await _brave_throttle()
+            t0 = time.monotonic()
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                resp = await client.get(BRAVE_SEARCH_URL, headers=headers, params=params)
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            if resp.status_code == 429 and attempt < MAX_429_RETRIES:
+                retry_after = _parse_retry_after(resp.headers.get("retry-after"))
+                # Exponential backoff as a floor so a missing header
+                # doesn't let us hammer the endpoint.
+                backoff = DEFAULT_429_BACKOFF_S * (2**attempt)
+                wait = max(retry_after or 0.0, backoff)
+                if total_wait + wait > MAX_429_TOTAL_WAIT_S:
+                    logger.warning(
+                        "brave_429_wait_cap query=%r total_wait=%.1f cap=%.1f — giving up",
+                        query[:80],
+                        total_wait + wait,
+                        MAX_429_TOTAL_WAIT_S,
+                    )
+                    raise BraveSearchError(
+                        f"Brave search 429 after {attempt + 1} attempt(s); "
+                        f"Retry-After suggests waiting beyond the {MAX_429_TOTAL_WAIT_S}s cap"
+                    )
+                logger.info(
+                    "brave_429_retry attempt=%d wait_s=%.1f retry_after=%s query=%r",
+                    attempt + 1,
+                    wait,
+                    resp.headers.get("retry-after"),
+                    query[:80],
+                )
+                await asyncio.sleep(wait)
+                total_wait += wait
+                attempt += 1
+                continue
+            if resp.status_code >= 400:
+                # Surface rate-limit hints on terminal 429 (exhausted
+                # retries) and on other 4xx/5xx. retry-after is in
+                # seconds, x-ratelimit-* tell us about plan quota.
+                retry_after = resp.headers.get("retry-after")
+                rl_remaining = resp.headers.get("x-ratelimit-remaining")
+                rl_reset = resp.headers.get("x-ratelimit-reset")
+                logger.warning(
+                    "brave_search_error status=%d attempts=%d retry_after=%s "
+                    "rl_remaining=%s rl_reset=%s elapsed_ms=%d body=%s",
+                    resp.status_code,
+                    attempt + 1,
+                    retry_after,
+                    rl_remaining,
+                    rl_reset,
+                    elapsed_ms,
+                    resp.text[:200],
+                )
+                raise BraveSearchError(f"Brave search {resp.status_code}: {resp.text[:200]}")
+            data = resp.json()
+            results = data.get("web", {}).get("results", []) or []
+            hits = [
+                SearchHit(
+                    title=r.get("title", ""),
+                    url=r.get("url", ""),
+                    snippet=r.get("description", ""),
+                    source="brave",
+                )
+                for r in results
+            ]
+            logger.info(
+                "brave_search query=%r hits=%d elapsed_ms=%d attempts=%d",
+                query[:80],
+                len(hits),
+                elapsed_ms,
+                attempt + 1,
             )
-            for r in results
-        ]
-        logger.info("brave_search query=%r hits=%d", query, len(hits))
-        return hits
+            return hits

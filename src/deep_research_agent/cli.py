@@ -19,6 +19,7 @@ from .retrieval.brave import set_brave_min_interval
 from .scheduler import NoteGraph, Scheduler, TaskGraph, TaskResult, new_run_id, new_task_id
 from .schemas import Task
 from .schemas.enums import RoleClass, TaskTier, TaskType
+from .token_usage import TokenUsageTracker
 
 logger = logging.getLogger(__name__)
 console = Console(stderr=True)
@@ -128,7 +129,8 @@ async def _run_research(args: argparse.Namespace) -> int:
         f"query=[italic]{args.query!r}[/]"
     )
 
-    ex = AgentExecutor(routing=routing, local=local)
+    tracker = TokenUsageTracker()
+    ex = AgentExecutor(routing=routing, local=local, tracker=tracker)
     register_handlers(ex)
 
     tg = TaskGraph()
@@ -162,7 +164,9 @@ async def _run_research(args: argparse.Namespace) -> int:
         async def _replanner(task_graph: TaskGraph, note_graph: NoteGraph):
             from .replanner import run_replanner
 
-            return await run_replanner(task_graph, note_graph, routing, local, root_task.id)
+            return await run_replanner(
+                task_graph, note_graph, routing, local, root_task.id, tracker=tracker
+            )
 
         sched = Scheduler(
             tg,
@@ -172,15 +176,31 @@ async def _run_research(args: argparse.Namespace) -> int:
             on_task_done=_on_done,
             replanner=_replanner,
         )
+        run_failed = False
         try:
             await sched.run()
         except Exception:
             logger.exception("research run failed")
             console.print("[red]run failed — see log for details[/]")
-            return 1
+            run_failed = True
 
+        # Always export what we have (even on failure) so partial runs
+        # are autopsy-able. Token usage is always written, summary is
+        # always logged — costs are real whether the run finished or not.
         status.update("[cyan]exporting note graph...")
-        report_path = export_run(run_dir, ng, tg)
+        try:
+            report_path = export_run(run_dir, ng, tg)
+        except Exception:
+            logger.exception("export failed")
+            report_path = None
+        try:
+            run_dir.mkdir(parents=True, exist_ok=True)
+            tracker.save_json(run_dir / "token_usage.json")
+        except Exception:
+            logger.exception("token_usage save failed")
+        logger.info(tracker.format_table())
+        if run_failed:
+            return 1
 
     console.print()
     console.print("[green]✓[/] run complete")

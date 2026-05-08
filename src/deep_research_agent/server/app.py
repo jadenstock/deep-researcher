@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -28,6 +29,59 @@ from ..scheduler import new_run_id
 from .events import SessionRegistry
 from .runner import run_session
 
+_LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+
+
+def _configure_logging() -> None:
+    """Set up root logging from DRA_LOG_LEVEL and DRA_LOG_FILE env vars.
+
+    uvicorn's own --log-level controls access logs but not the app's
+    logger tree, which is where everything interesting (scheduler,
+    executor, retrieval) emits. Reading DRA_LOG_LEVEL here means a
+    debug session is `DRA_LOG_LEVEL=DEBUG dra serve` and doesn't
+    require touching code.
+
+    DRA_LOG_FILE, when set, also tees the log stream to a file — the
+    file handler is additive, not a replacement, so terminal output
+    still works. This is the easy way to capture a full run for later
+    analysis or to share with a collaborator.
+
+    Idempotent — if handlers are already attached (e.g. configured by
+    uvicorn), we add a FileHandler if needed but don't duplicate the
+    stream handler.
+    """
+    level_name = os.environ.get("DRA_LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    root = logging.getLogger()
+    if not root.handlers:
+        logging.basicConfig(level=level, format=_LOG_FORMAT)
+    else:
+        root.setLevel(level)
+
+    log_file = os.environ.get("DRA_LOG_FILE")
+    if log_file:
+        path = Path(log_file).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Guard against a re-configure adding a second FileHandler for
+        # the same path (process-local but still easy to hit on reload).
+        already_attached = any(
+            isinstance(h, logging.FileHandler) and Path(h.baseFilename) == path.resolve()
+            for h in root.handlers
+        )
+        if not already_attached:
+            fh = logging.FileHandler(path, mode="a", encoding="utf-8")
+            fh.setFormatter(logging.Formatter(_LOG_FORMAT))
+            fh.setLevel(level)
+            root.addHandler(fh)
+            root.info("log_file_attached path=%s level=%s", path, level_name)
+
+    # The dra package's own loggers always use the configured level;
+    # noisy third-party loggers (httpx, uvicorn.access) keep their
+    # default — users can still turn them up via DRA_LOG_LEVEL=DEBUG.
+    logging.getLogger("deep_research_agent").setLevel(level)
+
+
+_configure_logging()
 logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"

@@ -88,11 +88,27 @@ class SemanticScholarClient:
             citation_count = p.get("citationCount")
             external = p.get("externalIds") or {}
             doi = external.get("DOI")
+            arxiv_id = external.get("ArXiv")
+            pmc_id = external.get("PubMedCentral")
             oa = p.get("openAccessPdf") or {}
             pdf_url = oa.get("url") or None
-            # Prefer a DOI landing URL over the S2 URL for consistency with
-            # the fetch pipeline; fall back to S2 if neither is available.
-            url = pdf_url or (f"https://doi.org/{doi}" if doi else None) or p.get("url") or ""
+            # URL preference: HTML-native renderings first (arXiv HTML,
+            # PMC HTML) so the fetcher takes the fast trafilatura path
+            # instead of MarkItDown on a PDF. DOI landing page next, then
+            # the PDF URL, then the S2 page as last resort.
+            html_url: str | None = None
+            if arxiv_id:
+                html_url = f"https://arxiv.org/html/{arxiv_id}"
+            elif pmc_id:
+                pmc_num = pmc_id if str(pmc_id).startswith("PMC") else f"PMC{pmc_id}"
+                html_url = f"https://www.ncbi.nlm.nih.gov/pmc/articles/{pmc_num}/"
+            url = (
+                html_url
+                or (f"https://doi.org/{doi}" if doi else None)
+                or pdf_url
+                or p.get("url")
+                or ""
+            )
             if not url:
                 continue
             hits.append(

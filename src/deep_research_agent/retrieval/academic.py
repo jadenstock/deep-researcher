@@ -75,10 +75,20 @@ async def search_academic(
 
         async def _rescue(h: SearchHit) -> SearchHit:
             # Only rescue hits with a DOI that don't already have a PDF URL.
+            # If the current URL is already an HTML rendering (arXiv HTML,
+            # PMC HTML), keep it — the fetcher will take the fast path
+            # there. Only overwrite when we'd otherwise hit a DOI landing
+            # page (which is typically paywalled).
             if h.doi and not h.pdf_url:
                 oa = await up.find_oa_pdf(h.doi)
                 if oa:
-                    return h.model_copy(update={"url": oa, "pdf_url": oa})
+                    is_html_landing = (
+                        "arxiv.org/html/" in h.url or "ncbi.nlm.nih.gov/pmc/articles/" in h.url
+                    )
+                    update = {"pdf_url": oa}
+                    if not is_html_landing:
+                        update["url"] = oa
+                    return h.model_copy(update=update)
             return h
 
         combined = list(await asyncio.gather(*(_rescue(h) for h in combined)))

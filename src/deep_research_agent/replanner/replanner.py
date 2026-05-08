@@ -17,7 +17,9 @@ AbandonTask + EscalatePattern + cascade propagation land in step 2+.
 from __future__ import annotations
 
 import logging
+import time
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from pydantic_ai import Agent
 
@@ -28,6 +30,9 @@ from ..scheduler import DepEdgeAdd, NoteMutation, TaskResult
 from ..scheduler.ids import new_note_id
 from ..scheduler.note_graph import NoteGraph
 from ..scheduler.task_graph import TaskGraph
+
+if TYPE_CHECKING:
+    from ..token_usage import TokenUsageTracker
 from ..schemas import DecisionMetadata, Link, Note, QuestionMetadata
 from ..schemas.enums import (
     DependencyType,
@@ -326,6 +331,7 @@ async def run_replanner(
     routing: RoutingConfig,
     local: LocalConfig,
     parent_task_id: TaskID,
+    tracker: TokenUsageTracker | None = None,
 ) -> tuple[list[TaskResult], Note]:
     """Run one replan cycle. Returns (mutations_to_apply, decision_note).
 
@@ -341,12 +347,26 @@ async def run_replanner(
         output_type=ReplanDecision,
         system_prompt=REPLAN_SYSTEM,
     )
+    t0 = time.monotonic()
     try:
         r = await agent.run(snapshot)
         decision = r.output
     except Exception as exc:
         logger.warning("replanner_failed err=%s", exc)
         raise ReplannerFailed(str(exc)) from exc
+    elapsed_ms = int((time.monotonic() - t0) * 1000)
+
+    if tracker is not None:
+        usage = r.usage() if hasattr(r, "usage") else None
+        if usage is not None:
+            await tracker.record(model_id, usage, task_type="REPLAN")
+            logger.info(
+                "llm_call model=%s task=REPLAN in=%d out=%d ms=%d",
+                model_id,
+                getattr(usage, "input_tokens", 0) or 0,
+                getattr(usage, "output_tokens", 0) or 0,
+                elapsed_ms,
+            )
 
     results: list[TaskResult] = []
     action_lines: list[str] = []

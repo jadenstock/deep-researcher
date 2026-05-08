@@ -167,7 +167,16 @@ class Scheduler:
                     f"No ready tasks and {len(blocked)} still PENDING. "
                     f"Blocked tasks and their dep edges: {blocked}"
                 )
-            await asyncio.gather(*(self._run_one(t) for t in ready))
+            # return_exceptions=True as defense in depth — _run_one
+            # already isolates handler exceptions, but if the wrapper
+            # itself raises (scheduler bug, OOM, etc.) we still want
+            # the surviving tasks' results to be visible.
+            tick_results = await asyncio.gather(
+                *(self._run_one(t) for t in ready), return_exceptions=True
+            )
+            for r in tick_results:
+                if isinstance(r, BaseException):
+                    logger.error("scheduler_tick_exception err=%r", r)
             completed_since_replan += len(ready)
             if (
                 self._replanner is not None
@@ -250,16 +259,37 @@ class Scheduler:
             logger.info("replan abandoned task_id=%s dropped_dep_edges=%d", tid, dropped)
 
     async def _run_one(self, task: Task) -> None:
+        """Run one task; isolate its failures from the rest of the run.
+
+        A handler exception marks the task ABANDONED and surfaces it
+        via the on_task_done callback (so the UI shows a failed node)
+        but does NOT re-raise. The task_graph already treats ABANDONED
+        as "satisfied" for downstream deps, so the rest of the tick
+        and subsequent ticks can proceed. The run is only failed if
+        the scheduler itself can't make progress (deadlock).
+        """
         self.task_graph.update_status(task.id, TaskStatus.RUNNING)
         logger.info("dispatch task_id=%s type=%s", task.id, task.type.value)
         if self._on_task_start is not None:
             self._on_task_start(task)
         try:
             result = await self.executor.execute(task, self.note_graph)
-        except Exception:
+        except Exception as exc:
             self.task_graph.update_status(task.id, TaskStatus.ABANDONED)
             logger.exception("task_id=%s abandoned due to exception", task.id)
-            raise
+            if self._on_task_done is not None:
+                # Surface a synthetic failure result so the UI sees the
+                # abandonment. The empty TaskResult keeps downstream
+                # code (that inspects .verdict / .abandoned_task_ids)
+                # safe to walk.
+                failed = TaskResult(
+                    verdict=f"FAILED: {type(exc).__name__}: {str(exc)[:200]}",
+                )
+                try:
+                    self._on_task_done(task, failed)
+                except Exception:
+                    logger.exception("on_task_done raised for abandoned task %s", task.id)
+            return
         async with self._write_lock:
             self._apply_result(task, result)
         self._finish(task)

@@ -20,7 +20,8 @@ Design choices:
 from __future__ import annotations
 
 import logging
-from typing import Literal
+import time
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
@@ -29,6 +30,9 @@ from ..agent_factory import make_model
 from ..config import LocalConfig
 from ..schemas.enums import Tier
 from .simple import REJECT_DOMAINS
+
+if TYPE_CHECKING:
+    from ..token_usage import TokenUsageTracker
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +121,7 @@ async def classify_source(
     content: str,
     model_id: str,
     local: LocalConfig,
+    tracker: TokenUsageTracker | None = None,
 ) -> tuple[Tier, str, float, bool]:
     """Classify one source. Returns (tier, rationale, confidence, peer_reviewed).
 
@@ -144,11 +149,25 @@ async def classify_source(
         f"Content excerpt (first {CONTENT_EXCERPT_CHARS} chars):\n"
         f"{content[:CONTENT_EXCERPT_CHARS]}"
     )
+    t0 = time.monotonic()
     try:
         r = await agent.run(user)
         out = r.output
     except Exception as exc:
         logger.warning("tier classifier failed url=%s err=%s", url, exc)
         return Tier.TIER_3, "classifier failed; default to generic web tier", 0.2, False
+    elapsed_ms = int((time.monotonic() - t0) * 1000)
+
+    if tracker is not None:
+        usage = r.usage() if hasattr(r, "usage") else None
+        if usage is not None:
+            await tracker.record(model_id, usage, task_type="TIER_CLASSIFY")
+            logger.info(
+                "llm_call model=%s task=TIER_CLASSIFY in=%d out=%d ms=%d",
+                model_id,
+                getattr(usage, "input_tokens", 0) or 0,
+                getattr(usage, "output_tokens", 0) or 0,
+                elapsed_ms,
+            )
 
     return Tier(out.tier), out.rationale, out.confidence, out.peer_reviewed

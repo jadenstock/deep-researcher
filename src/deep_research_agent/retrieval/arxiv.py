@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from xml.etree import ElementTree as ET
 
@@ -19,6 +20,27 @@ from .brave import SearchHit
 logger = logging.getLogger(__name__)
 
 ARXIV_QUERY_URL = "https://export.arxiv.org/api/query"
+
+_ARXIV_ID_RE = re.compile(r"arxiv\.org/abs/([^/\s?#]+)", re.IGNORECASE)
+
+
+def _arxiv_html_url(abs_url: str) -> str | None:
+    """Map an arXiv abs URL to its HTML rendering. Returns None if the
+    URL doesn't parse — callers should fall back to the abs URL.
+
+    arXiv serves native HTML at arxiv.org/html/{id} for papers with
+    LaTeX source (~70-80% of recent submissions). For papers without
+    HTML, the URL 302s back to the abstract — the fetcher handles
+    that path fine.
+    """
+    m = _ARXIV_ID_RE.search(abs_url)
+    if not m:
+        return None
+    # Strip the optional version suffix (e.g. "2401.12345v2" -> "2401.12345")
+    # so we land on the latest version's HTML rendering.
+    arxiv_id = re.sub(r"v\d+$", "", m.group(1))
+    return f"https://arxiv.org/html/{arxiv_id}"
+
 
 _ARXIV_LOCK = asyncio.Lock()
 _ARXIV_LAST_CALL_AT = 0.0
@@ -78,10 +100,11 @@ def _parse_feed(xml_text: str) -> list[SearchHit]:
                     pdf_url = href
                     break
 
+        html_url = _arxiv_html_url(abs_url)
         hits.append(
             SearchHit(
                 title=title,
-                url=abs_url,
+                url=html_url or abs_url,
                 snippet=snippet[:600],
                 source="arxiv",
                 authors=authors,
