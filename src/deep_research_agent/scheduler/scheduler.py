@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from typing import Literal, Protocol, runtime_checkable
 
@@ -23,6 +23,8 @@ from .note_graph import NoteGraph
 from .task_graph import TaskGraph
 
 logger = logging.getLogger(__name__)
+
+TaskCallback = Callable[[Task], None]
 
 
 # --- Read-only note view handed to executors --------------------------------
@@ -85,11 +87,15 @@ class Scheduler:
         task_graph: TaskGraph,
         note_graph: NoteGraph,
         executor: Executor,
+        on_task_start: TaskCallback | None = None,
+        on_task_done: TaskCallback | None = None,
     ) -> None:
         self.task_graph = task_graph
         self.note_graph = note_graph
         self.executor = executor
         self._write_lock = asyncio.Lock()
+        self._on_task_start = on_task_start
+        self._on_task_done = on_task_done
 
     async def run(self) -> None:
         """Dispatch ready tasks until every task is terminal."""
@@ -111,6 +117,8 @@ class Scheduler:
     async def _run_one(self, task: Task) -> None:
         self.task_graph.update_status(task.id, TaskStatus.RUNNING)
         logger.info("dispatch task_id=%s type=%s", task.id, task.type.value)
+        if self._on_task_start is not None:
+            self._on_task_start(task)
         try:
             result = await self.executor.execute(task, self.note_graph)
         except Exception:
@@ -120,6 +128,8 @@ class Scheduler:
         async with self._write_lock:
             self._apply_result(task, result)
         self._finish(task)
+        if self._on_task_done is not None:
+            self._on_task_done(task)
 
     def _apply_result(self, task: Task, result: TaskResult) -> None:
         for mut in result.note_mutations:
