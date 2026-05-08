@@ -53,6 +53,16 @@ class RoutingConfig(BaseModel):
         """Family := part before '/' in a 'family/model' identifier."""
         return model_id.split("/", 1)[0] if "/" in model_id else model_id
 
+    @staticmethod
+    def router_name(model_id: str) -> str:
+        """Strip the family prefix to get the name expected by the router.
+
+        The full identifier 'anthropic/claude-opus-4-7' carries family
+        information for the ADR 0008 invariant check; the router itself
+        expects the bare model name 'claude-opus-4-7'.
+        """
+        return model_id.split("/", 1)[1] if "/" in model_id else model_id
+
 
 def load_routing_config(path: Path | str) -> RoutingConfig:
     p = Path(path)

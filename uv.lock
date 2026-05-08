@@ -617,6 +617,7 @@ dependencies = [
     { name = "arxiv" },
     { name = "diskcache" },
     { name = "httpx" },
+    { name = "logfire" },
     { name = "markitdown" },
     { name = "pydantic" },
     { name = "pydantic-ai" },
@@ -632,16 +633,13 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "ruff" },
 ]
-observability = [
-    { name = "logfire" },
-]
 
 [package.metadata]
 requires-dist = [
     { name = "arxiv", specifier = ">=2.1" },
     { name = "diskcache", specifier = ">=5.6" },
     { name = "httpx", specifier = ">=0.27" },
-    { name = "logfire", marker = "extra == 'observability'", specifier = ">=2.0" },
+    { name = "logfire", specifier = ">=4.0" },
     { name = "markitdown", specifier = ">=0.0.2" },
     { name = "pydantic", specifier = ">=2.9" },
     { name = "pydantic-ai", specifier = ">=0.1" },
