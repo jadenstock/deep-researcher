@@ -1,6 +1,9 @@
 # Design docs — kept locally, not tracked
 /design/
 
+# Per-run outputs + Obsidian vaults
+/runs/
+
 # macOS
 .DS_Store
 
@@ -18,6 +21,9 @@ env/
 *.egg-info/
 dist/
 build/
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
 
 # IDE
 .vscode/
