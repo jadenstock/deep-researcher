@@ -28,6 +28,11 @@ class NoteSummary(BaseModel):
 
     id: str
     type: str
+    # Sub-type indicator for the UI. Currently populated from
+    # DecisionMetadata.category (e.g. "aims_scoping", "verification",
+    # "final_report") so the frontend can distinguish decision flavors
+    # without a full schema walk.
+    subtype: str | None = None
     title: str
     description: str
     by_task_id: str | None = None
@@ -36,9 +41,11 @@ class NoteSummary(BaseModel):
 
     @classmethod
     def from_note(cls, note: Note) -> NoteSummary:
+        subtype = getattr(note.metadata, "category", None)
         return cls(
             id=note.id,
             type=note.type.value,
+            subtype=subtype,
             title=note.title,
             description=note.description,
             by_task_id=note.last_modified_by or note.created_by,

@@ -58,7 +58,18 @@ def emit_question_synthesize(
     question: str,
     question_note_id: NoteID,
     parent_task_id: TaskID,
+    write_report_task_id: TaskID | None = None,
 ) -> Task:
+    """QUESTION_SYNTHESIZE task.
+
+    `write_report_task_id` is threaded through so this task can graft
+    VERIFY_CLAIM sub-tasks (spawned during its run) onto the report's
+    dependency list. When None, no grafting happens — useful for
+    ablation configurations that skip verification.
+    """
+    input_refs: dict[str, str] = {}
+    if write_report_task_id is not None:
+        input_refs["write_report_task_id"] = write_report_task_id
     return Task(
         id=new_task_id(),
         parent_id=parent_task_id,
@@ -69,6 +80,7 @@ def emit_question_synthesize(
         pattern=OrchestrationPattern.SINGLE_RESEARCHER,
         question_round=QuestionRound.STRUCTURAL,
         reads_notes=[question_note_id],
+        input_refs=input_refs,
         depends_on=[DepEdge(upstream=parent_task_id, kind=DependencyType.PRODUCES_CONTEXT_FOR)],
         dep_scope=DepScope(retrieval_ignores=False, synthesis_waits=True),
         success_criteria="emit a synthesis_note answering the question",

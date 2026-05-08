@@ -53,5 +53,10 @@ class Task(BaseModel):
     reads_notes: list[NoteID] = Field(default_factory=list)
     writes_notes: list[NoteID] = Field(default_factory=list)
     spawned_sub_tasks: list[TaskID] = Field(default_factory=list)
+    # Free-form string refs threaded between handlers. Used for pass-through
+    # identifiers that don't belong in `goal` or `reads_notes` — e.g.
+    # VERIFY_CLAIM carries claim_id, source_note_id, and the downstream
+    # WRITE_REPORT task_id so verification deps can be wired in.
+    input_refs: dict[str, str] = Field(default_factory=dict)
     created_at: datetime
     completed_at: datetime | None = None

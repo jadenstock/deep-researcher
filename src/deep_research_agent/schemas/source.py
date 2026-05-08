@@ -31,6 +31,13 @@ class ClaimItem(BaseModel):
     page_or_section: str | None = None
     extractor_confidence: float = Field(..., ge=0.0, le=1.0)
     verification_status: VerificationStatus = VerificationStatus.UNVERIFIED
+    # Family of the model that extracted this claim (e.g. "anthropic", "openai").
+    # Populated by the analyzer and consumed by the executor's ADR 0008
+    # cross-family invariant — VERIFY_CLAIM must route to a different family.
+    analyzed_by_family: str | None = None
+    # Populated by VERIFY_CLAIM when the claim is checked.
+    verification_rationale: str | None = None
+    verification_note_id: str | None = None
 
 
 class EvalItem(BaseModel):

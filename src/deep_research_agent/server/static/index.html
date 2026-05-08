@@ -68,6 +68,13 @@
   #status { color: var(--muted); font-size: 12px; min-width: 80px; text-align: right; }
   #status.ok { color: var(--ok); }
   #status.err { color: var(--err); }
+  #debug {
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 10px; color: var(--muted);
+    padding: 4px 8px; background: var(--panel-2);
+    border-radius: 4px; border: 1px solid var(--border);
+  }
+  #debug.err { color: var(--err); }
 
   main {
     display: flex;
@@ -175,6 +182,7 @@
   <input id="query" placeholder="Ask a research question…" autocomplete="off" />
   <button id="go">Run</button>
   <button id="report-btn" hidden>📄 Report</button>
+  <div id="debug" title="events received · nodes in graph · layout engine">evt=0 · nodes=0 · layout=?</div>
   <div id="status">idle</div>
 </header>
 <main>
@@ -206,41 +214,69 @@
   const activityEl = document.getElementById("activity");
   const detailsEl = document.getElementById("details");
   const tasksEl = document.getElementById("tasks");
+  const debugEl = document.getElementById("debug");
   let lastReportNoteId = null;
+  let eventCount = 0;
+  function updateDebug(extra) {
+    const nodeCount = cy ? cy.nodes().length : 0;
+    const engine = colaAvailable ? "cola" : "cose";
+    debugEl.textContent = `evt=${eventCount} · nodes=${nodeCount} · layout=${engine}${extra ? " · " + extra : ""}`;
+  }
 
   reportBtn.addEventListener("click", () => {
     if (lastReportNoteId) loadNoteDetails(lastReportNoteId);
   });
 
+  // Verification decision_notes (subtype "verification") get their own
+  // visual treatment so checked claims stand out from AIMS / final-report
+  // decision notes in the graph.
+  function nodeKey(d) {
+    if (d.type === "decision_note" && d.subtype === "verification") return "verification";
+    return d.type;
+  }
   const NODE_COLORS = {
-    landscape: "#a87bff",
-    question: "#ffbb55",
-    source: "#6aa9ff",
-    synthesis: "#6bd88f",
-    decision: "#e3e7ef",
-    open_question: "#ff6b6b",
-    hypothesis: "#ffaf80",
+    landscape_note: "#a87bff",
+    question_note: "#ffbb55",
+    source_note: "#6aa9ff",
+    synthesis_note: "#6bd88f",
+    decision_note: "#e3e7ef",
+    open_question_note: "#ff6b6b",
+    hypothesis_note: "#ffaf80",
+    verification: "#f0a5ff",
   };
   const NODE_SHAPES = {
-    landscape: "hexagon",
-    question: "round-triangle",
-    source: "ellipse",
-    synthesis: "round-diamond",
-    decision: "round-rectangle",
-    open_question: "star",
-    hypothesis: "pentagon",
+    landscape_note: "hexagon",
+    question_note: "round-triangle",
+    source_note: "ellipse",
+    synthesis_note: "round-diamond",
+    decision_note: "round-rectangle",
+    open_question_note: "star",
+    hypothesis_note: "pentagon",
+    verification: "round-octagon",
   };
   const NODE_GLYPHS = {
-    landscape: "L",
-    question: "?",
-    source: "S",
-    synthesis: "Σ",
-    decision: "D",
-    open_question: "!",
-    hypothesis: "H",
+    landscape_note: "L",
+    question_note: "?",
+    source_note: "S",
+    synthesis_note: "Σ",
+    decision_note: "D",
+    open_question_note: "!",
+    hypothesis_note: "H",
+    verification: "✓",
   };
 
-  if (window.cytoscapeCola) window.cytoscapeCola(cytoscape);
+  // Register cola if the CDN script exposed it as a plugin function.
+  // Newer builds self-register against window.cytoscape; older builds
+  // need an explicit use()-call. Guard both paths.
+  let colaAvailable = false;
+  try {
+    if (typeof window.cytoscapeCola === "function" && typeof cytoscape.use === "function") {
+      cytoscape.use(window.cytoscapeCola);
+    }
+    colaAvailable = !!(cytoscape.layout || typeof window.cytoscapeCola === "function");
+  } catch (err) {
+    console.warn("cola registration failed; falling back to cose", err);
+  }
 
   const cy = cytoscape({
     container: document.getElementById("graph"),
@@ -250,9 +286,9 @@
       {
         selector: "node",
         style: {
-          "background-color": ele => NODE_COLORS[ele.data("type")] || "#8892a6",
-          "shape": ele => NODE_SHAPES[ele.data("type")] || "ellipse",
-          "label": ele => NODE_GLYPHS[ele.data("type")] || "·",
+          "background-color": ele => NODE_COLORS[ele.data("styleKey")] || "#8892a6",
+          "shape": ele => NODE_SHAPES[ele.data("styleKey")] || "ellipse",
+          "label": ele => NODE_GLYPHS[ele.data("styleKey")] || "·",
           "font-size": 9,
           "font-family": "ui-sans-serif, system-ui, sans-serif",
           "font-weight": 600,
@@ -327,30 +363,45 @@
   cy.on("mouseout", "edge", e => e.target.removeClass("hover"));
 
   // Continuous spring-physics layout. Re-kicked whenever a new node lands so
-  // the existing nodes ripple and make room for it.
+  // the existing nodes ripple and make room for it. If cola isn't available
+  // at runtime, fall back to cose (one-shot, animated) so nodes still render.
   let colaLayout = null;
   function startLayout() {
+    if (cy.elements().length === 0) return;
     if (colaLayout) { try { colaLayout.stop(); } catch {} }
-    colaLayout = cy.layout({
-      name: "cola",
-      animate: true,
-      infinite: true,
-      fit: false,
-      nodeSpacing: 18,
-      edgeLength: 90,
-      randomize: false,
-      maxSimulationTime: 3000,
-      unconstrIter: 8,
-      userConstIter: 0,
-      allConstIter: 8,
-    });
-    colaLayout.run();
+    const opts = colaAvailable
+      ? {
+          name: "cola",
+          animate: true,
+          infinite: true,
+          fit: false,
+          nodeSpacing: 18,
+          edgeLength: 90,
+          randomize: false,
+          maxSimulationTime: 3000,
+          unconstrIter: 8,
+          userConstIter: 0,
+          allConstIter: 8,
+        }
+      : { name: "cose", animate: true, animationDuration: 400, fit: false };
+    try {
+      colaLayout = cy.layout(opts);
+      colaLayout.run();
+    } catch (err) {
+      console.warn("layout failed, retrying with cose", err);
+      colaAvailable = false;
+      colaLayout = cy.layout({ name: "cose", animate: false, fit: false });
+      colaLayout.run();
+    }
   }
-  startLayout();
 
   let currentRunId = null;
   let ws = null;
   const notesById = {};
+
+  // Initial debug readout so we can see layout engine + graph state before
+  // any events arrive.
+  updateDebug();
 
   cy.on("tap", "node", evt => {
     const node = evt.target;
@@ -403,31 +454,43 @@
   }
 
   function addOrUpdateNode(data) {
-    const title = truncate(data.title || data.id, 40);
-    const existing = cy.getElementById(data.id);
-    if (existing.nonempty()) {
-      existing.data({ title, ...data });
-    } else {
-      cy.add({ data: { id: data.id, title, ...data } });
-      cy.getElementById(data.id).addClass("new");
-      setTimeout(() => cy.getElementById(data.id).removeClass("new"), 1500);
-    }
-    for (const link of data.links || []) {
-      const targetExists = cy.getElementById(link.target_id).nonempty();
-      if (!targetExists) continue;
-      const edgeId = `${data.id}->${link.target_id}:${link.edge_type}`;
-      if (cy.getElementById(edgeId).empty()) {
-        cy.add({
-          data: {
-            id: edgeId,
-            source: data.id,
-            target: link.target_id,
-            label: link.edge_type,
-          },
-        });
+    try {
+      const payload = {
+        ...data,
+        id: data.id,
+        title: truncate(data.title || data.id, 40),
+        styleKey: nodeKey(data),
+      };
+      const existing = cy.getElementById(data.id);
+      if (existing.nonempty()) {
+        existing.data(payload);
+      } else {
+        cy.add({ data: payload });
+        cy.getElementById(data.id).addClass("new");
+        setTimeout(() => cy.getElementById(data.id).removeClass("new"), 1500);
       }
+      for (const link of data.links || []) {
+        const targetExists = cy.getElementById(link.target_id).nonempty();
+        if (!targetExists) continue;
+        const edgeId = `${data.id}->${link.target_id}:${link.edge_type}`;
+        if (cy.getElementById(edgeId).empty()) {
+          cy.add({
+            data: {
+              id: edgeId,
+              source: data.id,
+              target: link.target_id,
+              label: link.edge_type,
+            },
+          });
+        }
+      }
+      relayout();
+      updateDebug();
+    } catch (err) {
+      console.error("addOrUpdateNode failed", err, data);
+      debugEl.classList.add("err");
+      updateDebug("ERR:" + (err && err.message ? err.message.slice(0, 40) : "unknown"));
     }
-    relayout();
   }
 
   // Cola runs continuously; when nodes land we re-kick it (debounced) so it
@@ -655,6 +718,8 @@
     ws = new WebSocket(`${proto}://${location.host}/api/ws/${runId}`);
     ws.onopen = () => setStatus("running");
     ws.onmessage = e => {
+      eventCount++;
+      updateDebug();
       try { handleEvent(JSON.parse(e.data)); }
       catch (err) { console.error("bad event", e.data, err); }
     };

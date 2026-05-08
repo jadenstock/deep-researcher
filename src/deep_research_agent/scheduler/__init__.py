@@ -8,6 +8,7 @@ tasks via TaskResult.
 from .ids import new_note_id, new_run_id, new_task_id
 from .note_graph import NoteGraph, NoteVersionConflict
 from .scheduler import (
+    DepEdgeAdd,
     Executor,
     NoteMutation,
     NoteReader,
@@ -18,6 +19,7 @@ from .scheduler import (
 from .task_graph import TaskGraph
 
 __all__ = [
+    "DepEdgeAdd",
     "Executor",
     "NoteGraph",
     "NoteMutation",

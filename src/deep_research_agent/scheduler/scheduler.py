@@ -19,6 +19,9 @@ from typing import Literal, Protocol, runtime_checkable
 from pydantic import BaseModel, Field
 
 from ..schemas import Note, NoteID, NoteType, Task, TaskStatus
+from ..schemas.enums import DependencyType
+from ..schemas.ids import TaskID
+from ..schemas.task import DepEdge
 from .note_graph import NoteGraph
 from .task_graph import TaskGraph
 
@@ -57,11 +60,26 @@ class NoteMutation(BaseModel):
     note: Note
 
 
+class DepEdgeAdd(BaseModel):
+    """Graft a dependency edge onto an already-spawned task.
+
+    Used when a handler needs to extend a downstream task's `depends_on`
+    list after the fact — e.g. QUESTION_SYNTHESIZE spawns VERIFY_CLAIM
+    tasks and grafts them onto WRITE_REPORT so the report waits for
+    verification to finish.
+    """
+
+    downstream: TaskID
+    upstream: TaskID
+    kind: DependencyType = DependencyType.PRODUCES_CONTEXT_FOR
+
+
 class TaskResult(BaseModel):
     """What an executor returns for one completed task."""
 
     note_mutations: list[NoteMutation] = Field(default_factory=list)
     spawned_tasks: list[Task] = Field(default_factory=list)
+    added_dep_edges: list[DepEdgeAdd] = Field(default_factory=list)
     verdict: str = ""
 
 
@@ -156,6 +174,17 @@ class Scheduler:
             sub.parent_id = task.id
             self.task_graph.add(sub)
             task.spawned_sub_tasks.append(sub.id)
+        for edge in result.added_dep_edges:
+            downstream = self.task_graph.get(edge.downstream)
+            if any(e.upstream == edge.upstream for e in downstream.depends_on):
+                continue
+            downstream.depends_on.append(DepEdge(upstream=edge.upstream, kind=edge.kind))
+            logger.info(
+                "added dep edge downstream=%s upstream=%s kind=%s",
+                edge.downstream,
+                edge.upstream,
+                edge.kind.value,
+            )
 
     def _finish(self, task: Task) -> None:
         task.status = TaskStatus.DONE

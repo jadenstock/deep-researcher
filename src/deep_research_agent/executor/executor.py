@@ -81,16 +81,28 @@ class AgentExecutor:
         )
         return await handler(ctx)
 
-    def _forbidden_family(self, task: Task, _notes: NoteReader) -> str | None:
+    def _forbidden_family(self, task: Task, notes: NoteReader) -> str | None:
         """Return the model family this task must NOT route to.
 
         For VERIFY_CLAIM, this is the family of the ANALYZE_SOURCE that
-        produced the claim being verified. Requires walking
-        task.reads_notes → source_note → last_modified_by task →
-        recorded model family. That provenance arrives with v2 (the
-        first milestone that uses VERIFY_CLAIM); until then this
-        returns None and the invariant check is inert.
+        produced the claim being verified. Looked up via the source_note
+        referenced in `task.input_refs["source_note_id"]` and the claim
+        row matching `input_refs["claim_id"]`.
+
+        Returns None (no restriction) when the provenance isn't
+        available — logged as a warning rather than failing the task so
+        claims from pre-v2 runs without stamped family still verify.
         """
         if task.type != TaskType.VERIFY_CLAIM:
             return None
-        return None  # v2: walk provenance via _notes
+        source_note_id = task.input_refs.get("source_note_id")
+        claim_id = task.input_refs.get("claim_id")
+        if not source_note_id or not claim_id:
+            return None
+        if source_note_id not in notes:
+            return None
+        src = notes.get(source_note_id)
+        for c in getattr(src.metadata, "claims", []) or []:
+            if c.id == claim_id:
+                return c.analyzed_by_family
+        return None

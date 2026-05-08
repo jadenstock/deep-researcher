@@ -29,17 +29,19 @@ from datetime import UTC, datetime
 from pydantic_ai import Agent
 
 from ..agent_factory import make_model
+from ..patterns.maker_checker import emit_verify_claim, select_claims_to_verify
 from ..patterns.single_researcher import (
     emit_decompose,
     emit_question_synthesize,
     emit_write_report,
 )
 from ..retrieval import BraveClient, fetch_and_extract
-from ..scheduler import NoteMutation, TaskResult
+from ..scheduler import DepEdgeAdd, NoteMutation, TaskResult
 from ..scheduler.ids import new_note_id
 from ..schemas import (
     ClaimItem,
     DecisionMetadata,
+    DepEdge,
     LandscapeMetadata,
     Link,
     Note,
@@ -49,7 +51,13 @@ from ..schemas import (
     SynthesisMetadata,
     ThemeItem,
 )
-from ..schemas.enums import NoteType, QuestionClassification, TaskType
+from ..schemas.enums import (
+    DependencyType,
+    NoteType,
+    QuestionClassification,
+    TaskType,
+    VerificationStatus,
+)
 from ..tiering.simple import quick_tier
 from .executor import AgentExecutor, HandlerContext
 from .outputs import (
@@ -58,6 +66,7 @@ from .outputs import (
     LandscapeOutput,
     ReportOutput,
     SynthesizerOutput,
+    VerifierOutput,
 )
 from .prompts import (
     ANALYZER_SYSTEM,
@@ -65,6 +74,7 @@ from .prompts import (
     LANDSCAPE_SYSTEM,
     REPORT_SYSTEM,
     SYNTHESIZER_SYSTEM,
+    VERIFIER_SYSTEM,
 )
 
 logger = logging.getLogger(__name__)
@@ -225,6 +235,11 @@ async def handle_decompose(ctx: HandlerContext) -> TaskResult:
     question_note_ids = []
     synth_task_ids = []
 
+    # Build the WRITE_REPORT task first so its id can be threaded into
+    # each QUESTION_SYNTHESIZE via input_refs; QS handlers need it to
+    # graft VERIFY_CLAIM tasks onto the report's dependency list.
+    report = emit_write_report([], [], ctx.task.id)
+
     for sq in out.sub_questions:
         q_note_id = new_note_id("question")
         q_note = Note(
@@ -243,11 +258,19 @@ async def handle_decompose(ctx: HandlerContext) -> TaskResult:
         mutations.append(NoteMutation(kind="create", note=q_note))
         question_note_ids.append(q_note_id)
 
-        q_synth = emit_question_synthesize(sq.title, q_note_id, ctx.task.id)
+        q_synth = emit_question_synthesize(
+            sq.title, q_note_id, ctx.task.id, write_report_task_id=report.id
+        )
         spawned.append(q_synth)
         synth_task_ids.append(q_synth.id)
 
-    report = emit_write_report(question_note_ids, synth_task_ids, ctx.task.id)
+    # Finalize report: points at all question_notes + depends on every
+    # QUESTION_SYNTHESIZE. VERIFY_CLAIM deps are added later by the QS
+    # handlers via TaskResult.added_dep_edges.
+    report.reads_notes = list(question_note_ids)
+    report.depends_on = [
+        DepEdge(upstream=t_id, kind=DependencyType.PRODUCES_CONTEXT_FOR) for t_id in synth_task_ids
+    ]
     spawned.append(report)
 
     titles_preview = " | ".join(sq.title[:50] for sq in out.sub_questions)
@@ -328,6 +351,7 @@ async def handle_question_synthesize(ctx: HandlerContext) -> TaskResult:
 
     analyses = await asyncio.gather(*(_analyze(n) for n in source_notes))
 
+    analyzer_family = ctx.routing.family_of(ctx.model_id)
     enriched: list[Note] = []
     for note, out in zip(source_notes, analyses, strict=True):
         if out is None or out.off_topic:
@@ -339,6 +363,7 @@ async def handle_question_synthesize(ctx: HandlerContext) -> TaskResult:
                 text=c.text,
                 quote=c.quote,
                 extractor_confidence=c.extractor_confidence,
+                analyzed_by_family=analyzer_family,
             )
             for i, c in enumerate(out.claims)
         ]
@@ -400,9 +425,182 @@ async def handle_question_synthesize(ctx: HandlerContext) -> TaskResult:
     mutations.append(NoteMutation(kind="create", note=synth_note))
     mutations.append(NoteMutation(kind="replace", note=q_updated))
 
+    # --- maker_checker: spawn VERIFY_CLAIM tasks for top claims ---------
+    verify_tasks: list = []
+    added_deps: list[DepEdgeAdd] = []
+    wr_task_id = ctx.task.input_refs.get("write_report_task_id")
+    picked = select_claims_to_verify(enriched)
+    for note, claim in picked:
+        v_task = emit_verify_claim(
+            claim=claim,
+            source_note=note,
+            question=question,
+            write_report_task_id=wr_task_id,
+            parent_task_id=ctx.task.id,
+        )
+        verify_tasks.append(v_task)
+        if wr_task_id:
+            added_deps.append(
+                DepEdgeAdd(
+                    downstream=wr_task_id,
+                    upstream=v_task.id,
+                    kind=DependencyType.PRODUCES_CONTEXT_FOR,
+                )
+            )
+
+    verdict = f"{len(enriched)} sources synthesized — BLUF: {synth_out.bottom_line[:140]}"
+    if verify_tasks:
+        verdict += f" · {len(verify_tasks)} VERIFY_CLAIM spawned"
+
     return TaskResult(
         note_mutations=mutations,
-        verdict=(f"{len(enriched)} sources synthesized — " f"BLUF: {synth_out.bottom_line[:140]}"),
+        spawned_tasks=verify_tasks,
+        added_dep_edges=added_deps,
+        verdict=verdict,
+    )
+
+
+# --- VERIFY_CLAIM -----------------------------------------------------------
+
+
+async def handle_verify_claim(ctx: HandlerContext) -> TaskResult:
+    """Cross-family verification of one claim (ADR 0008).
+
+    Fetches independent sources with a re-phrased query, runs the
+    judgment-role verifier (different model family than the analyzer
+    by executor construction), and emits a verdict. Updates the
+    source_note's ClaimItem.verification_status in place + writes a
+    decision_note with the verifier's rationale.
+    """
+    claim_id = ctx.task.input_refs.get("claim_id")
+    source_note_id = ctx.task.input_refs.get("source_note_id")
+    question = ctx.task.input_refs.get("question", "")
+    if not claim_id or not source_note_id:
+        raise RuntimeError(
+            "VERIFY_CLAIM requires input_refs['claim_id'] and input_refs['source_note_id']"
+        )
+
+    source_note = ctx.notes.get(source_note_id)
+    claim = next(
+        (c for c in getattr(source_note.metadata, "claims", []) if c.id == claim_id),
+        None,
+    )
+    if claim is None:
+        raise RuntimeError(f"claim {claim_id!r} not found on source_note {source_note_id!r}")
+
+    brave_key = ctx.local.retrieval.brave_api_key
+    if not brave_key:
+        raise RuntimeError("no brave_api_key configured in local.toml")
+
+    # Re-phrase: the verifier should search for independent corroboration /
+    # refutation. Using the claim text as the query tends to surface the
+    # same primary source, so we prepend a falsification cue.
+    search_query = f'evidence about: "{claim.text}"'
+    brave = BraveClient(api_key=brave_key)
+    hits = await brave.search(search_query, count=5)
+    primary_url = getattr(source_note.metadata, "url", None)
+    independent_hits = [h for h in hits if h.url != primary_url][:3]
+    logger.info(
+        "verify_claim claim_id=%s independent_hits=%d primary=%s",
+        claim_id,
+        len(independent_hits),
+        primary_url,
+    )
+
+    # Fetch in parallel; on any failure we fall back to the Brave snippet.
+    fetches = await asyncio.gather(
+        *(fetch_and_extract(h.url) for h in independent_hits), return_exceptions=True
+    )
+    excerpts: list[str] = []
+    for hit, fetch in zip(independent_hits, fetches, strict=True):
+        if isinstance(fetch, BaseException) or fetch is None or not fetch.markdown:
+            excerpts.append(f"Source: {hit.title}\nURL: {hit.url}\nSnippet: {hit.snippet}")
+        else:
+            excerpts.append(
+                f"Source: {fetch.title or hit.title}\nURL: {hit.url}\n"
+                f"Content (truncated): {fetch.markdown[:6000]}"
+            )
+
+    if not excerpts:
+        logger.warning("verify_claim claim_id=%s got 0 independent excerpts", claim_id)
+        verdict_label = "INCONCLUSIVE"
+        rationale_text = "No independent sources were retrievable for this claim."
+        disagreements: list[str] = []
+    else:
+        verifier = Agent(
+            make_model(ctx.model_id, ctx.local),
+            output_type=VerifierOutput,
+            system_prompt=VERIFIER_SYSTEM,
+        )
+        user_prompt = (
+            f"Question context: {question}\n\n"
+            f"Claim to verify: {claim.text}\n"
+            f'Primary source quote: "{claim.quote}"\n'
+            f"Primary source URL (NOT independent): {primary_url}\n\n"
+            f"Independent sources:\n\n" + "\n\n---\n\n".join(excerpts)
+        )
+        r = await verifier.run(user_prompt)
+        vout = r.output
+        verdict_label = vout.verdict
+        rationale_text = vout.rationale
+        disagreements = vout.disagreement_notes
+
+    # Write the verification as a decision_note so it shows up in the note
+    # graph + UI. Linked back to the source_note being checked.
+    v_note_id = new_note_id("verification")
+    body_parts = [
+        f"**Verdict:** {verdict_label}",
+        "",
+        rationale_text,
+    ]
+    if disagreements:
+        body_parts.extend(["", "**Disagreement notes:**"])
+        body_parts.extend(f"- {d}" for d in disagreements)
+    verifier_family = ctx.routing.family_of(ctx.model_id)
+    verification_note = Note(
+        id=v_note_id,
+        type=NoteType.DECISION,
+        title=f"Verified ({verdict_label}): {claim.text[:60]}",
+        description=f"{verdict_label} — by {verifier_family}",
+        content="\n".join(body_parts),
+        links=[Link(target_id=source_note_id, edge_type="verification_of")],
+        metadata=DecisionMetadata(
+            category="verification",
+            rationale=f"cross-family verification by {verifier_family}",
+            relates_to_task=ctx.task.id,
+        ),
+        created_by=ctx.task.id,
+        created_at=_now(),
+        last_modified_at=_now(),
+    )
+
+    # Update the ClaimItem in place on the source_note.
+    status_map = {
+        "SUPPORTS": VerificationStatus.SUPPORTS,
+        "REFUTES": VerificationStatus.REFUTES,
+        "INCONCLUSIVE": VerificationStatus.INCONCLUSIVE,
+    }
+    updated_claims = [
+        c.model_copy(
+            update={
+                "verification_status": status_map[verdict_label],
+                "verification_rationale": rationale_text,
+                "verification_note_id": v_note_id,
+            }
+        )
+        if c.id == claim_id
+        else c
+        for c in (source_note.metadata.claims or [])
+    ]
+    new_src_meta = source_note.metadata.model_copy(update={"claims": updated_claims})
+    src_updated = source_note.model_copy(update={"metadata": new_src_meta})
+
+    return TaskResult(
+        note_mutations=[
+            NoteMutation(kind="create", note=verification_note),
+            NoteMutation(kind="replace", note=src_updated),
+        ],
+        verdict=f"{verdict_label}: {rationale_text[:100]}",
     )
 
 
@@ -413,8 +611,30 @@ async def handle_write_report(ctx: HandlerContext) -> TaskResult:
     q_notes = [n for n in ctx.notes.all() if n.type == NoteType.QUESTION]
     synth_notes = [n for n in ctx.notes.all() if n.type == NoteType.SYNTHESIS]
     source_notes = [n for n in ctx.notes.all() if n.type == NoteType.SOURCE]
+    verification_notes = [
+        n
+        for n in ctx.notes.all()
+        if n.type == NoteType.DECISION and n.metadata.category == "verification"
+    ]
+
+    # Aggregate verification counts for the report intro.
+    verdict_counts = {"SUPPORTS": 0, "REFUTES": 0, "INCONCLUSIVE": 0, "UNVERIFIED": 0}
+    for sn in source_notes:
+        for c in sn.metadata.claims:
+            verdict_counts[c.verification_status.value] = (
+                verdict_counts.get(c.verification_status.value, 0) + 1
+            )
 
     parts: list[str] = ["# RESEARCH NOTES (context for the report)"]
+    if sum(v for k, v in verdict_counts.items() if k != "UNVERIFIED") > 0:
+        parts.append(
+            f"\n## Verification summary\n"
+            f"Cross-family verification results across all extracted claims: "
+            f"SUPPORTS={verdict_counts.get('SUPPORTS', 0)}, "
+            f"REFUTES={verdict_counts.get('REFUTES', 0)}, "
+            f"INCONCLUSIVE={verdict_counts.get('INCONCLUSIVE', 0)}, "
+            f"UNVERIFIED={verdict_counts.get('UNVERIFIED', 0)}."
+        )
     for q in q_notes:
         parts.append(f"\n## Question\n{q.title}")
         parts.append(f"Adopted position: {q.metadata.adopted_position or '(none)'}")
@@ -430,7 +650,17 @@ async def handle_write_report(ctx: HandlerContext) -> TaskResult:
     for sn in source_notes:
         parts.append(f"- {sn.title} — {sn.metadata.url}  (Tier {sn.metadata.tier.value})")
         for c in sn.metadata.claims:
-            parts.append(f'    - "{c.quote[:180]}" → {c.text}')
+            tag = (
+                f" [{c.verification_status.value}]"
+                if c.verification_status != VerificationStatus.UNVERIFIED
+                else ""
+            )
+            parts.append(f'    - "{c.quote[:180]}" → {c.text}{tag}')
+    if verification_notes:
+        parts.append("\n## Independent verification rationales")
+        for v in verification_notes:
+            parts.append(f"- {v.title}")
+            parts.append(f"  {v.content}")
 
     report_agent = Agent(
         make_model(ctx.model_id, ctx.local),
@@ -469,6 +699,7 @@ def register_handlers(executor: AgentExecutor) -> None:
     executor.register(TaskType.LANDSCAPE_SURVEY, handle_landscape_survey)
     executor.register(TaskType.DECOMPOSE, handle_decompose)
     executor.register(TaskType.QUESTION_SYNTHESIZE, handle_question_synthesize)
+    executor.register(TaskType.VERIFY_CLAIM, handle_verify_claim)
     executor.register(TaskType.WRITE_REPORT, handle_write_report)
 
 

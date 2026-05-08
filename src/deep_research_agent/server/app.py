@@ -67,7 +67,16 @@ def create_app(
     async def index() -> FileResponse:
         if not INDEX_HTML.exists():
             raise HTTPException(status_code=500, detail="index.html missing")
-        return FileResponse(INDEX_HTML)
+        # Force the browser to fetch fresh HTML on every page load. The
+        # UI is iterated on frequently and stale JS gets blamed on the
+        # backend more than once — easier to pay the reload cost.
+        return FileResponse(
+            INDEX_HTML,
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+            },
+        )
 
     if STATIC_DIR.exists():
         app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

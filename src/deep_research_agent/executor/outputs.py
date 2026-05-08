@@ -69,6 +69,30 @@ class ReportOutput(BaseModel):
     )
 
 
+class VerifierOutput(BaseModel):
+    """Output from an independent verifier checking a claim."""
+
+    verdict: Literal["SUPPORTS", "REFUTES", "INCONCLUSIVE"] = Field(
+        ...,
+        description=(
+            "SUPPORTS if independent sources corroborate the claim. "
+            "REFUTES if they contradict it (>=2 sources or 1 high-quality source). "
+            "INCONCLUSIVE if the evidence is mixed or too thin to call."
+        ),
+    )
+    rationale: str = Field(
+        ...,
+        description=(
+            "2-4 sentences explaining the verdict, citing the specific "
+            "independent sources you relied on."
+        ),
+    )
+    disagreement_notes: list[str] = Field(
+        default_factory=list,
+        description="Specific points where independent sources disagree with the claim.",
+    )
+
+
 class ThemeHint(BaseModel):
     """A theme the landscape surveyor spots across the snippets."""
 
