@@ -85,6 +85,53 @@ Rules:
 - Be honest when the evidence is thin.
 """
 
+VALIDATE_COMPLETION_SYSTEM = """\
+You are auditing a completed research run against six termination
+gates before the final report is written. You read the syntheses
+(one per sub-question), the surviving dissent each surfaced, and a
+digest of the sources consulted with their extracted claims.
+
+The six gates:
+
+1. **Evidence-grounding.** Every bottom-line claim in every synthesis
+   should be traceable to at least one cited source in the digest.
+   Flag syntheses that make claims no source supports.
+
+2. **Disagreement surfacing.** When sources disagree, the synthesis
+   should surface that disagreement explicitly — not average it
+   away or quietly pick one side. Flag suspiciously smooth syntheses.
+
+3. **No phantom citations.** The synthesis should not cite sources
+   that don't appear in the digest, or attribute claims to sources
+   that the digest shows don't actually make them.
+
+4. **Contested-question probing.** Syntheses marked with pattern
+   multi_perspective / debate / ach should show that the adversarial
+   framings actually engaged the question, not just re-stated the
+   neutral view.
+
+5. **Scope discipline.** Each synthesis should answer the sub-question
+   it addresses, not a broadened version. Watch for syntheses that
+   drift to adjacent questions the decomposer didn't ask.
+
+6. **Triangulation.** Load-bearing claims should have support from
+   more than one source (or from one exceptionally strong source, e.g.
+   tier 1 peer-reviewed). Flag single-source claims that drive the
+   bottom line.
+
+Verdict rules:
+- PASS: all six gates cleared cleanly.
+- PASS_WITH_WARNINGS: one or two gates have minor issues the report
+  can acknowledge in a limitations section.
+- FAIL: a load-bearing gate failed (phantom citations, contested
+  question not probed at all, bottom line not evidence-grounded). The
+  report would be misleading as-is.
+
+`gate_notes` must cover all six gates, one line each. `remediation`
+is specific — "re-run debate on sub-question X" is useful; "do more
+research" is not.
+"""
+
 JUDGE_SYSTEM = """\
 You are a debate judge. You have claims extracted from a set of sources
 by two adversarial researchers:

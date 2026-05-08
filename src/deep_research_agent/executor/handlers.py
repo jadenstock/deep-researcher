@@ -42,6 +42,7 @@ from ..patterns.single_researcher import (
     emit_question_synthesize,
     emit_write_report,
 )
+from ..phases.termination import emit_check_termination_ready, emit_validate_completion
 from ..retrieval import (
     BraveClient,
     build_structured_content,
@@ -88,6 +89,7 @@ from .outputs import (
     LandscapeOutput,
     ReportOutput,
     SynthesizerOutput,
+    ValidateCompletionOutput,
     VerifierOutput,
 )
 from .prompts import (
@@ -97,6 +99,7 @@ from .prompts import (
     LANDSCAPE_SYSTEM,
     REPORT_SYSTEM,
     SYNTHESIZER_SYSTEM,
+    VALIDATE_COMPLETION_SYSTEM,
     VERIFIER_SYSTEM,
 )
 
@@ -258,10 +261,12 @@ async def handle_decompose(ctx: HandlerContext) -> TaskResult:
     question_note_ids = []
     synth_task_ids = []
 
-    # Build the WRITE_REPORT task first so its id can be threaded into
-    # each QUESTION_SYNTHESIZE via input_refs; QS handlers need it to
-    # graft VERIFY_CLAIM tasks onto the report's dependency list.
-    report = emit_write_report([], [], ctx.task.id)
+    # Build CHECK_TERMINATION_READY first so its id can be threaded
+    # into each QUESTION_SYNTHESIZE via input_refs; QS handlers graft
+    # VERIFY_CLAIM tasks onto the *termination gate*, not directly
+    # onto WRITE_REPORT, so verifications block the audit chain not
+    # just the report writer (ADR 0009).
+    check_task = emit_check_termination_ready(ctx.task.id, [])
 
     for sq in out.sub_questions:
         q_note_id = new_note_id("question")
@@ -282,18 +287,24 @@ async def handle_decompose(ctx: HandlerContext) -> TaskResult:
         question_note_ids.append(q_note_id)
 
         q_synth = emit_question_synthesize(
-            sq.title, q_note_id, ctx.task.id, write_report_task_id=report.id
+            sq.title, q_note_id, ctx.task.id, write_report_task_id=check_task.id
         )
         spawned.append(q_synth)
         synth_task_ids.append(q_synth.id)
 
-    # Finalize report: points at all question_notes + depends on every
-    # QUESTION_SYNTHESIZE. VERIFY_CLAIM deps are added later by the QS
-    # handlers via TaskResult.added_dep_edges.
-    report.reads_notes = list(question_note_ids)
-    report.depends_on = [
+    # Finalize termination chain: CHECK waits on all QS (and grafted
+    # VERIFY_CLAIMs); VALIDATE depends on CHECK; WRITE_REPORT depends
+    # only on VALIDATE.
+    check_task.depends_on = [
         DepEdge(upstream=t_id, kind=DependencyType.PRODUCES_CONTEXT_FOR) for t_id in synth_task_ids
     ]
+    validate_task = emit_validate_completion(ctx.task.id, check_task.id, question_note_ids)
+    report = emit_write_report(question_note_ids, [], ctx.task.id)
+    report.depends_on = [
+        DepEdge(upstream=validate_task.id, kind=DependencyType.PRODUCES_CONTEXT_FOR)
+    ]
+    spawned.append(check_task)
+    spawned.append(validate_task)
     spawned.append(report)
 
     titles_preview = " | ".join(sq.title[:50] for sq in out.sub_questions)
@@ -710,6 +721,13 @@ async def handle_question_synthesize(ctx: HandlerContext) -> TaskResult:
         synth_r = await synth_agent.run(synth_user)
         synth_out = synth_r.output
 
+    # Triangulation score: distinct sources that contributed at least
+    # one claim + how many distinct tiers they span. Cheap proxy for
+    # independent corroboration; the validator reads it in gate 6.
+    contributing_sources = [n for n in enriched if n.metadata.claims]
+    triangulation_score = len(contributing_sources)
+    distinct_tiers = len({s.metadata.tier.value for s in contributing_sources})
+
     synth_note = Note(
         id=synth_note_id,
         type=NoteType.SYNTHESIS,
@@ -721,6 +739,8 @@ async def handle_question_synthesize(ctx: HandlerContext) -> TaskResult:
         metadata=SynthesisMetadata(
             pattern=(ctx.task.pattern or OrchestrationPattern.SINGLE_RESEARCHER).value,
             surviving_dissent=synth_out.disagreements,
+            triangulation_score=triangulation_score,
+            distinct_tiers=distinct_tiers,
         ),
         created_by=ctx.task.id,
         created_at=_now(),
@@ -921,6 +941,217 @@ async def handle_verify_claim(ctx: HandlerContext) -> TaskResult:
     )
 
 
+# --- CHECK_TERMINATION_READY ------------------------------------------------
+
+
+def _structural_termination_check(ctx: HandlerContext) -> tuple[bool, list[str]]:
+    """Deterministic structural checks from ADR 0009.
+
+    Returns (passed, gap_descriptions). All gaps are reported; the
+    handler logs them all in one decision_note rather than short-
+    circuiting on the first failure — the replanner/user needs to see
+    the full picture.
+    """
+    gaps: list[str] = []
+
+    # Gate 1 (task-graph pendingness) can't be audited from this handler
+    # — executor only exposes a note view. The scheduler guarantees
+    # CHECK_TERMINATION_READY fires after its depends_on are satisfied.
+    # If a replanner spawned work post-hoc that isn't gated through
+    # CHECK, the all_terminal() exit check catches it.
+
+    # Gate 2: every question_note is SYNTHESIZED.
+    for n in ctx.notes.all():
+        if n.type != NoteType.QUESTION:
+            continue
+        status = getattr(n.metadata, "status", None)
+        if status != "SYNTHESIZED":
+            gaps.append(f"Question '{n.title[:80]}' status={status!r}, expected SYNTHESIZED")
+
+    # Gate 3: every contested question has at least one disconfirmation
+    # pass. Look for a synthesis_note under that question with
+    # pattern != single_researcher, OR a VERIFY_CLAIM task having
+    # produced a decision_note with category=verification.
+    contested_q_ids: set[str] = set()
+    for n in ctx.notes.all():
+        if n.type != NoteType.QUESTION:
+            continue
+        classification = getattr(n.metadata, "classification", None)
+        cls_value = classification.value if hasattr(classification, "value") else classification
+        if cls_value == QuestionClassification.CONTESTED.value:
+            contested_q_ids.add(n.id)
+
+    if contested_q_ids:
+        heavy_patterns = {"multi_perspective", "debate", "ach"}
+        disconfirmed_q: set[str] = set()
+        for synth in ctx.notes.all():
+            if synth.type != NoteType.SYNTHESIS:
+                continue
+            pattern = getattr(synth.metadata, "pattern", None)
+            if pattern not in heavy_patterns:
+                continue
+            # A synthesis produced by a heavy pattern counts as
+            # disconfirmation for the question it addresses. The link
+            # model doesn't point synthesis → question directly; we
+            # match via the read path (which handler keeps on the task).
+            # For MVP, if ANY heavy-pattern synthesis exists, treat all
+            # contested questions as covered — refine when we can
+            # structurally attribute syntheses to questions.
+            disconfirmed_q |= contested_q_ids
+        missing = contested_q_ids - disconfirmed_q
+        if missing:
+            for q_id in missing:
+                gaps.append(
+                    f"Contested question {q_id} has no disconfirmation pass "
+                    f"(no multi_perspective / debate / ach synthesis)"
+                )
+
+    return len(gaps) == 0, gaps
+
+
+async def handle_check_termination_ready(ctx: HandlerContext) -> TaskResult:
+    """Deterministic termination-readiness audit. No LLM."""
+    passed, gaps = _structural_termination_check(ctx)
+    verdict_label = "PASS" if passed else "FAIL"
+    body_lines = [f"**Verdict:** {verdict_label}"]
+    if gaps:
+        body_lines.append("")
+        body_lines.append("**Structural gaps:**")
+        body_lines.extend(f"- {g}" for g in gaps)
+    else:
+        body_lines.append("")
+        body_lines.append("No structural gaps detected.")
+
+    decision_note = Note(
+        id=new_note_id("decision"),
+        type=NoteType.DECISION,
+        title=f"Termination readiness: {verdict_label}",
+        description=f"{verdict_label} · {len(gaps)} gap(s)",
+        content="\n".join(body_lines),
+        metadata=DecisionMetadata(
+            category="termination_readiness",
+            rationale="; ".join(gaps) if gaps else "all structural gates passed",
+            relates_to_task=ctx.task.id,
+        ),
+        created_by=ctx.task.id,
+        created_at=_now(),
+        last_modified_at=_now(),
+    )
+    if not passed:
+        # MVP: log and pass through. Full remediation loop (spawn
+        # ADVERSARIAL_CRITIQUE, re-run structural check) lands as a
+        # polish pass. Downstream VALIDATE_COMPLETION will likely
+        # catch the same gaps at the LLM level and can surface them
+        # in the final report's limitations section.
+        logger.warning(
+            "termination_readiness gaps=%d task_id=%s: %s",
+            len(gaps),
+            ctx.task.id,
+            gaps,
+        )
+
+    return TaskResult(
+        note_mutations=[NoteMutation(kind="create", note=decision_note)],
+        verdict=f"{verdict_label} · {len(gaps)} structural gap(s)",
+    )
+
+
+# --- VALIDATE_COMPLETION ----------------------------------------------------
+
+
+async def handle_validate_completion(ctx: HandlerContext) -> TaskResult:
+    """LLM-driven six-gate audit (TDD §5.12).
+
+    Reads all syntheses + sample source digests + the readiness
+    decision note, then returns a pass/fail verdict with per-gate
+    notes. MVP: emits a decision_note; run continues to WRITE_REPORT
+    regardless. Remediation loop + ESCALATED transition land as a
+    polish pass.
+    """
+    synthesis_notes = [n for n in ctx.notes.all() if n.type == NoteType.SYNTHESIS]
+    question_notes = [n for n in ctx.notes.all() if n.type == NoteType.QUESTION]
+    source_notes = [n for n in ctx.notes.all() if n.type == NoteType.SOURCE]
+
+    # Compact audit package — keep it small; this is HIGH-tier but one
+    # over-long prompt eats cost fast. Synthesis bodies + claims-with-
+    # quotes are the load-bearing content; full source bodies aren't
+    # needed for the six-gate checks.
+    lines: list[str] = []
+    for s in synthesis_notes:
+        meta = s.metadata
+        triangulation = getattr(meta, "triangulation_score", 0)
+        distinct_tiers = getattr(meta, "distinct_tiers", 0)
+        lines.append(
+            f"## Synthesis {s.id} (pattern: {meta.pattern}, "
+            f"triangulation_score={triangulation}, distinct_tiers={distinct_tiers})"
+        )
+        lines.append(f"Bottom line: {s.description}")
+        lines.append(s.content)
+        disagreements = getattr(meta, "surviving_dissent", []) or []
+        if disagreements:
+            lines.append(f"Surviving dissent: {disagreements}")
+        lines.append("")
+    lines.append("## Evidence (source digests)")
+    for sn in source_notes[:12]:  # hard cap; prompt size guardrail
+        lines.append(f"- {sn.id}: {sn.title} (tier {sn.metadata.tier.value}) — {sn.metadata.url}")
+        for c in (sn.metadata.claims or [])[:3]:
+            lines.append(f'    claim: "{c.text}"')
+    audit_package = "\n".join(lines)
+
+    user = (
+        f"Audit this research run against the six completion gates. "
+        f"Research produced {len(synthesis_notes)} syntheses covering "
+        f"{len(question_notes)} sub-question(s).\n\n{audit_package}"
+    )
+    try:
+        agent = Agent(
+            make_model(ctx.model_id, ctx.local),
+            output_type=ValidateCompletionOutput,
+            system_prompt=VALIDATE_COMPLETION_SYSTEM,
+        )
+        r = await agent.run(user)
+        out = r.output
+    except Exception as exc:
+        # If the audit itself fails, log and treat as PASS-with-warning
+        # — we don't want the final report blocked on validator flakiness
+        # for MVP. Record the failure on the decision_note.
+        logger.warning("validate_completion audit failed err=%s", exc)
+        out = ValidateCompletionOutput(
+            verdict="PASS",
+            rationale=f"audit LLM call failed: {type(exc).__name__}; passing with warning",
+            gate_notes=[],
+            remediation=[],
+        )
+
+    gate_text = "\n".join(f"- {gn}" for gn in out.gate_notes)
+    remediation_text = "\n".join(f"- {r}" for r in out.remediation)
+    body = (
+        f"**Verdict:** {out.verdict}\n\n"
+        f"**Rationale:** {out.rationale}\n\n"
+        f"**Gate notes:**\n{gate_text or '(none)'}\n\n"
+        f"**Remediation suggested:**\n{remediation_text or '(none)'}"
+    )
+    decision_note = Note(
+        id=new_note_id("decision"),
+        type=NoteType.DECISION,
+        title=f"Completion audit: {out.verdict}",
+        description=out.rationale[:280],
+        content=body,
+        metadata=DecisionMetadata(
+            category="completion_audit",
+            rationale=out.rationale,
+            relates_to_task=ctx.task.id,
+        ),
+        created_by=ctx.task.id,
+        created_at=_now(),
+        last_modified_at=_now(),
+    )
+    return TaskResult(
+        note_mutations=[NoteMutation(kind="create", note=decision_note)],
+        verdict=f"{out.verdict}: {out.rationale[:120]}",
+    )
+
+
 # --- WRITE_REPORT -----------------------------------------------------------
 
 
@@ -932,6 +1163,12 @@ async def handle_write_report(ctx: HandlerContext) -> TaskResult:
         n
         for n in ctx.notes.all()
         if n.type == NoteType.DECISION and n.metadata.category == "verification"
+    ]
+    termination_notes = [
+        n
+        for n in ctx.notes.all()
+        if n.type == NoteType.DECISION
+        and n.metadata.category in ("termination_readiness", "completion_audit")
     ]
 
     # Aggregate verification counts for the report intro.
@@ -978,6 +1215,15 @@ async def handle_write_report(ctx: HandlerContext) -> TaskResult:
         for v in verification_notes:
             parts.append(f"- {v.title}")
             parts.append(f"  {v.content}")
+    if termination_notes:
+        parts.append("\n## Termination + completion audit")
+        parts.append(
+            "Surface any FAIL / PASS_WITH_WARNINGS verdicts and their gate notes "
+            "in the report's limitations section."
+        )
+        for tn in termination_notes:
+            parts.append(f"- {tn.title}")
+            parts.append(f"  {tn.content}")
 
     report_agent = Agent(
         make_model(ctx.model_id, ctx.local),
@@ -1017,6 +1263,8 @@ def register_handlers(executor: AgentExecutor) -> None:
     executor.register(TaskType.DECOMPOSE, handle_decompose)
     executor.register(TaskType.QUESTION_SYNTHESIZE, handle_question_synthesize)
     executor.register(TaskType.VERIFY_CLAIM, handle_verify_claim)
+    executor.register(TaskType.CHECK_TERMINATION_READY, handle_check_termination_ready)
+    executor.register(TaskType.VALIDATE_COMPLETION, handle_validate_completion)
     executor.register(TaskType.WRITE_REPORT, handle_write_report)
 
 

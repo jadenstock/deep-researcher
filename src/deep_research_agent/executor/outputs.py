@@ -93,6 +93,32 @@ class VerifierOutput(BaseModel):
     )
 
 
+class ValidateCompletionOutput(BaseModel):
+    """Output from the VALIDATE_COMPLETION six-gate audit."""
+
+    verdict: Literal["PASS", "FAIL", "PASS_WITH_WARNINGS"] = Field(
+        ...,
+        description=(
+            "PASS: all six gates cleared. "
+            "PASS_WITH_WARNINGS: minor issues but report is defensible. "
+            "FAIL: load-bearing gate failed; report should not ship as-is."
+        ),
+    )
+    rationale: str = Field(..., description="2-3 sentences justifying the verdict.")
+    gate_notes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "One line per gate: '<gate name>: <pass/concern/fail> — <reason>'. "
+            "Covers evidence-grounding, disagreement-surfacing, phantom-citations, "
+            "contested-probing, scope-discipline, triangulation."
+        ),
+    )
+    remediation: list[str] = Field(
+        default_factory=list,
+        description="Specific remediations if verdict is FAIL or PASS_WITH_WARNINGS.",
+    )
+
+
 # --- ACH (Analysis of Competing Hypotheses) outputs -----------------------
 
 
