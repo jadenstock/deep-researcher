@@ -133,17 +133,16 @@ async def _run_research(args: argparse.Namespace) -> int:
 
     tg = TaskGraph()
     ng = NoteGraph()
-    tg.add(
-        Task(
-            id=new_task_id(),
-            goal=args.query,
-            type=TaskType.LANDSCAPE_SURVEY,
-            role=RoleClass.GENERATIVE,
-            tier=TaskTier.HIGH,
-            success_criteria="produce a research report answering the query",
-            created_at=datetime.now(UTC),
-        )
+    root_task = Task(
+        id=new_task_id(),
+        goal=args.query,
+        type=TaskType.LANDSCAPE_SURVEY,
+        role=RoleClass.GENERATIVE,
+        tier=TaskTier.HIGH,
+        success_criteria="produce a research report answering the query",
+        created_at=datetime.now(UTC),
     )
+    tg.add(root_task)
 
     with console.status("[cyan]starting...", spinner="dots") as status:
 
@@ -160,7 +159,19 @@ async def _run_research(args: argparse.Namespace) -> int:
             )
             status.update("[cyan]working...")
 
-        sched = Scheduler(tg, ng, ex, on_task_start=_on_start, on_task_done=_on_done)
+        async def _replanner(task_graph: TaskGraph, note_graph: NoteGraph):
+            from .replanner import run_replanner
+
+            return await run_replanner(task_graph, note_graph, routing, local, root_task.id)
+
+        sched = Scheduler(
+            tg,
+            ng,
+            ex,
+            on_task_start=_on_start,
+            on_task_done=_on_done,
+            replanner=_replanner,
+        )
         try:
             await sched.run()
         except Exception:

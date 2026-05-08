@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from datetime import UTC, datetime
 from typing import Literal, Protocol, runtime_checkable
 
@@ -29,7 +29,17 @@ logger = logging.getLogger(__name__)
 
 TaskCallback = Callable[[Task], None]
 TaskDoneCallback = Callable[[Task, "TaskResult"], None]
-NoteMutationCallback = Callable[["NoteMutation", Task], None]
+# Task arg is None for scheduler-initiated mutations (e.g. replanner cycles).
+NoteMutationCallback = Callable[["NoteMutation", Task | None], None]
+# Replanner: async callable taking (task_graph, note_graph) and returning
+# (list[TaskResult], decision_note). The scheduler applies the TaskResults
+# through the same `_apply_result` path as regular task completions and
+# persists the decision_note for UI / audit. Kept as a Callable so the
+# scheduler module doesn't import from replanner (avoids cycle).
+ReplannerCallback = Callable[
+    [TaskGraph, NoteGraph],
+    Awaitable[tuple[list["TaskResult"], Note]],
+]
 
 
 # --- Read-only note view handed to executors --------------------------------
@@ -80,6 +90,11 @@ class TaskResult(BaseModel):
     note_mutations: list[NoteMutation] = Field(default_factory=list)
     spawned_tasks: list[Task] = Field(default_factory=list)
     added_dep_edges: list[DepEdgeAdd] = Field(default_factory=list)
+    # Task IDs to abandon. Cascade: status → ABANDONED; any dep edges on
+    # downstream tasks pointing at them are dropped so the downstream
+    # doesn't deadlock waiting for work that will never land. In-progress
+    # tasks complete their current run; PENDING tasks never start.
+    abandoned_task_ids: list[TaskID] = Field(default_factory=list)
     verdict: str = ""
 
 
@@ -110,6 +125,9 @@ class Scheduler:
         on_task_start: TaskCallback | None = None,
         on_task_done: TaskDoneCallback | None = None,
         on_note_mutation: NoteMutationCallback | None = None,
+        replanner: ReplannerCallback | None = None,
+        replan_cadence: int = 10,
+        replan_budget: int = 3,
     ) -> None:
         self.task_graph = task_graph
         self.note_graph = note_graph
@@ -118,6 +136,9 @@ class Scheduler:
         self._on_task_start = on_task_start
         self._on_task_done = on_task_done
         self._on_note_mutation = on_note_mutation
+        self._replanner = replanner
+        self._replan_cadence = replan_cadence
+        self._replan_budget = replan_budget
 
     async def run(self) -> None:
         """Dispatch ready tasks until every task is terminal.
@@ -126,7 +147,14 @@ class Scheduler:
         asyncio.gather. Note-graph writes stay serialized behind the
         scheduler's write lock; task-graph mutations happen under the
         same lock (via _apply_result).
+
+        When a replanner is configured, it's invoked between ticks
+        after every `replan_cadence` task completions, up to
+        `replan_budget` cycles per run. Runs BETWEEN ticks (not during
+        dispatch) so the graph is stable when the replanner reads it.
         """
+        completed_since_replan = 0
+        replans_done = 0
         while not self.task_graph.all_terminal():
             ready = self.task_graph.get_ready()
             if not ready:
@@ -140,6 +168,86 @@ class Scheduler:
                     f"Blocked tasks and their dep edges: {blocked}"
                 )
             await asyncio.gather(*(self._run_one(t) for t in ready))
+            completed_since_replan += len(ready)
+            if (
+                self._replanner is not None
+                and completed_since_replan >= self._replan_cadence
+                and replans_done < self._replan_budget
+            ):
+                await self._run_replan_cycle()
+                completed_since_replan = 0
+                replans_done += 1
+
+    async def _run_replan_cycle(self) -> None:
+        """Invoke the replanner and apply its mutations under the write lock.
+
+        Mutations come back as a list of TaskResult so we can reuse the
+        same application path as a completed task. The decision_note is
+        also applied through a synthetic TaskResult.
+        """
+        if self._replanner is None:  # defensive; run() already checks
+            return
+        logger.info("replan cycle start")
+        try:
+            results, decision_note = await self._replanner(self.task_graph, self.note_graph)
+        except Exception as exc:
+            # A replanner failure should not kill the run — just skip
+            # this cycle and let the rest of the graph finish. Logged at
+            # warning so it's visible but not alarming.
+            logger.warning("replan cycle skipped due to replanner error: %s", exc)
+            return
+        decision_mutation = NoteMutation(kind="create", note=decision_note)
+        async with self._write_lock:
+            for r in results:
+                self._apply_replan_result(r)
+            # Finally, the decision note itself.
+            self.note_graph.add(decision_note)
+            if self._on_note_mutation is not None:
+                self._on_note_mutation(decision_mutation, None)
+        logger.info(
+            "replan cycle applied actions=%d decision_note=%s",
+            len(results),
+            decision_note.id,
+        )
+
+    def _apply_replan_result(self, result: TaskResult) -> None:
+        """Apply a replanner TaskResult. Mirrors `_apply_result` but without
+        a completing task — the spawned tasks are new top-level work and
+        the dep-edge grafts target existing downstream tasks.
+        """
+        for mut in result.note_mutations:
+            # Replanner v3 step 2 only emits `create` mutations. `replace`
+            # from the replanner path would need a TaskID for the `by`
+            # attribution, which doesn't exist at the cycle level; if we
+            # need cascade note-replaces later, route them through a
+            # dedicated task type instead.
+            if mut.kind == "create":
+                self.note_graph.add(mut.note)
+            else:
+                logger.warning(
+                    "replan ignoring note mutation kind=%s — replace not supported "
+                    "from replanner path (use a task to emit the replace)",
+                    mut.kind,
+                )
+                continue
+            if self._on_note_mutation is not None:
+                self._on_note_mutation(mut, None)
+        for sub in result.spawned_tasks:
+            self.task_graph.add(sub)
+        for edge in result.added_dep_edges:
+            downstream = self.task_graph.get(edge.downstream)
+            if any(e.upstream == edge.upstream for e in downstream.depends_on):
+                continue
+            downstream.depends_on.append(DepEdge(upstream=edge.upstream, kind=edge.kind))
+            logger.info(
+                "replan added dep edge downstream=%s upstream=%s kind=%s",
+                edge.downstream,
+                edge.upstream,
+                edge.kind.value,
+            )
+        for tid in result.abandoned_task_ids:
+            dropped = self.task_graph.abandon_task(tid)
+            logger.info("replan abandoned task_id=%s dropped_dep_edges=%d", tid, dropped)
 
     async def _run_one(self, task: Task) -> None:
         self.task_graph.update_status(task.id, TaskStatus.RUNNING)
@@ -185,6 +293,9 @@ class Scheduler:
                 edge.upstream,
                 edge.kind.value,
             )
+        for tid in result.abandoned_task_ids:
+            dropped = self.task_graph.abandon_task(tid)
+            logger.info("abandoned task_id=%s dropped_dep_edges=%d", tid, dropped)
 
     def _finish(self, task: Task) -> None:
         task.status = TaskStatus.DONE

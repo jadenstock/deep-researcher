@@ -30,6 +30,7 @@ from pydantic_ai import Agent
 
 from ..agent_factory import make_model
 from ..patterns.maker_checker import emit_verify_claim, select_claims_to_verify
+from ..patterns.multi_perspective import PERSPECTIVES, Perspective
 from ..patterns.single_researcher import (
     emit_decompose,
     emit_question_synthesize,
@@ -62,6 +63,7 @@ from ..schemas import (
 from ..schemas.enums import (
     DependencyType,
     NoteType,
+    OrchestrationPattern,
     QuestionClassification,
     RoleClass,
     TaskTier,
@@ -405,13 +407,28 @@ async def handle_question_synthesize(ctx: HandlerContext) -> TaskResult:
             f"no usable sources after fetching {len(hits)} candidates " f"for question={question!r}"
         )
 
-    analyzer = Agent(
-        make_model(ctx.model_id, ctx.local),
-        output_type=AnalyzerOutput,
-        system_prompt=ANALYZER_SYSTEM,
-    )
+    # Pick framings based on task.pattern. single_researcher uses one
+    # neutral analyzer. multi_perspective runs PERSPECTIVES triad per
+    # source so contested claims get charitable / critical / neutral
+    # extractions side-by-side.
+    if ctx.task.pattern == OrchestrationPattern.MULTI_PERSPECTIVE:
+        framings: tuple[Perspective, ...] = PERSPECTIVES
+    else:
+        framings = (Perspective(name="neutral", prompt_suffix=""),)
 
-    async def _analyze(note: Note) -> AnalyzerOutput | None:
+    def _build_analyzer(framing: Perspective) -> Agent:
+        system = ANALYZER_SYSTEM
+        if framing.prompt_suffix:
+            system = ANALYZER_SYSTEM + "\n\nFraming for this pass:\n" + framing.prompt_suffix
+        return Agent(
+            make_model(ctx.model_id, ctx.local),
+            output_type=AnalyzerOutput,
+            system_prompt=system,
+        )
+
+    framing_agents: dict[str, Agent] = {p.name: _build_analyzer(p) for p in framings}
+
+    def _analyzer_user_message(note: Note) -> str:
         # For long sources, send the StructuredContent outline + a
         # capped excerpt of the full body so the analyzer can still pull
         # verbatim quotes but doesn't have to scan 40K chars of raw
@@ -426,44 +443,62 @@ async def handle_question_synthesize(ctx: HandlerContext) -> TaskResult:
             )
         else:
             body = f"Content:\n{note.content}"
-        user = (
+        return (
             f"Question: {question}\n\n"
             f"Source: {note.title}\nURL: {note.metadata.url}\n\n"
             f"{body}"
         )
+
+    async def _analyze_one(
+        note: Note, framing_name: str
+    ) -> tuple[Note, str, AnalyzerOutput | None]:
+        user = _analyzer_user_message(note)
+        agent = framing_agents[framing_name]
         try:
-            r = await analyzer.run(user)
-            return r.output
+            r = await agent.run(user)
+            return note, framing_name, r.output
         except Exception as exc:
-            logger.warning("analyzer failed id=%s err=%s", note.id, exc)
-            return None
+            logger.warning("analyzer failed id=%s framing=%s err=%s", note.id, framing_name, exc)
+            return note, framing_name, None
 
-    analyses = await asyncio.gather(*(_analyze(n) for n in source_notes))
+    pairs = [(n, f.name) for n in source_notes for f in framings]
+    analyses = await asyncio.gather(*(_analyze_one(n, fname) for n, fname in pairs))
 
+    # Group results by source_note. Each note ends with claims from all
+    # framings interleaved; off_topic is AND-ed across framings (a source
+    # is only dropped if EVERY framing says it's off-topic — any framing
+    # finding something worth extracting keeps the source).
     analyzer_family = ctx.routing.family_of(ctx.model_id)
+    by_note: dict[str, list[tuple[str, AnalyzerOutput | None]]] = {n.id: [] for n in source_notes}
+    for note, fname, out in analyses:
+        by_note[note.id].append((fname, out))
+
     enriched: list[Note] = []
     dropped_off_topic = 0
-    for note, out in zip(source_notes, analyses, strict=True):
-        # Drop off-topic sources entirely — they shouldn't appear in the
-        # report, feed the synthesizer, or get linked to the synthesis.
-        # Analyzer failures (out is None) are kept with no claims; the
-        # source may still be worth citing even if extraction failed.
-        if out is not None and out.off_topic:
+    for note in source_notes:
+        framing_outs = by_note[note.id]
+        non_null = [(f, o) for f, o in framing_outs if o is not None]
+        if non_null and all(o.off_topic for _, o in non_null):
+            # All framings agree the source is off-topic — drop it.
             dropped_off_topic += 1
             continue
-        if out is None:
-            enriched.append(note)
-            continue
-        claims = [
-            ClaimItem(
-                id=f"{note.id}-{i}",
-                text=c.text,
-                quote=c.quote,
-                extractor_confidence=c.extractor_confidence,
-                analyzed_by_family=analyzer_family,
-            )
-            for i, c in enumerate(out.claims)
-        ]
+        claims: list[ClaimItem] = []
+        claim_idx = 0
+        for fname, out in framing_outs:
+            if out is None or out.off_topic:
+                continue
+            for c in out.claims:
+                claims.append(
+                    ClaimItem(
+                        id=f"{note.id}-{claim_idx}",
+                        text=c.text,
+                        quote=c.quote,
+                        extractor_confidence=c.extractor_confidence,
+                        analyzed_by_family=analyzer_family,
+                        perspective=fname,
+                    )
+                )
+                claim_idx += 1
         new_meta = note.metadata.model_copy(update={"claims": claims})
         enriched.append(note.model_copy(update={"metadata": new_meta}))
     if dropped_off_topic:
@@ -475,12 +510,18 @@ async def handle_question_synthesize(ctx: HandlerContext) -> TaskResult:
         system_prompt=SYNTHESIZER_SYSTEM,
     )
     lines: list[str] = []
+    is_multi = ctx.task.pattern == OrchestrationPattern.MULTI_PERSPECTIVE
     for n in enriched:
         if not n.metadata.claims:
             continue
         lines.append(f"Source: {n.title} ({n.metadata.url})")
         for c in n.metadata.claims:
-            lines.append(f"  - Claim: {c.text}")
+            # Under multi_perspective, tag each claim with its framing so
+            # the synthesizer can see where framings agree / diverge on
+            # the same source. Under single_researcher every claim is
+            # "neutral" and tagging is noise — omit the prefix.
+            prefix = f"[{c.perspective}] " if is_multi else ""
+            lines.append(f"  - {prefix}Claim: {c.text}")
             lines.append(f'    Quote: "{c.quote}"')
         lines.append("")
     if not lines:

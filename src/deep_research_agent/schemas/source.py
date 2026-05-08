@@ -35,6 +35,11 @@ class ClaimItem(BaseModel):
     # Populated by the analyzer and consumed by the executor's ADR 0008
     # cross-family invariant — VERIFY_CLAIM must route to a different family.
     analyzed_by_family: str | None = None
+    # Framing the analyzer used for this extraction — "neutral" under the
+    # default single_researcher pattern, or one of the multi_perspective
+    # framings (e.g. "skeptic", "advocate"). Surfaces to the synthesizer
+    # so contested sub-questions can see per-framing agreement/disagreement.
+    perspective: str = "neutral"
     # Populated by VERIFY_CLAIM when the claim is checked.
     verification_rationale: str | None = None
     verification_note_id: str | None = None

@@ -37,19 +37,40 @@ class TaskGraph:
     def update_status(self, task_id: TaskID, status: TaskStatus) -> None:
         self._tasks[task_id].status = status
 
+    def abandon_task(self, task_id: TaskID) -> int:
+        """Mark a task ABANDONED and drop all dep edges pointing at it.
+
+        Per ADR 0009 cascade: downstream tasks that were waiting on this
+        task shouldn't deadlock. Returns the number of dep edges
+        removed for observability.
+
+        If the task is already in a terminal state (DONE / ABANDONED /
+        ESCALATED), this is a no-op on the task itself but still strips
+        dangling edges from downstream deps as a defensive measure.
+        """
+        if task_id in self._tasks:
+            t = self._tasks[task_id]
+            if t.status not in {TaskStatus.DONE, TaskStatus.ABANDONED, TaskStatus.ESCALATED}:
+                t.status = TaskStatus.ABANDONED
+        dropped = 0
+        for t in self._tasks.values():
+            before = len(t.depends_on)
+            t.depends_on = [e for e in t.depends_on if e.upstream != task_id]
+            dropped += before - len(t.depends_on)
+        return dropped
+
     def get_ready(self) -> list[Task]:
         """Return the PENDING tasks whose dependencies are satisfied.
 
         Retrieval-phase tasks (dep_scope.retrieval_ignores=True) run
         regardless of upstream deps — they retrieve evidence that synthesis
         tasks will later reason over (ADR 0006). Synthesis-phase tasks
-        wait until every upstream task is DONE.
+        wait until every upstream task is DONE or satisfied-equivalent
+        (ABANDONED upstream counts as satisfied — downstream shouldn't
+        block on work that won't complete, per ADR 0009 cascade).
 
-        Note on v0 simplification: this implementation filters the ready
-        set but does not transition tasks into BLOCKED_ON_SYNTHESIS_DEP.
-        Explicit blocked-status transitions arrive alongside the replanner
-        (v3), when the distinction becomes visible in the note graph for
-        user-facing diagnostics.
+        BLOCKED_ON_SPLIT tasks are not ready; they resume only after the
+        replanner re-assigns them via a status transition back to PENDING.
         """
         ready: list[Task] = []
         for t in self._tasks.values():
@@ -60,7 +81,10 @@ class TaskGraph:
         return ready
 
     def _deps_done(self, task: Task) -> bool:
-        return all(self._tasks[edge.upstream].status == TaskStatus.DONE for edge in task.depends_on)
+        # ABANDONED counts as satisfied for dep purposes (ADR 0009): the
+        # upstream work won't produce, downstream shouldn't deadlock.
+        satisfied = {TaskStatus.DONE, TaskStatus.ABANDONED, TaskStatus.ESCALATED}
+        return all(self._tasks[edge.upstream].status in satisfied for edge in task.depends_on)
 
     def all_terminal(self) -> bool:
         terminal = {TaskStatus.DONE, TaskStatus.ESCALATED, TaskStatus.ABANDONED}

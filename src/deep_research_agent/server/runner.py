@@ -15,6 +15,7 @@ from pathlib import Path
 from ..config import LocalConfig, RoutingConfig
 from ..executor import AgentExecutor, register_handlers
 from ..export import export_run
+from ..replanner import run_replanner
 from ..scheduler import (
     NoteGraph,
     NoteMutation,
@@ -60,17 +61,16 @@ async def run_session(
 
         tg = TaskGraph()
         ng = NoteGraph()
-        tg.add(
-            Task(
-                id=new_task_id(),
-                goal=session.query,
-                type=TaskType.LANDSCAPE_SURVEY,
-                role=RoleClass.GENERATIVE,
-                tier=TaskTier.HIGH,
-                success_criteria="produce a research report answering the query",
-                created_at=datetime.now(UTC),
-            )
+        root_task = Task(
+            id=new_task_id(),
+            goal=session.query,
+            type=TaskType.LANDSCAPE_SURVEY,
+            role=RoleClass.GENERATIVE,
+            tier=TaskTier.HIGH,
+            success_criteria="produce a research report answering the query",
+            created_at=datetime.now(UTC),
         )
+        tg.add(root_task)
 
         def _on_task_start(task: Task) -> None:
             session.publish(event_task_started(task))
@@ -79,12 +79,15 @@ async def run_session(
             verdict = result.verdict or f"wrote {len(task.writes_notes)} note(s)"
             session.publish(event_task_done(task, verdict))
 
-        def _on_note_mutation(mut: NoteMutation, task: Task) -> None:
+        def _on_note_mutation(mut: NoteMutation, task: Task | None) -> None:
             session.notes[mut.note.id] = mut.note
             if mut.kind == "create":
                 session.publish(event_note_created(mut.note))
             else:
                 session.publish(event_note_replaced(mut.note))
+
+        async def _replanner(task_graph: TaskGraph, note_graph: NoteGraph):
+            return await run_replanner(task_graph, note_graph, routing, local, root_task.id)
 
         sched = Scheduler(
             tg,
@@ -93,6 +96,7 @@ async def run_session(
             on_task_start=_on_task_start,
             on_task_done=_on_task_done,
             on_note_mutation=_on_note_mutation,
+            replanner=_replanner,
         )
         await sched.run()
 
