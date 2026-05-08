@@ -36,12 +36,24 @@ Available actions:
   nothing to pursue, or the classification was obviously wrong and no
   amount of further work will save it. Prefer spawning a reformulated
   replacement over abandoning unless the original is genuinely dead.
-- **escalate_pattern**: re-run a sub-question under multi_perspective
-  (three framings: neutral / skeptic / advocate). Use when
-  single_researcher's synthesis has surviving dissent that wasn't
-  adequately engaged, or when a contested sub-question's synthesis
-  reads one-sided. The original synthesis is retained alongside the
-  new one — the report writer sees both.
+- **escalate_pattern**: re-run a sub-question under a heavier pattern.
+  Two targets:
+    * **multi_perspective** (three framings: neutral / skeptic / advocate).
+      Use when a synthesis has surviving dissent that wasn't adequately
+      engaged, or when a contested sub-question's synthesis reads
+      one-sided. Broad engagement.
+    * **debate** (two adversarial framings + a judge). Use when the
+      question is a directly contested yes/no proposition and the
+      existing synthesis reads like the sides are talking past each
+      other. Stronger medicine — pick debate when multi_perspective
+      has already run and the dissent remains.
+    * **ach** (Analysis of Competing Hypotheses). Use when the
+      question has 3+ plausible distinct answers and the existing
+      synthesis hasn't adjudicated between them. Enumerates
+      hypotheses, scores each against all sources, adopts the one
+      with fewest inconsistencies (Heuer's rule).
+  Original synthesis is retained alongside the new one; the report
+  writer sees both.
 - **no_op**: skip this cycle.
 
 Rules:

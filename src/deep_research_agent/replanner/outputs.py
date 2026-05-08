@@ -82,11 +82,17 @@ class EscalatePattern(BaseModel):
 
     action: Literal["escalate_pattern"] = "escalate_pattern"
     question_note_id: str = Field(..., description="The question_note to re-run.")
-    target_pattern: Literal["multi_perspective"] = Field(
-        "multi_perspective",
+    target_pattern: Literal["multi_perspective", "debate", "ach"] = Field(
+        ...,
         description=(
-            "Pattern to escalate to. Only multi_perspective is supported "
-            "currently; debate / ach land in later steps."
+            "Pattern to escalate to. multi_perspective: three framings "
+            "(neutral/skeptic/advocate) for broad engagement. debate: two "
+            "adversarial framings (affirmative/negative) + judge "
+            "synthesizer, for directly contested yes/no propositions. "
+            "ach (Analysis of Competing Hypotheses): enumerate hypotheses, "
+            "evaluate each against all sources, adopt the one with fewest "
+            "inconsistencies. Use for questions with 3+ plausible answers "
+            "where the evidence needs structural disambiguation."
         ),
     )
     rationale: str = Field(

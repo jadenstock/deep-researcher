@@ -93,6 +93,68 @@ class VerifierOutput(BaseModel):
     )
 
 
+# --- ACH (Analysis of Competing Hypotheses) outputs -----------------------
+
+
+class AchHypothesis(BaseModel):
+    """One competing hypothesis in the ACH analysis."""
+
+    label: str = Field(..., description="Short label (1-4 words) for the matrix.")
+    text: str = Field(..., description="Full hypothesis as a complete, evaluable sentence.")
+
+
+class AchHypothesisGenOutput(BaseModel):
+    hypotheses: list[AchHypothesis] = Field(
+        ..., min_length=2, max_length=5, description="2-5 mutually-exclusive hypotheses."
+    )
+
+
+class AchConsistencyVerdict(BaseModel):
+    source_id: str = Field(..., description="The source_note.id under evaluation.")
+    verdict: Literal["consistent", "inconsistent", "neutral"] = Field(
+        ...,
+        description=(
+            "consistent: source corroborates the hypothesis. "
+            "inconsistent: source contradicts it. "
+            "neutral: source doesn't bear on the hypothesis."
+        ),
+    )
+    rationale: str = Field(
+        ...,
+        description="1-2 sentences citing the specific claim/quote that drove the verdict.",
+    )
+
+
+class AchConsistencyOutput(BaseModel):
+    verdicts: list[AchConsistencyVerdict] = Field(
+        ...,
+        description="One verdict per source_note evaluated against this hypothesis.",
+    )
+
+
+class AchAdjudicationOutput(BaseModel):
+    adopted_label: str = Field(
+        ...,
+        description="Label of the tentatively adopted hypothesis.",
+    )
+    bottom_line: str = Field(..., description="One-sentence answer to the question.")
+    synthesis: str = Field(
+        ...,
+        description=(
+            "2-4 paragraphs: per-hypothesis inconsistency count with key inconsistent "
+            "sources, then why the adopted hypothesis survives."
+        ),
+    )
+    disagreements: list[str] = Field(
+        default_factory=list,
+        description="Sources where the adopted hypothesis has an inconsistency.",
+    )
+    confidence_note: str = Field(
+        default="",
+        description="One sentence on how close the call was.",
+    )
+
+
 class ThemeHint(BaseModel):
     """A theme the landscape surveyor spots across the snippets."""
 

@@ -29,6 +29,12 @@ from datetime import UTC, datetime
 from pydantic_ai import Agent
 
 from ..agent_factory import make_model
+from ..patterns.ach import (
+    ACH_ADJUDICATION_SYSTEM,
+    ACH_CONSISTENCY_SYSTEM,
+    ACH_HYPOTHESIS_GEN_SYSTEM,
+)
+from ..patterns.debate import DEBATE_FRAMINGS
 from ..patterns.maker_checker import emit_verify_claim, select_claims_to_verify
 from ..patterns.multi_perspective import PERSPECTIVES, Perspective
 from ..patterns.single_researcher import (
@@ -51,6 +57,7 @@ from ..schemas import (
     ClaimItem,
     DecisionMetadata,
     DepEdge,
+    HypothesisMetadata,
     LandscapeMetadata,
     Link,
     Note,
@@ -73,6 +80,9 @@ from ..schemas.enums import (
 from ..tiering.classifier import classify_source
 from .executor import AgentExecutor, HandlerContext
 from .outputs import (
+    AchAdjudicationOutput,
+    AchConsistencyOutput,
+    AchHypothesisGenOutput,
     AnalyzerOutput,
     DecomposeOutput,
     LandscapeOutput,
@@ -83,6 +93,7 @@ from .outputs import (
 from .prompts import (
     ANALYZER_SYSTEM,
     DECOMPOSE_SYSTEM,
+    JUDGE_SYSTEM,
     LANDSCAPE_SYSTEM,
     REPORT_SYSTEM,
     SYNTHESIZER_SYSTEM,
@@ -293,6 +304,145 @@ async def handle_decompose(ctx: HandlerContext) -> TaskResult:
     )
 
 
+# --- ACH flow (sub-handler for QUESTION_SYNTHESIZE when pattern=ACH) --------
+
+
+def _format_claim_digest(note: Note) -> str:
+    claims = note.metadata.claims or []
+    if not claims:
+        return f"  (no claims extracted; snippet: {note.metadata.summary or note.description})"
+    lines = []
+    for c in claims:
+        lines.append(f'  - "{c.text}" — quote: "{c.quote[:200]}"')
+    return "\n".join(lines)
+
+
+async def _run_ach_flow(
+    ctx: HandlerContext,
+    question: str,
+    enriched: list[Note],
+    synth_note_id: str,
+) -> tuple[SynthesizerOutput, list[Note]]:
+    """Three-phase ACH (ADR 0004).
+
+    Phase 1: one LLM call generates 2-5 mutually-exclusive hypotheses.
+    Phase 2: N parallel LLM calls, each evaluating one hypothesis
+             against all M source digests.
+    Phase 3: one HIGH-tier LLM call adjudicates using Heuer's rule
+             (fewest inconsistencies wins).
+
+    Returns (synth_out, hypothesis_notes). The synth_out reshapes the
+    adjudication output into the SynthesizerOutput contract so the
+    caller's synth_note construction doesn't branch. hypothesis_notes
+    are the per-hypothesis notes with their verdict matrix row stored
+    in HypothesisMetadata.
+    """
+    digest_parts = [
+        f"Source {n.id} ({n.title}, tier {n.metadata.tier.value}):\n" f"{_format_claim_digest(n)}"
+        for n in enriched
+    ]
+    evidence_digest = "\n\n".join(digest_parts)
+
+    # Phase 1: hypothesis generation
+    gen_agent = Agent(
+        make_model(ctx.model_id, ctx.local),
+        output_type=AchHypothesisGenOutput,
+        system_prompt=ACH_HYPOTHESIS_GEN_SYSTEM,
+    )
+    gen_user = (
+        f"Question: {question}\n\nEvidence digest ({len(enriched)} sources):\n\n{evidence_digest}"
+    )
+    gen_r = await gen_agent.run(gen_user)
+    hypotheses = gen_r.output.hypotheses
+    logger.info("ach generated n=%d hypotheses", len(hypotheses))
+
+    # Phase 2: per-hypothesis consistency (parallel)
+    mid_model = ctx.routing.model_id_for(RoleClass.JUDGMENT, TaskTier.MID)
+    cons_agent = Agent(
+        make_model(mid_model, ctx.local),
+        output_type=AchConsistencyOutput,
+        system_prompt=ACH_CONSISTENCY_SYSTEM,
+    )
+
+    async def _evaluate(h) -> list:
+        user = (
+            f"Hypothesis: {h.text}\n\n"
+            f"Evidence digest ({len(enriched)} sources):\n\n{evidence_digest}\n\n"
+            f"Return one verdict per source above (use the `Source X` IDs)."
+        )
+        try:
+            r = await cons_agent.run(user)
+            return r.output.verdicts
+        except Exception as exc:
+            logger.warning("ach consistency failed hypothesis=%s err=%s", h.label, exc)
+            return []
+
+    matrix = await asyncio.gather(*(_evaluate(h) for h in hypotheses))
+
+    # Phase 3: adjudication
+    matrix_text_parts: list[str] = []
+    for h, verdicts in zip(hypotheses, matrix, strict=True):
+        matrix_text_parts.append(f"## Hypothesis: {h.label}\n{h.text}")
+        if not verdicts:
+            matrix_text_parts.append("  (no verdicts — consistency evaluation failed)")
+            continue
+        for v in verdicts:
+            matrix_text_parts.append(f"  - [{v.verdict}] {v.source_id}: {v.rationale}")
+    matrix_text = "\n".join(matrix_text_parts)
+
+    adj_agent = Agent(
+        make_model(ctx.model_id, ctx.local),
+        output_type=AchAdjudicationOutput,
+        system_prompt=ACH_ADJUDICATION_SYSTEM,
+    )
+    adj_r = await adj_agent.run(f"Question: {question}\n\nConsistency matrix:\n\n{matrix_text}")
+    adj = adj_r.output
+    logger.info("ach adopted=%r", adj.adopted_label)
+
+    # Build hypothesis_notes with per-hypothesis verdict counts + stored
+    # supporting/inconsistent/neutral source IDs.
+    hypothesis_notes: list[Note] = []
+    for h, verdicts in zip(hypotheses, matrix, strict=True):
+        supporting = [v.source_id for v in verdicts if v.verdict == "consistent"]
+        inconsistent = [v.source_id for v in verdicts if v.verdict == "inconsistent"]
+        neutral = [v.source_id for v in verdicts if v.verdict == "neutral"]
+        hypothesis_notes.append(
+            Note(
+                id=new_note_id("hypothesis"),
+                type=NoteType.HYPOTHESIS,
+                title=h.label,
+                description=h.text,
+                content=(
+                    f"**Hypothesis:** {h.text}\n\n"
+                    f"**Consistency breakdown:** {len(supporting)} consistent · "
+                    f"{len(inconsistent)} inconsistent · {len(neutral)} neutral.\n\n"
+                    + "\n".join(f"- [{v.verdict}] {v.source_id}: {v.rationale}" for v in verdicts)
+                ),
+                links=[Link(target_id=synth_note_id, edge_type="hypothesis_of_synthesis")],
+                metadata=HypothesisMetadata(
+                    hypothesis_text=h.text,
+                    inconsistency_score=float(len(inconsistent)),
+                    supporting_evidence=supporting,
+                    inconsistent_evidence=inconsistent,
+                    neutral_evidence=neutral,
+                    tentatively_adopted=(h.label == adj.adopted_label),
+                ),
+                created_by=ctx.task.id,
+                created_at=_now(),
+                last_modified_at=_now(),
+            )
+        )
+
+    # Shape the adjudication into SynthesizerOutput for the caller.
+    synth_out = SynthesizerOutput(
+        bottom_line=adj.bottom_line,
+        synthesis=adj.synthesis,
+        disagreements=adj.disagreements,
+        confidence_note=adj.confidence_note,
+    )
+    return synth_out, hypothesis_notes
+
+
 # --- QUESTION_SYNTHESIZE ----------------------------------------------------
 
 
@@ -407,12 +557,16 @@ async def handle_question_synthesize(ctx: HandlerContext) -> TaskResult:
             f"no usable sources after fetching {len(hits)} candidates " f"for question={question!r}"
         )
 
-    # Pick framings based on task.pattern. single_researcher uses one
-    # neutral analyzer. multi_perspective runs PERSPECTIVES triad per
-    # source so contested claims get charitable / critical / neutral
-    # extractions side-by-side.
+    # Pick framings based on task.pattern:
+    # - single_researcher: one neutral analyzer.
+    # - multi_perspective: three complementary framings (neutral / skeptic /
+    #   advocate), claims merged and tagged with perspective.
+    # - debate: two adversarial framings (affirmative / negative), claims
+    #   merged and judged by the JUDGE synthesizer prompt below.
     if ctx.task.pattern == OrchestrationPattern.MULTI_PERSPECTIVE:
         framings: tuple[Perspective, ...] = PERSPECTIVES
+    elif ctx.task.pattern == OrchestrationPattern.DEBATE:
+        framings = DEBATE_FRAMINGS
     else:
         framings = (Perspective(name="neutral", prompt_suffix=""),)
 
@@ -504,47 +658,68 @@ async def handle_question_synthesize(ctx: HandlerContext) -> TaskResult:
     if dropped_off_topic:
         logger.info("dropped_off_topic n=%d question=%r", dropped_off_topic, question[:60])
 
-    synth_agent = Agent(
-        make_model(ctx.model_id, ctx.local),
-        output_type=SynthesizerOutput,
-        system_prompt=SYNTHESIZER_SYSTEM,
-    )
-    lines: list[str] = []
+    is_debate = ctx.task.pattern == OrchestrationPattern.DEBATE
     is_multi = ctx.task.pattern == OrchestrationPattern.MULTI_PERSPECTIVE
-    for n in enriched:
-        if not n.metadata.claims:
-            continue
-        lines.append(f"Source: {n.title} ({n.metadata.url})")
-        for c in n.metadata.claims:
-            # Under multi_perspective, tag each claim with its framing so
-            # the synthesizer can see where framings agree / diverge on
-            # the same source. Under single_researcher every claim is
-            # "neutral" and tagging is noise — omit the prefix.
-            prefix = f"[{c.perspective}] " if is_multi else ""
-            lines.append(f"  - {prefix}Claim: {c.text}")
-            lines.append(f'    Quote: "{c.quote}"')
-        lines.append("")
-    if not lines:
-        # No claims extracted; fall back to raw snippets so the synthesizer has something.
-        for n in enriched:
-            lines.append(f"Source: {n.title} ({n.metadata.url})")
-            lines.append(f"  Snippet: {n.metadata.summary or n.description}")
-            lines.append("")
-
-    synth_user = f"Question: {question}\n\n" + "\n".join(lines)
-    synth_r = await synth_agent.run(synth_user)
-    synth_out = synth_r.output
+    is_ach = ctx.task.pattern == OrchestrationPattern.ACH
 
     synth_note_id = new_note_id("synthesis")
+    ach_hypothesis_notes: list[Note] = []
+
+    if is_ach:
+        synth_out, ach_hypothesis_notes = await _run_ach_flow(
+            ctx=ctx,
+            question=question,
+            enriched=enriched,
+            synth_note_id=synth_note_id,
+        )
+    else:
+        # Debate uses the judge prompt — same output shape as synth so
+        # the downstream note / report plumbing is unchanged.
+        synth_system = JUDGE_SYSTEM if is_debate else SYNTHESIZER_SYSTEM
+        synth_agent = Agent(
+            make_model(ctx.model_id, ctx.local),
+            output_type=SynthesizerOutput,
+            system_prompt=synth_system,
+        )
+        lines: list[str] = []
+        # Debate claims are always tagged with perspective — the judge
+        # needs to know which side adduced each quote.
+        tag_perspectives = is_multi or is_debate
+        for n in enriched:
+            if not n.metadata.claims:
+                continue
+            lines.append(f"Source: {n.title} ({n.metadata.url})")
+            for c in n.metadata.claims:
+                # Under multi_perspective / debate, tag each claim with
+                # its framing so the synthesizer (or judge) can see where
+                # framings agree / diverge on the same source. Under
+                # single_researcher every claim is "neutral"; tagging is
+                # noise — omit.
+                prefix = f"[{c.perspective}] " if tag_perspectives else ""
+                lines.append(f"  - {prefix}Claim: {c.text}")
+                lines.append(f'    Quote: "{c.quote}"')
+            lines.append("")
+        if not lines:
+            # No claims extracted; fall back to raw snippets so the
+            # synthesizer has something.
+            for n in enriched:
+                lines.append(f"Source: {n.title} ({n.metadata.url})")
+                lines.append(f"  Snippet: {n.metadata.summary or n.description}")
+                lines.append("")
+        synth_user = f"Question: {question}\n\n" + "\n".join(lines)
+        synth_r = await synth_agent.run(synth_user)
+        synth_out = synth_r.output
+
     synth_note = Note(
         id=synth_note_id,
         type=NoteType.SYNTHESIS,
         title=f"Synthesis: {question[:80]}",
         description=synth_out.bottom_line,
         content=synth_out.synthesis,
-        links=[Link(target_id=n.id, edge_type="source_for_synthesis") for n in enriched],
+        links=[Link(target_id=n.id, edge_type="source_for_synthesis") for n in enriched]
+        + [Link(target_id=h.id, edge_type="hypothesis_of_synthesis") for h in ach_hypothesis_notes],
         metadata=SynthesisMetadata(
-            pattern="single_researcher",
+            pattern=(ctx.task.pattern or OrchestrationPattern.SINGLE_RESEARCHER).value,
             surviving_dissent=synth_out.disagreements,
         ),
         created_by=ctx.task.id,
@@ -562,6 +737,8 @@ async def handle_question_synthesize(ctx: HandlerContext) -> TaskResult:
     q_updated = q_note.model_copy(update={"metadata": q_new_meta})
 
     mutations = [NoteMutation(kind="create", note=n) for n in enriched]
+    for h in ach_hypothesis_notes:
+        mutations.append(NoteMutation(kind="create", note=h))
     mutations.append(NoteMutation(kind="create", note=synth_note))
     mutations.append(NoteMutation(kind="replace", note=q_updated))
 

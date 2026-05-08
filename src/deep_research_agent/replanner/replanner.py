@@ -291,7 +291,12 @@ def _apply_escalate_pattern(
     # Override the pattern on the spawned task. emit_question_synthesize
     # doesn't take a pattern arg today; we mutate the Task in place to
     # keep the single_researcher helper's signature stable.
-    qs_task.pattern = OrchestrationPattern.MULTI_PERSPECTIVE
+    pattern_map = {
+        "multi_perspective": OrchestrationPattern.MULTI_PERSPECTIVE,
+        "debate": OrchestrationPattern.DEBATE,
+        "ach": OrchestrationPattern.ACH,
+    }
+    qs_task.pattern = pattern_map[action.target_pattern]
 
     added_deps: list[DepEdgeAdd] = []
     if wr_id is not None:
