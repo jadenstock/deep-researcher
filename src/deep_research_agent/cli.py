@@ -12,7 +12,7 @@ from pathlib import Path
 from rich.console import Console
 
 from .config import load_local_config, load_routing_config
-from .executor import AgentExecutor, register_v0_handlers
+from .executor import AgentExecutor, register_handlers
 from .export import export_run
 from .observability import setup_logfire
 from .scheduler import NoteGraph, Scheduler, TaskGraph, new_run_id, new_task_id
@@ -89,7 +89,7 @@ async def _run_research(args: argparse.Namespace) -> int:
     )
 
     ex = AgentExecutor(routing=routing, local=local)
-    register_v0_handlers(ex)
+    register_handlers(ex)
 
     tg = TaskGraph()
     ng = NoteGraph()
@@ -97,7 +97,7 @@ async def _run_research(args: argparse.Namespace) -> int:
         Task(
             id=new_task_id(),
             goal=args.query,
-            type=TaskType.DECOMPOSE,
+            type=TaskType.LANDSCAPE_SURVEY,
             role=RoleClass.GENERATIVE,
             tier=TaskTier.HIGH,
             success_criteria="produce a research report answering the query",

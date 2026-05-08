@@ -31,6 +31,29 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def emit_decompose(
+    query: str,
+    landscape_note_id: NoteID,
+    parent_task_id: TaskID,
+) -> Task:
+    """Emit a DECOMPOSE task that reads the landscape note for evidence-grounded
+    classification (TDD §5.2)."""
+    return Task(
+        id=new_task_id(),
+        parent_id=parent_task_id,
+        goal=query,
+        type=TaskType.DECOMPOSE,
+        role=RoleClass.GENERATIVE,
+        tier=TaskTier.HIGH,
+        question_round=QuestionRound.STRUCTURAL,
+        reads_notes=[landscape_note_id],
+        depends_on=[DepEdge(upstream=parent_task_id, kind=DependencyType.PRODUCES_CONTEXT_FOR)],
+        dep_scope=DepScope(retrieval_ignores=False, synthesis_waits=True),
+        success_criteria="emit question_notes + spawn research tasks",
+        created_at=_now(),
+    )
+
+
 def emit_question_synthesize(
     question: str,
     question_note_id: NoteID,

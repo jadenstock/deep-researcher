@@ -65,3 +65,50 @@ class ReportOutput(BaseModel):
         ...,
         description="Complete research report in markdown, ready to save to disk.",
     )
+
+
+class ThemeHint(BaseModel):
+    """A theme the landscape surveyor spots across the snippets."""
+
+    name: str = Field(..., description="Short name (1-4 words) for this theme / cluster.")
+    description: str = Field(
+        ..., description="1-2 sentences describing what sits under this theme."
+    )
+
+
+class PositionHint(BaseModel):
+    """A stance or distinct position the snippets appear to take."""
+
+    label: str = Field(..., description="Short label for the position (e.g. 'reasoning-genuine').")
+    description: str = Field(
+        ..., description="1-2 sentences on what this position claims or who holds it."
+    )
+
+
+class LandscapeOutput(BaseModel):
+    """Structured output from the LANDSCAPE_SURVEY agent."""
+
+    summary: str = Field(..., description="One-sentence summary of the landscape.")
+    discussion: str = Field(
+        ...,
+        description=(
+            "2-3 paragraph description of what's visible in the snippets: "
+            "dominant framings, apparent consensus/dispute, evidence density."
+        ),
+    )
+    themes: list[ThemeHint] = Field(
+        default_factory=list,
+        description="Named theme clusters present in the landscape.",
+    )
+    positions: list[PositionHint] = Field(
+        default_factory=list,
+        description=(
+            "Distinct stances visible in the snippets. If only one framing appears, "
+            "return a single-element list; if the question is contested across the "
+            "snippets, list two or more."
+        ),
+    )
+    under_covered_areas: list[str] = Field(
+        default_factory=list,
+        description="Aspects of the query the snippets do not seem to address.",
+    )

@@ -29,24 +29,36 @@ from datetime import UTC, datetime
 from pydantic_ai import Agent
 
 from ..agent_factory import make_model
-from ..patterns.single_researcher import emit_question_synthesize, emit_write_report
+from ..patterns.single_researcher import (
+    emit_decompose,
+    emit_question_synthesize,
+    emit_write_report,
+)
 from ..retrieval import BraveClient, fetch_and_extract
 from ..scheduler import NoteMutation, TaskResult
 from ..scheduler.ids import new_note_id
 from ..schemas import (
     ClaimItem,
     DecisionMetadata,
+    LandscapeMetadata,
     Link,
     Note,
+    PositionItem,
     QuestionMetadata,
     SourceNoteMetadata,
     SynthesisMetadata,
+    ThemeItem,
 )
 from ..schemas.enums import NoteType, QuestionClassification, TaskType
 from ..tiering.simple import quick_tier
 from .executor import AgentExecutor, HandlerContext
-from .outputs import AnalyzerOutput, ReportOutput, SynthesizerOutput
-from .prompts import ANALYZER_SYSTEM, REPORT_SYSTEM, SYNTHESIZER_SYSTEM
+from .outputs import AnalyzerOutput, LandscapeOutput, ReportOutput, SynthesizerOutput
+from .prompts import (
+    ANALYZER_SYSTEM,
+    LANDSCAPE_SYSTEM,
+    REPORT_SYSTEM,
+    SYNTHESIZER_SYSTEM,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,11 +67,77 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+# --- LANDSCAPE_SURVEY -------------------------------------------------------
+
+
+async def handle_landscape_survey(ctx: HandlerContext) -> TaskResult:
+    """Phase 1: broad search + one batched LLM pass over snippets to map the
+    territory before decomposition (ADR 0001).
+
+    v1 simplification: landscape uses Brave snippets only (no fetches). Real
+    stub source_notes per ADR 0001 land in v2 when they can feed forward into
+    the deep-research phase to avoid redundant refetches.
+    """
+    query = ctx.task.goal
+    brave_key = ctx.local.retrieval.brave_api_key
+    if not brave_key:
+        raise RuntimeError("no brave_api_key configured in local.toml")
+
+    brave = BraveClient(api_key=brave_key)
+    hits = await brave.search(query, count=8)
+    logger.info("landscape brave hits=%d", len(hits))
+
+    if not hits:
+        raise RuntimeError(f"landscape survey returned 0 hits for query={query!r}")
+
+    snippets_text = "\n\n".join(
+        f"{i + 1}. {h.title}\n   URL: {h.url}\n   Snippet: {h.snippet}" for i, h in enumerate(hits)
+    )
+    agent = Agent(
+        make_model(ctx.model_id, ctx.local),
+        output_type=LandscapeOutput,
+        system_prompt=LANDSCAPE_SYSTEM,
+    )
+    r = await agent.run(f"Query: {query}\n\nSearch hit snippets:\n\n{snippets_text}")
+    out = r.output
+
+    landscape_id = new_note_id("landscape")
+    landscape_note = Note(
+        id=landscape_id,
+        type=NoteType.LANDSCAPE,
+        title=f"Landscape: {query[:80]}",
+        description=out.summary,
+        content=out.discussion,
+        metadata=LandscapeMetadata(
+            themes=[ThemeItem(name=t.name, description=t.description) for t in out.themes],
+            positions=[
+                PositionItem(label=p.label, description=p.description) for p in out.positions
+            ],
+            under_covered_areas=out.under_covered_areas,
+            raw_query=query,
+        ),
+        created_by=ctx.task.id,
+        created_at=_now(),
+        last_modified_at=_now(),
+    )
+
+    decompose = emit_decompose(query, landscape_id, ctx.task.id)
+    return TaskResult(
+        note_mutations=[NoteMutation(kind="create", note=landscape_note)],
+        spawned_tasks=[decompose],
+        verdict=(
+            f"landscape_note {landscape_id}: "
+            f"{len(out.themes)} themes, {len(out.positions)} positions"
+        ),
+    )
+
+
 # --- DECOMPOSE --------------------------------------------------------------
 
 
 async def handle_decompose(ctx: HandlerContext) -> TaskResult:
-    """v0: treat the raw query as a single SYNTHESIS-class sub-question."""
+    """v1.1: still trivial (one question, no LLM decomposition). v1.2 uses
+    the landscape_note for evidence-grounded decomposition."""
     query = ctx.task.goal
     q_note_id = new_note_id("question")
     q_note = Note(
@@ -288,8 +366,13 @@ async def handle_write_report(ctx: HandlerContext) -> TaskResult:
 # --- Registration -----------------------------------------------------------
 
 
-def register_v0_handlers(executor: AgentExecutor) -> None:
-    """Register the v0 handler set on an AgentExecutor."""
+def register_handlers(executor: AgentExecutor) -> None:
+    """Register the current handler set on an AgentExecutor."""
+    executor.register(TaskType.LANDSCAPE_SURVEY, handle_landscape_survey)
     executor.register(TaskType.DECOMPOSE, handle_decompose)
     executor.register(TaskType.QUESTION_SYNTHESIZE, handle_question_synthesize)
     executor.register(TaskType.WRITE_REPORT, handle_write_report)
+
+
+# Backwards-compatible alias — older call sites used the v0 name.
+register_v0_handlers = register_handlers

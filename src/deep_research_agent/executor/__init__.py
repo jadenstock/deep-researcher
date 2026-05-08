@@ -7,7 +7,7 @@ time, not by prompt discipline.
 """
 
 from .executor import AgentExecutor, HandlerContext, HandlerFn, UnhandledTaskType
-from .handlers import register_v0_handlers
+from .handlers import register_handlers, register_v0_handlers
 from .routing import CrossFamilyViolation, select_model
 
 __all__ = [
@@ -16,6 +16,7 @@ __all__ = [
     "HandlerContext",
     "HandlerFn",
     "UnhandledTaskType",
+    "register_handlers",
     "register_v0_handlers",
     "select_model",
 ]
