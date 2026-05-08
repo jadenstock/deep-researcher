@@ -1,8 +1,19 @@
 """Agent executor + role-to-model routing.
 
-One PydanticAI agent per task type. The executor resolves `(role, tier)` to
-a model via the run's routing config, enforces the cross-family invariant
-(VERIFY_CLAIM's model family must differ from the ANALYZE_SOURCE family
-that produced the claim), forks a fresh context, runs the agent, and
-returns its structured output + any note mutations + any spawned sub-tasks.
+AgentExecutor implements the scheduler's Executor protocol by dispatching
+task types to per-type handlers. Routing resolves `(role, tier)` to a
+model identifier; the cross-family invariant is checked at model-selection
+time, not by prompt discipline.
 """
+
+from .executor import AgentExecutor, HandlerContext, HandlerFn, UnhandledTaskType
+from .routing import CrossFamilyViolation, select_model
+
+__all__ = [
+    "AgentExecutor",
+    "CrossFamilyViolation",
+    "HandlerContext",
+    "HandlerFn",
+    "UnhandledTaskType",
+    "select_model",
+]

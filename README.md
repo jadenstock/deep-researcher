@@ -22,10 +22,15 @@ Pre-implementation. Scaffolding + core data models only.
 
 ```bash
 uv sync
+cp config/local.toml.example config/local.toml   # fill in api_base_url, api_key
 uv run dra --help
 ```
 
-Copy `.env.example` to `.env` and fill in provider keys.
+All LLM traffic goes through a single OpenAI-compatible endpoint
+(typically a LiteLLM router) configured in `config/local.toml`. The
+routing config in `config/routing_*.yaml` selects which model identifier
+to send per `(role, tier)`; the router resolves it to the upstream
+family (Claude, GPT, Haiku, etc.).
 
 ## Package layout
 

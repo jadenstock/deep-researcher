@@ -15,20 +15,22 @@ description: |
   for judgment roles, Haiku for cheap deterministic roles. Satisfies the
   ADR 0008 cross-family invariant by construction.
 
-# Model IDs use "provider:model" form. family := provider prefix.
+# Model IDs use "family/model" form (LiteLLM convention).
+# family_of(model_id) returns the part before "/".
+# The full string is sent to the router as the model name.
 tiers:
   LOW:
-    generative: anthropic:claude-haiku-4-5
-    judgment: openai:gpt-5-mini
-    cheap_deterministic: anthropic:claude-haiku-4-5
+    generative: anthropic/claude-haiku-4-5
+    judgment: openai/gpt-5-mini
+    cheap_deterministic: anthropic/claude-haiku-4-5
   MID:
-    generative: anthropic:claude-sonnet-4-6
-    judgment: openai:gpt-5
-    cheap_deterministic: anthropic:claude-haiku-4-5
+    generative: anthropic/claude-sonnet-4-6
+    judgment: openai/gpt-5
+    cheap_deterministic: anthropic/claude-haiku-4-5
   HIGH:
-    generative: anthropic:claude-opus-4-7
-    judgment: openai:gpt-5
-    cheap_deterministic: anthropic:claude-haiku-4-5
+    generative: anthropic/claude-opus-4-7
+    judgment: openai/gpt-5
+    cheap_deterministic: anthropic/claude-haiku-4-5
 
 cross_family_invariant:
   enabled: true

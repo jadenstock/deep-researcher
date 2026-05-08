@@ -1,0 +1,36 @@
+# Local secrets + endpoints. NOT checked in.
+# Copy to config/local.toml and fill in the values.
+#
+#     cp config/local.toml.example config/local.toml
+
+[llm]
+# OpenAI-compatible endpoint serving multiple model families
+# (e.g., a LiteLLM router). The routing config (config/routing_*.yaml)
+# selects which model_id to use per (role, tier); that identifier is
+# sent as-is to this endpoint, so it must match what the router expects
+# (LiteLLM-style "family/model" or bare names, per your router config).
+api_base_url = "https://your-router.example.com/v1"
+api_key = "sk-..."
+
+[retrieval]
+# Web search — any one of these can back the web_search tool. v0 will
+# prefer brave > tavily > serper if multiple are set. Set at least one.
+#
+#   Brave Search — independent web index, Serper-shaped API.
+#     Docs: https://brave.com/search/api
+#   Tavily — agent-tuned; returns scored pre-chunked content. Good for
+#     landscape-survey style "map the terrain" queries.
+#     Docs: https://tavily.com
+#   Serper — Google-backed web search (2,500/mo free). Closest to "what
+#     Google would show you." Docs: https://serper.dev
+brave_api_key = ""
+# tavily_api_key = ""
+# serper_api_key = ""
+
+# Semantic Scholar — optional. Unauthenticated access is rate-limited
+# but works for small runs.
+# semantic_scholar_api_key = ""
+
+[observability]
+# Optional Pydantic Logfire token for tracing PydanticAI agent calls.
+# logfire_token = ""

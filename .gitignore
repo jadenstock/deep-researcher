@@ -30,5 +30,8 @@ build/
 .idea/
 *.swp
 
+# Local secrets
+/config/local.toml
+
 # Claude Code
 .claude/settings.local.json
