@@ -27,6 +27,11 @@ brave_api_key = ""
 # tavily_api_key = ""
 # serper_api_key = ""
 
+# Min interval (seconds) between Brave Search calls. The Free tier
+# enforces 1 req/s with a strict sliding window; 1.5s leaves headroom.
+# Drop this once on a paid plan (~0.05 for 20/s, ~0.02 for 50/s).
+# brave_min_interval_s = 1.5
+
 # Semantic Scholar — optional. Unauthenticated access is rate-limited
 # but works for small runs.
 # semantic_scholar_api_key = ""

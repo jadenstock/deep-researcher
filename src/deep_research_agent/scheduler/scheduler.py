@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 TaskCallback = Callable[[Task], None]
 TaskDoneCallback = Callable[[Task, "TaskResult"], None]
+NoteMutationCallback = Callable[["NoteMutation", Task], None]
 
 
 # --- Read-only note view handed to executors --------------------------------
@@ -90,6 +91,7 @@ class Scheduler:
         executor: Executor,
         on_task_start: TaskCallback | None = None,
         on_task_done: TaskDoneCallback | None = None,
+        on_note_mutation: NoteMutationCallback | None = None,
     ) -> None:
         self.task_graph = task_graph
         self.note_graph = note_graph
@@ -97,6 +99,7 @@ class Scheduler:
         self._write_lock = asyncio.Lock()
         self._on_task_start = on_task_start
         self._on_task_done = on_task_done
+        self._on_note_mutation = on_note_mutation
 
     async def run(self) -> None:
         """Dispatch ready tasks until every task is terminal.
@@ -147,6 +150,8 @@ class Scheduler:
                 self.note_graph.replace(mut.note, by=task.id)
                 if mut.note.id not in task.writes_notes:
                     task.writes_notes.append(mut.note.id)
+            if self._on_note_mutation is not None:
+                self._on_note_mutation(mut, task)
         for sub in result.spawned_tasks:
             sub.parent_id = task.id
             self.task_graph.add(sub)

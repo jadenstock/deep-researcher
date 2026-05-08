@@ -87,6 +87,11 @@ class RetrievalKeys(BaseModel):
     serper_api_key: str | None = None
     # Academic — optional; unauthenticated S2 works at lower rate limits.
     semantic_scholar_api_key: str | None = None
+    # Min interval (seconds) between Brave Search calls. Free tier enforces
+    # 1 req/s with a strict sliding window — 1.05s cuts it too close in
+    # practice, 1.5s is safe. Paid plans can drop to ~0.05 (20 req/s) or
+    # ~0.02 (50 req/s).
+    brave_min_interval_s: float = 1.5
 
 
 class ObservabilityKeys(BaseModel):

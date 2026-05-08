@@ -18,12 +18,18 @@ logger = logging.getLogger(__name__)
 
 BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
 
-# Free-tier plan is 1 req/sec; serialize across all BraveClient instances.
-# Concurrent tasks (multiple QUESTION_SYNTHESIZE runs) otherwise stampede
-# into 429s.
+# Serialize across all BraveClient instances so concurrent QUESTION_SYNTHESIZE
+# dispatches don't stampede into 429s. Interval is configurable via
+# LocalConfig.retrieval.brave_min_interval_s — set by BraveClient on init.
 _BRAVE_LOCK = asyncio.Lock()
 _BRAVE_LAST_CALL_AT = 0.0
-_BRAVE_MIN_INTERVAL_S = 1.05
+_BRAVE_MIN_INTERVAL_S = 1.5
+
+
+def set_brave_min_interval(interval_s: float) -> None:
+    """Override the cross-client min-interval (seconds)."""
+    global _BRAVE_MIN_INTERVAL_S
+    _BRAVE_MIN_INTERVAL_S = max(0.0, interval_s)
 
 
 async def _brave_throttle() -> None:

@@ -15,6 +15,7 @@ from .config import load_local_config, load_routing_config
 from .executor import AgentExecutor, register_handlers
 from .export import export_run
 from .observability import setup_logfire
+from .retrieval.brave import set_brave_min_interval
 from .scheduler import NoteGraph, Scheduler, TaskGraph, TaskResult, new_run_id, new_task_id
 from .schemas import Task
 from .schemas.enums import RoleClass, TaskTier, TaskType
@@ -57,6 +58,25 @@ def main(argv: list[str] | None = None) -> int:
     p_replay = sub.add_parser("replay", help="Replay a cached run (not yet implemented)")
     p_replay.add_argument("run_id")
 
+    p_serve = sub.add_parser("serve", help="Run the live UI server (FastAPI + WebSocket)")
+    p_serve.add_argument(
+        "--routing",
+        default="config/routing_diverse.yaml",
+        help="Path to the routing config",
+    )
+    p_serve.add_argument(
+        "--local-config",
+        default="config/local.toml",
+        help="Path to the local TOML (endpoints + keys)",
+    )
+    p_serve.add_argument(
+        "--runs-dir",
+        default="runs",
+        help="Directory to write per-run output into",
+    )
+    p_serve.add_argument("--host", default="127.0.0.1", help="Bind host (default: localhost)")
+    p_serve.add_argument("--port", default=8000, type=int, help="Bind port (default: 8000)")
+
     args = parser.parse_args(argv)
 
     log_level = logging.INFO if getattr(args, "verbose", False) else logging.WARNING
@@ -71,13 +91,33 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "replay":
         console.print(f"[yellow]replay not yet implemented (run_id={args.run_id})[/]")
         return 1
+    if args.command == "serve":
+        return _run_serve(args)
     return 1
+
+
+def _run_serve(args: argparse.Namespace) -> int:
+    import uvicorn
+
+    from .server import create_app
+
+    app = create_app(
+        routing_path=args.routing,
+        local_path=args.local_config,
+        runs_dir=args.runs_dir,
+    )
+    console.print(
+        f"[bold cyan]dra serve[/] — live UI at " f"[bold]http://{args.host}:{args.port}[/]"
+    )
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    return 0
 
 
 async def _run_research(args: argparse.Namespace) -> int:
     local = load_local_config(args.local_config)
     routing = load_routing_config(args.routing)
     setup_logfire(local)
+    set_brave_min_interval(local.retrieval.brave_min_interval_s)
 
     run_id = new_run_id()
     run_dir = Path(args.runs_dir) / run_id

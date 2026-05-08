@@ -3,17 +3,45 @@
 Call `setup_logfire(local)` once at startup. No-op if no token is
 configured — the rest of the system runs without Logfire, traces just
 go nowhere.
+
+When Logfire rejects the token server-side (401), the OpenTelemetry OTLP
+exporter retries on every span batch and spams the terminal with
+"Failed to export span batch code: 401". We silence those loggers here
+since they're actionable only by regenerating the token, and the user
+already saw the one-time warning.
 """
 
 from __future__ import annotations
 
 import logging
+import warnings
 
 from .config import LocalConfig
 
 logger = logging.getLogger(__name__)
 
 _CONFIGURED = False
+
+
+def _silence_otel_and_logfire_noise() -> None:
+    """Mute OTEL exporter retry errors + logfire's per-export UserWarnings.
+
+    Called whether or not setup succeeds — if the token is bad, both
+    channels will produce noise and there's nothing the caller can do
+    beyond regenerating the token.
+    """
+    for name in (
+        "opentelemetry.exporter.otlp.proto.http.trace_exporter",
+        "opentelemetry.exporter.otlp.proto.http.metric_exporter",
+        "opentelemetry.exporter.otlp.proto.http._log_exporter",
+    ):
+        logging.getLogger(name).setLevel(logging.CRITICAL)
+    # logfire emits "Logfire API returned status code 401" as a UserWarning.
+    warnings.filterwarnings(
+        "ignore",
+        message=r".*Logfire API returned status code.*",
+        category=UserWarning,
+    )
 
 
 def setup_logfire(local: LocalConfig, service_name: str = "deep-research-agent") -> bool:
@@ -29,6 +57,7 @@ def setup_logfire(local: LocalConfig, service_name: str = "deep-research-agent")
     token = local.observability.logfire_token
     if not token:
         logger.info("logfire token not set; skipping instrumentation")
+        _silence_otel_and_logfire_noise()
         return False
 
     import logfire
@@ -36,6 +65,7 @@ def setup_logfire(local: LocalConfig, service_name: str = "deep-research-agent")
     logfire.configure(token=token, service_name=service_name)
     logfire.instrument_pydantic_ai()
     logfire.instrument_httpx()
+    _silence_otel_and_logfire_noise()
     _CONFIGURED = True
     logger.info("logfire instrumented service_name=%s", service_name)
     return True

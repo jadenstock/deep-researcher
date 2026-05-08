@@ -1,0 +1,674 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>deep-research-agent — live</title>
+<script src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
+<script src="https://unpkg.com/webcola@3.4.0/WebCola/cola.min.js"></script>
+<script src="https://unpkg.com/cytoscape-cola@2.5.1/cytoscape-cola.js"></script>
+<script src="https://unpkg.com/marked@14.1.2/marked.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-2: #1f2330;
+    --border: #2a2f3c;
+    --text: #e3e7ef;
+    --muted: #8892a6;
+    --accent: #6aa9ff;
+    --ok: #6bd88f;
+    --warn: #ffbb55;
+    --err: #ff6b6b;
+    --landscape: #a87bff;
+    --question: #ffbb55;
+    --source: #6aa9ff;
+    --synthesis: #6bd88f;
+    --decision: #e3e7ef;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    font-family: ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
+    color: var(--text); background: var(--bg);
+  }
+  body {
+    display: grid;
+    grid-template-rows: auto 1fr;
+    grid-template-columns: minmax(0, 1fr);
+    height: 100vh;
+    overflow: hidden;
+  }
+  header {
+    padding: 10px 16px; border-bottom: 1px solid var(--border);
+    background: var(--panel); display: flex; gap: 12px; align-items: center;
+  }
+  header h1 { font-size: 14px; font-weight: 600; margin: 0; color: var(--muted); letter-spacing: 0.04em; }
+  header h1 span { color: var(--accent); }
+  #query {
+    flex: 1;
+    background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+    padding: 8px 10px; border-radius: 6px; font-size: 13px;
+  }
+  #query:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+  button {
+    background: var(--accent); color: #0b0d12; border: none; border-radius: 6px;
+    padding: 8px 16px; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  button:hover { filter: brightness(1.05); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  #report-btn {
+    background: var(--ok); color: #0b0d12;
+    animation: flash 1.2s ease-out 1;
+  }
+  @keyframes flash {
+    0%   { box-shadow: 0 0 0 0 var(--ok); }
+    50%  { box-shadow: 0 0 0 8px rgba(107, 216, 143, 0.4); }
+    100% { box-shadow: 0 0 0 0 var(--ok); }
+  }
+  #status { color: var(--muted); font-size: 12px; min-width: 80px; text-align: right; }
+  #status.ok { color: var(--ok); }
+  #status.err { color: var(--err); }
+
+  main {
+    display: flex;
+    min-height: 0;
+    min-width: 0;
+    overflow: hidden;
+  }
+  #graph { flex: 1 1 auto; background: var(--bg); min-width: 0; overflow: hidden; }
+  aside {
+    display: flex;
+    flex-direction: column;
+    width: 360px;
+    min-width: 200px;
+    flex: 0 0 auto;
+    min-height: 0;
+  }
+  section { display: flex; flex-direction: column; min-height: 0; flex: 1 1 0; }
+  section h2 {
+    font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--muted); margin: 0; padding: 10px 12px;
+    border-bottom: 1px solid var(--border); background: var(--panel);
+    user-select: none;
+  }
+  /* Resizers — thin draggable gutters between panes. */
+  .resizer-v {
+    flex: 0 0 4px;
+    cursor: col-resize;
+    background: var(--border);
+    transition: background 0.1s;
+  }
+  .resizer-h {
+    flex: 0 0 4px;
+    cursor: row-resize;
+    background: var(--border);
+    transition: background 0.1s;
+  }
+  .resizer-v:hover, .resizer-h:hover, .resizer-v.dragging, .resizer-h.dragging {
+    background: var(--accent);
+  }
+  body.resizing { cursor: col-resize; user-select: none; }
+  body.resizing-row { cursor: row-resize; user-select: none; }
+
+  /* Task list */
+  #tasks { overflow-y: auto; padding: 4px 0; font-size: 12px; }
+  .task-row {
+    display: grid;
+    grid-template-columns: 14px 1fr auto;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 12px;
+    border-bottom: 1px dashed rgba(255,255,255,0.04);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .task-row .dot {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--muted);
+  }
+  .task-row.running .dot { background: var(--warn); animation: pulse 1.2s infinite; }
+  .task-row.done    .dot { background: var(--ok); }
+  .task-row.abandoned .dot { background: var(--err); }
+  .task-row .main { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .task-row .type { color: var(--accent); font-weight: 600; margin-right: 6px; }
+  .task-row .goal { color: var(--muted); }
+  .task-row .verdict {
+    color: var(--muted); font-size: 11px; max-width: 140px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.35; }
+  }
+  #activity {
+    overflow-y: auto; padding: 8px 12px; font-size: 12px; line-height: 1.45;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .log-row { padding: 3px 0; border-bottom: 1px dashed rgba(255,255,255,0.04); }
+  .log-row .t { color: var(--muted); margin-right: 6px; }
+  .log-row .tag { display: inline-block; min-width: 16px; text-align: center; margin-right: 6px; }
+  .log-row.task-started .tag { color: var(--warn); }
+  .log-row.task-done    .tag { color: var(--ok); }
+  .log-row.note-created .tag { color: var(--accent); }
+  .log-row.note-replaced .tag { color: var(--landscape); }
+  .log-row.run-done .tag { color: var(--ok); }
+  .log-row.run-failed .tag { color: var(--err); }
+  .log-row.run-failed { color: var(--err); }
+
+  #details { overflow-y: auto; padding: 12px; font-size: 13px; line-height: 1.55; }
+  #details h3 { margin: 0 0 4px; font-size: 14px; }
+  #details .subtitle { color: var(--muted); font-size: 11px; margin-bottom: 12px; }
+  #details .meta {
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px;
+    padding: 6px 8px; font-family: ui-monospace, Menlo, monospace; font-size: 11px;
+    color: var(--muted); margin-bottom: 12px; white-space: pre-wrap;
+  }
+  #details .body { color: var(--text); }
+  #details .body p { margin: 0 0 10px; }
+  #details .body code {
+    background: var(--panel-2); padding: 1px 4px; border-radius: 3px; font-size: 12px;
+  }
+  #details .placeholder { color: var(--muted); font-style: italic; }
+</style>
+</head>
+<body>
+<header>
+  <h1>dra <span>·</span> live</h1>
+  <input id="query" placeholder="Ask a research question…" autocomplete="off" />
+  <button id="go">Run</button>
+  <button id="report-btn" hidden>📄 Report</button>
+  <div id="status">idle</div>
+</header>
+<main>
+  <div id="graph"></div>
+  <div class="resizer-v" data-resize="cols" data-left="#graph" data-right="aside"></div>
+  <aside>
+    <section id="sec-tasks">
+      <h2>Tasks</h2>
+      <div id="tasks"><div class="placeholder" style="padding:12px;color:var(--muted);font-style:italic;">No tasks yet.</div></div>
+    </section>
+    <div class="resizer-h" data-resize="rows" data-top="#sec-tasks" data-bottom="#sec-activity"></div>
+    <section id="sec-activity">
+      <h2>Activity</h2>
+      <div id="activity"></div>
+    </section>
+    <div class="resizer-h" data-resize="rows" data-top="#sec-activity" data-bottom="#sec-details"></div>
+    <section id="sec-details">
+      <h2>Note details</h2>
+      <div id="details"><div class="placeholder">Click a node to view its note.</div></div>
+    </section>
+  </aside>
+</main>
+<script>
+(() => {
+  const queryInput = document.getElementById("query");
+  const goBtn = document.getElementById("go");
+  const reportBtn = document.getElementById("report-btn");
+  const statusEl = document.getElementById("status");
+  const activityEl = document.getElementById("activity");
+  const detailsEl = document.getElementById("details");
+  const tasksEl = document.getElementById("tasks");
+  let lastReportNoteId = null;
+
+  reportBtn.addEventListener("click", () => {
+    if (lastReportNoteId) loadNoteDetails(lastReportNoteId);
+  });
+
+  const NODE_COLORS = {
+    landscape: "#a87bff",
+    question: "#ffbb55",
+    source: "#6aa9ff",
+    synthesis: "#6bd88f",
+    decision: "#e3e7ef",
+    open_question: "#ff6b6b",
+    hypothesis: "#ffaf80",
+  };
+  const NODE_SHAPES = {
+    landscape: "hexagon",
+    question: "round-triangle",
+    source: "ellipse",
+    synthesis: "round-diamond",
+    decision: "round-rectangle",
+    open_question: "star",
+    hypothesis: "pentagon",
+  };
+  const NODE_GLYPHS = {
+    landscape: "L",
+    question: "?",
+    source: "S",
+    synthesis: "Σ",
+    decision: "D",
+    open_question: "!",
+    hypothesis: "H",
+  };
+
+  if (window.cytoscapeCola) window.cytoscapeCola(cytoscape);
+
+  const cy = cytoscape({
+    container: document.getElementById("graph"),
+    boxSelectionEnabled: false,
+    wheelSensitivity: 0.2,
+    style: [
+      {
+        selector: "node",
+        style: {
+          "background-color": ele => NODE_COLORS[ele.data("type")] || "#8892a6",
+          "shape": ele => NODE_SHAPES[ele.data("type")] || "ellipse",
+          "label": ele => NODE_GLYPHS[ele.data("type")] || "·",
+          "font-size": 9,
+          "font-family": "ui-sans-serif, system-ui, sans-serif",
+          "font-weight": 600,
+          "color": "#0f1115",
+          "text-opacity": 0.85,
+          "text-valign": "center",
+          "text-halign": "center",
+          "width": 22,
+          "height": 22,
+          "border-width": 0.5,
+          "border-color": "#0f1115",
+        },
+      },
+      {
+        selector: "node.titled",
+        style: {
+          "font-size": 8,
+          "color": "#e3e7ef",
+          "text-opacity": 1,
+          "text-valign": "bottom",
+          "text-halign": "center",
+          "text-margin-y": 4,
+          "text-wrap": "wrap",
+          "text-max-width": 130,
+          "label": "data(title)",
+          "z-index": 20,
+        },
+      },
+      {
+        selector: "node:selected, node.hover",
+        style: {
+          "border-width": 2,
+          "border-color": "#fff",
+          "z-index": 10,
+        },
+      },
+      {
+        selector: "edge",
+        style: {
+          "width": 0.8,
+          "line-color": "#2a2f3c",
+          "target-arrow-color": "#2a2f3c",
+          "target-arrow-shape": "triangle",
+          "arrow-scale": 0.6,
+          "curve-style": "bezier",
+          "label": "",
+          "font-size": 4,
+          "color": "#8892a6",
+          "text-rotation": "autorotate",
+          "text-opacity": 0,
+        },
+      },
+      {
+        selector: "edge.hover, edge:selected",
+        style: {
+          "line-color": "#6aa9ff",
+          "target-arrow-color": "#6aa9ff",
+          "width": 1.5,
+          "label": "data(label)",
+          "font-size": 6,
+          "text-opacity": 1,
+        },
+      },
+      { selector: ".new", style: { "border-color": "#fff", "border-width": 2 } },
+    ],
+    layout: { name: "preset" },
+  });
+
+  cy.on("mouseover", "node", e => e.target.addClass("hover"));
+  cy.on("mouseout", "node", e => e.target.removeClass("hover"));
+  cy.on("mouseover", "edge", e => e.target.addClass("hover"));
+  cy.on("mouseout", "edge", e => e.target.removeClass("hover"));
+
+  // Continuous spring-physics layout. Re-kicked whenever a new node lands so
+  // the existing nodes ripple and make room for it.
+  let colaLayout = null;
+  function startLayout() {
+    if (colaLayout) { try { colaLayout.stop(); } catch {} }
+    colaLayout = cy.layout({
+      name: "cola",
+      animate: true,
+      infinite: true,
+      fit: false,
+      nodeSpacing: 18,
+      edgeLength: 90,
+      randomize: false,
+      maxSimulationTime: 3000,
+      unconstrIter: 8,
+      userConstIter: 0,
+      allConstIter: 8,
+    });
+    colaLayout.run();
+  }
+  startLayout();
+
+  let currentRunId = null;
+  let ws = null;
+  const notesById = {};
+
+  cy.on("tap", "node", evt => {
+    const node = evt.target;
+    // Toggle the title label on the clicked node; load details panel too.
+    const wasTitled = node.hasClass("titled");
+    cy.nodes().removeClass("titled");
+    if (!wasTitled) node.addClass("titled");
+    loadNoteDetails(node.id());
+  });
+
+  cy.on("tap", evt => {
+    // Click on empty canvas clears pinned titles.
+    if (evt.target === cy) cy.nodes().removeClass("titled");
+  });
+
+  function setStatus(text, cls = "") {
+    statusEl.textContent = text;
+    statusEl.className = cls;
+  }
+
+  function timestamp(iso) {
+    try { return new Date(iso).toLocaleTimeString(); } catch { return ""; }
+  }
+
+  function logRow(kind, text, iso) {
+    const row = document.createElement("div");
+    row.className = `log-row ${kind.replace(/_/g, "-")}`;
+    const t = document.createElement("span");
+    t.className = "t";
+    t.textContent = timestamp(iso);
+    const tag = document.createElement("span");
+    tag.className = "tag";
+    tag.textContent = {
+      task_started: "▶",
+      task_done: "✓",
+      note_created: "+",
+      note_replaced: "~",
+      run_started: "…",
+      run_done: "✓",
+      run_failed: "✗",
+    }[kind] || "·";
+    row.append(t, tag, document.createTextNode(text));
+    activityEl.append(row);
+    activityEl.scrollTop = activityEl.scrollHeight;
+  }
+
+  function truncate(s, n) {
+    if (!s) return "";
+    return s.length > n ? s.slice(0, n - 1) + "…" : s;
+  }
+
+  function addOrUpdateNode(data) {
+    const title = truncate(data.title || data.id, 40);
+    const existing = cy.getElementById(data.id);
+    if (existing.nonempty()) {
+      existing.data({ title, ...data });
+    } else {
+      cy.add({ data: { id: data.id, title, ...data } });
+      cy.getElementById(data.id).addClass("new");
+      setTimeout(() => cy.getElementById(data.id).removeClass("new"), 1500);
+    }
+    for (const link of data.links || []) {
+      const targetExists = cy.getElementById(link.target_id).nonempty();
+      if (!targetExists) continue;
+      const edgeId = `${data.id}->${link.target_id}:${link.edge_type}`;
+      if (cy.getElementById(edgeId).empty()) {
+        cy.add({
+          data: {
+            id: edgeId,
+            source: data.id,
+            target: link.target_id,
+            label: link.edge_type,
+          },
+        });
+      }
+    }
+    relayout();
+  }
+
+  // Cola runs continuously; when nodes land we re-kick it (debounced) so it
+  // reindexes and the springs settle. First few adds also auto-fit the viewport.
+  let relayoutPending = null;
+  let addsSinceFit = 0;
+  function relayout() {
+    if (relayoutPending) clearTimeout(relayoutPending);
+    relayoutPending = setTimeout(() => {
+      startLayout();
+      addsSinceFit += 1;
+      if (addsSinceFit <= 6) {
+        setTimeout(() => cy.fit(undefined, 40), 300);
+      }
+    }, 100);
+  }
+
+  async function loadNoteDetails(noteId) {
+    if (!currentRunId) return;
+    detailsEl.innerHTML = `<div class="placeholder">Loading ${noteId}…</div>`;
+    try {
+      const res = await fetch(`/api/note/${currentRunId}/${noteId}`);
+      if (!res.ok) throw new Error(`${res.status}`);
+      const note = await res.json();
+      renderNote(note);
+    } catch (err) {
+      detailsEl.innerHTML = `<div class="placeholder">Failed to load: ${err}</div>`;
+    }
+  }
+
+  function renderNote(note) {
+    const meta = JSON.stringify(note.metadata, null, 2);
+    const body = note.content ? marked.parse(note.content) : "<em>(no content)</em>";
+    detailsEl.innerHTML = `
+      <h3>${escape(note.title)}</h3>
+      <div class="subtitle">${note.type} · v${note.version} · ${note.id}</div>
+      <div class="meta">${escape(meta)}</div>
+      <div class="body">${body}</div>
+    `;
+  }
+
+  function escape(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;",
+    })[c]);
+  }
+
+  // --- Task panel ---------------------------------------------------------
+  const tasks = new Map(); // id -> {id, type, goal, status, verdict}
+
+  function upsertTask({ id, type, goal, status, verdict }) {
+    const existing = tasks.get(id) || {};
+    const merged = {
+      id,
+      type: type || existing.type,
+      goal: goal !== null && goal !== undefined ? goal : existing.goal,
+      status: status || existing.status || "running",
+      verdict: verdict !== undefined ? verdict : existing.verdict,
+    };
+    tasks.set(id, merged);
+    renderTasks();
+  }
+
+  function renderTasks() {
+    tasksEl.innerHTML = "";
+    if (tasks.size === 0) {
+      tasksEl.innerHTML = `<div class="placeholder" style="padding:12px;color:var(--muted);font-style:italic;">No tasks yet.</div>`;
+      return;
+    }
+    for (const t of tasks.values()) {
+      const row = document.createElement("div");
+      row.className = `task-row ${t.status}`;
+      row.title = t.goal || "";
+      const dot = document.createElement("span");
+      dot.className = "dot";
+      const main = document.createElement("span");
+      main.className = "main";
+      const type = document.createElement("span");
+      type.className = "type";
+      type.textContent = t.type || "?";
+      const goal = document.createElement("span");
+      goal.className = "goal";
+      goal.textContent = truncate(t.goal || "", 80);
+      main.append(type, goal);
+      const verdict = document.createElement("span");
+      verdict.className = "verdict";
+      verdict.textContent = t.verdict ? truncate(t.verdict, 40) : "";
+      row.append(dot, main, verdict);
+      tasksEl.append(row);
+    }
+  }
+
+  // --- Draggable resizers -------------------------------------------------
+  function initResizers() {
+    for (const r of document.querySelectorAll(".resizer-v, .resizer-h")) {
+      const isRow = r.classList.contains("resizer-h");
+      r.addEventListener("mousedown", e => {
+        e.preventDefault();
+        r.classList.add("dragging");
+        document.body.classList.add(isRow ? "resizing-row" : "resizing");
+        const onMove = ev => {
+          if (isRow) {
+            const top = document.querySelector(r.dataset.top);
+            const bottom = document.querySelector(r.dataset.bottom);
+            if (!top || !bottom) return;
+            const topRect = top.getBoundingClientRect();
+            const bottomRect = bottom.getBoundingClientRect();
+            const totalH = topRect.height + bottomRect.height;
+            const newTopH = Math.max(60, Math.min(totalH - 60, ev.clientY - topRect.top));
+            const frac = newTopH / totalH;
+            top.style.flex = `${frac} 1 0`;
+            bottom.style.flex = `${1 - frac} 1 0`;
+          } else {
+            const aside = document.querySelector("aside");
+            if (!aside) return;
+            const rightEdge = window.innerWidth;
+            // Leave at least ~200px for the graph; otherwise let the sidebar
+            // grow as wide as the user wants.
+            const maxAside = Math.max(240, window.innerWidth - 200);
+            const newWidth = Math.max(200, Math.min(maxAside, rightEdge - ev.clientX));
+            aside.style.width = `${newWidth}px`;
+          }
+          cy.resize();
+        };
+        const onUp = () => {
+          r.classList.remove("dragging");
+          document.body.classList.remove("resizing", "resizing-row");
+          window.removeEventListener("mousemove", onMove);
+          window.removeEventListener("mouseup", onUp);
+          cy.resize();
+          startLayout();
+        };
+        window.addEventListener("mousemove", onMove);
+        window.addEventListener("mouseup", onUp);
+      });
+    }
+  }
+  initResizers();
+
+  function handleEvent(evt) {
+    const { kind, at, data } = evt;
+    switch (kind) {
+      case "run_started":
+        logRow(kind, `run ${data.run_id} started — ${data.query}`, at);
+        break;
+      case "task_started":
+        logRow(kind, `${data.type} — ${truncate(data.goal, 80)}`, at);
+        upsertTask({ id: data.id, type: data.type, goal: data.goal, status: "running" });
+        break;
+      case "task_done":
+        logRow(kind, `${data.type} — ${truncate(data.verdict, 120)}`, at);
+        upsertTask({
+          id: data.id, type: data.type, goal: null,
+          status: data.status === "ABANDONED" ? "abandoned" : "done",
+          verdict: data.verdict,
+        });
+        break;
+      case "note_created":
+        logRow(kind, `${data.type} · ${truncate(data.title, 60)}`, at);
+        addOrUpdateNode(data);
+        break;
+      case "note_replaced":
+        logRow(kind, `${data.type} · ${truncate(data.title, 60)} (v${data.version})`, at);
+        addOrUpdateNode(data);
+        break;
+      case "run_done":
+        logRow(kind, `run complete${data.report_note_id ? ` — report ${data.report_note_id}` : ""}`, at);
+        setStatus("done", "ok");
+        goBtn.disabled = false;
+        if (data.report_note_id) {
+          lastReportNoteId = data.report_note_id;
+          reportBtn.hidden = false;
+          // Re-trigger flash in case button was already visible.
+          reportBtn.style.animation = "none";
+          void reportBtn.offsetWidth;
+          reportBtn.style.animation = "";
+          loadNoteDetails(data.report_note_id);
+        }
+        break;
+      case "run_failed":
+        logRow(kind, `FAILED — ${data.error}`, at);
+        setStatus("failed", "err");
+        goBtn.disabled = false;
+        break;
+    }
+  }
+
+  async function startRun() {
+    const query = queryInput.value.trim();
+    if (!query) return;
+    if (ws) { try { ws.close(); } catch {} }
+    activityEl.innerHTML = "";
+    detailsEl.innerHTML = `<div class="placeholder">Running…</div>`;
+    tasks.clear();
+    tasksEl.innerHTML = "";
+    cy.elements().remove();
+    lastReportNoteId = null;
+    reportBtn.hidden = true;
+    goBtn.disabled = true;
+    setStatus("starting…");
+    let res;
+    try {
+      res = await fetch("/api/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query }),
+      });
+    } catch (err) {
+      setStatus("offline", "err");
+      goBtn.disabled = false;
+      return;
+    }
+    if (!res.ok) {
+      setStatus(`error ${res.status}`, "err");
+      goBtn.disabled = false;
+      return;
+    }
+    const { run_id } = await res.json();
+    currentRunId = run_id;
+    connect(run_id);
+  }
+
+  function connect(runId) {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    ws = new WebSocket(`${proto}://${location.host}/api/ws/${runId}`);
+    ws.onopen = () => setStatus("running");
+    ws.onmessage = e => {
+      try { handleEvent(JSON.parse(e.data)); }
+      catch (err) { console.error("bad event", e.data, err); }
+    };
+    ws.onerror = () => setStatus("ws error", "err");
+    ws.onclose = () => {
+      if (statusEl.textContent === "running") setStatus("disconnected", "err");
+    };
+  }
+
+  goBtn.addEventListener("click", startRun);
+  queryInput.addEventListener("keydown", e => {
+    if (e.key === "Enter") startRun();
+  });
+})();
+</script>
+</body>
+</html>
