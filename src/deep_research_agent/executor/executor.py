@@ -24,6 +24,7 @@ from ..config import LocalConfig, PipelineConfig, RoutingConfig
 from ..scheduler import NoteReader, TaskReader, TaskResult
 from ..schemas import Task, TaskType
 from ..token_usage import TokenUsageTracker
+from .llm import LLMRunner, PydanticAIRunner
 from .routing import select_model
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,7 @@ class HandlerContext:
     local: LocalConfig
     pipeline: PipelineConfig
     tracker: TokenUsageTracker
+    llm: LLMRunner
 
     async def track(self, agent: Any, user_input: Any) -> Any:
         """Run an agent and record its token usage against this task's model.
@@ -90,6 +92,7 @@ class AgentExecutor:
         local: LocalConfig,
         pipeline: PipelineConfig | None = None,
         tracker: TokenUsageTracker | None = None,
+        llm: LLMRunner | None = None,  # injectable for tests
     ) -> None:
         self.routing = routing
         self.local = local
@@ -99,6 +102,9 @@ class AgentExecutor:
         # executor without threading a full config through.
         self.pipeline = pipeline if pipeline is not None else PipelineConfig()
         self.tracker = tracker or TokenUsageTracker()
+        self.llm: LLMRunner = llm or PydanticAIRunner(
+            routing=self.routing, local=self.local, tracker=self.tracker
+        )
         self._handlers: dict[TaskType, HandlerFn] = {}
 
     def register(self, task_type: TaskType, handler: HandlerFn) -> None:
@@ -133,6 +139,7 @@ class AgentExecutor:
             local=self.local,
             pipeline=self.pipeline,
             tracker=self.tracker,
+            llm=self.llm,
         )
         return await handler(ctx)
 
