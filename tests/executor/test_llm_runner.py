@@ -3,9 +3,9 @@ returns typed output wrapped in LLMResult."""
 
 from __future__ import annotations
 
+from deep_research_agent.executor.llm import LLMResult, PydanticAIRunner
 from pydantic import BaseModel
 
-from deep_research_agent.executor.llm import LLMResult, PydanticAIRunner
 from deep_research_agent.schemas.enums import RoleClass, TaskTier
 
 
