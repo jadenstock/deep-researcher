@@ -69,6 +69,19 @@ Rules:
 - If the source does not address the question, return an empty claim list
   and set off_topic=true. Don't reach.
 - Do not cite things the source does not actually say.
+
+models_tested rules (AI/ML sources):
+- If the claim is a model-evaluation claim (performance, behavior, limits
+  of a specific LLM or AI system), record which model(s) the source
+  actually tests in the `models_tested` field. Use the names verbatim as
+  the source writes them (e.g. "GPT-4", "LLaMA-2-7B", "Claude-3-Opus",
+  "gpt-3.5-turbo", "PaLM-2").
+- Do NOT infer or guess. If the source says "large language models"
+  without specifying which, leave the list empty.
+- Leave empty for non-model-evaluation claims (e.g. general definitions,
+  taxonomy statements, descriptions of a technique).
+- This field helps downstream reasoning judge whether a finding only
+  applies to older models — critical for fast-moving AI research.
 """
 
 SYNTHESIZER_SYSTEM = """\
@@ -83,6 +96,20 @@ Rules:
 - synthesis is 2-4 paragraphs integrating evidence; mention sources by
   title or URL when making claims.
 - Be honest when the evidence is thin.
+
+Model-scope discipline (AI/ML topics):
+- AI research moves fast. A finding validated on GPT-3 (2020), GPT-3.5
+  (2022), LLaMA-1 (2023), or Claude-1/2-era models does NOT automatically
+  generalize to current-generation frontier models.
+- Each claim may have a `models_tested` list and the source has a
+  publication year. When a load-bearing claim is only validated on
+  pre-2024 models, say so explicitly in the synthesis — e.g. "Xiong et
+  al. (2023) report this for GPT-3.5 and Vicuna; whether it holds on
+  current models is an open question."
+- Prefer claims validated on recent models when they are available.
+- Do NOT silently generalize an old-model finding to "LLMs in general."
+- When a synthesis rests mostly on pre-2024 evidence, note it in
+  confidence_note.
 """
 
 VALIDATE_COMPLETION_SYSTEM = """\

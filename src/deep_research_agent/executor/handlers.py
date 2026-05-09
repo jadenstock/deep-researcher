@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import UTC, datetime
 
 from pydantic_ai import Agent
@@ -108,6 +109,100 @@ logger = logging.getLogger(__name__)
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+# Minimal stopword set for verification query construction. Kept small
+# because we want to preserve domain terms (including multi-word phrases
+# like "in-context learning") — the goal is a query that retrieves
+# topically adjacent pages, not a perfect keyword distillation.
+_VERIFY_STOPWORDS: frozenset[str] = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "of",
+        "for",
+        "in",
+        "on",
+        "to",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "it",
+        "its",
+        "this",
+        "that",
+        "with",
+        "by",
+        "from",
+        "how",
+        "what",
+        "why",
+        "do",
+        "does",
+        "did",
+        "can",
+        "will",
+        "or",
+        "but",
+        "if",
+        "as",
+        "at",
+        "about",
+        "into",
+        "over",
+        "between",
+        "and",
+        "not",
+        "no",
+        "yes",
+        "when",
+        "than",
+        "such",
+        "more",
+        "less",
+        "also",
+    }
+)
+
+_VERIFY_WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9\-]+")
+
+
+def _build_verify_query(claim_text: str, question: str) -> str:
+    """Build a topic-keyword query for independent-source retrieval.
+
+    Earlier handler used `evidence about: "<full claim>"`, which hit
+    Brave with a long quasi-exact-phrase query and returned zero hits
+    on essentially every verification. The verifier was wired up but
+    structurally unable to find corroborating sources.
+
+    New strategy: extract content tokens from the claim (primary topic)
+    and append a few from the question (context anchor). Cap length so
+    Brave doesn't treat the query as an unusual exact-phrase match.
+    Deduplicates while preserving order so the most meaningful claim
+    words lead.
+    """
+
+    def tokens(text: str) -> list[str]:
+        seen: set[str] = set()
+        out: list[str] = []
+        for m in _VERIFY_WORD_RE.findall(text):
+            w = m.lower()
+            if w in _VERIFY_STOPWORDS or w in seen or len(w) < 3:
+                continue
+            seen.add(w)
+            out.append(m)
+        return out
+
+    claim_tokens = tokens(claim_text)[:8]
+    question_tokens = [
+        t for t in tokens(question) if t.lower() not in {w.lower() for w in claim_tokens}
+    ][:4]
+    query_tokens = claim_tokens + question_tokens
+    return " ".join(query_tokens) if query_tokens else claim_text[:120]
 
 
 # --- LANDSCAPE_SURVEY -------------------------------------------------------
@@ -664,6 +759,7 @@ async def handle_question_synthesize(ctx: HandlerContext) -> TaskResult:
                         extractor_confidence=c.extractor_confidence,
                         analyzed_by_family=analyzer_family,
                         perspective=fname,
+                        models_tested=list(c.models_tested),
                     )
                 )
                 claim_idx += 1
@@ -702,7 +798,10 @@ async def handle_question_synthesize(ctx: HandlerContext) -> TaskResult:
         for n in enriched:
             if not n.metadata.claims:
                 continue
-            lines.append(f"Source: {n.title} ({n.metadata.url})")
+            # Expose publication year up front so the synthesizer can
+            # apply the old-model caveat without re-reading source URLs.
+            year_str = f", {n.metadata.year}" if getattr(n.metadata, "year", None) else ""
+            lines.append(f"Source: {n.title}{year_str} ({n.metadata.url})")
             for c in n.metadata.claims:
                 # Under multi_perspective / debate, tag each claim with
                 # its framing so the synthesizer (or judge) can see where
@@ -712,6 +811,8 @@ async def handle_question_synthesize(ctx: HandlerContext) -> TaskResult:
                 prefix = f"[{c.perspective}] " if tag_perspectives else ""
                 lines.append(f"  - {prefix}Claim: {c.text}")
                 lines.append(f'    Quote: "{c.quote}"')
+                if c.models_tested:
+                    lines.append(f"    Models tested: {', '.join(c.models_tested)}")
             lines.append("")
         if not lines:
             # No claims extracted; fall back to raw snippets so the
@@ -737,7 +838,15 @@ async def handle_question_synthesize(ctx: HandlerContext) -> TaskResult:
         title=f"Synthesis: {question[:80]}",
         description=synth_out.bottom_line,
         content=synth_out.synthesis,
-        links=[Link(target_id=n.id, edge_type="source_for_synthesis") for n in enriched]
+        # The `answers` edge points back to the question_note this
+        # synthesis resolves. Without it the UI graph shows SYNTHESIZED
+        # question_notes floating detached from their synthesis — the
+        # synthesis links to its sources but nothing links to the
+        # question. source_for_synthesis + hypothesis_of_synthesis
+        # complete the triangle: question ← synthesis → {sources,
+        # hypotheses}.
+        links=[Link(target_id=ctx.task.reads_notes[0], edge_type="answers")]
+        + [Link(target_id=n.id, edge_type="source_for_synthesis") for n in enriched]
         + [Link(target_id=h.id, edge_type="hypothesis_of_synthesis") for h in ach_hypothesis_notes],
         metadata=SynthesisMetadata(
             pattern=(ctx.task.pattern or OrchestrationPattern.SINGLE_RESEARCHER).value,
@@ -832,14 +941,37 @@ async def handle_verify_claim(ctx: HandlerContext) -> TaskResult:
     if not brave_key:
         raise RuntimeError("no brave_api_key configured in local.toml")
 
-    # Re-phrase: the verifier should search for independent corroboration /
-    # refutation. Using the claim text as the query tends to surface the
-    # same primary source, so we prepend a falsification cue.
-    search_query = f'evidence about: "{claim.text}"'
+    # Build a verification query from TOPIC keywords, not the claim
+    # quote. Earlier versions used `evidence about: "<verbatim quote>"`
+    # which hit Brave with a long exact-phrase-ish query and reliably
+    # returned zero hits on every verification — every VERIFY_CLAIM
+    # task collapsed to INCONCLUSIVE with "no independent sources
+    # retrievable" regardless of whether the claim was true.
+    #
+    # Strategy: take the claim text (a paraphrased one-sentence claim),
+    # strip stopwords, and combine with the question as extra topical
+    # anchor. This retrieves pages ABOUT the topic so the verifier can
+    # judge whether they corroborate or contradict — which is the
+    # actual goal, not finding pages quoting the same sentence.
+    search_query = _build_verify_query(claim.text, question)
     brave = BraveClient(api_key=brave_key)
-    hits = await brave.search(search_query, count=5)
+    hits = await brave.search(search_query, count=8)
     primary_url = getattr(source_note.metadata, "url", None)
-    independent_hits = [h for h in hits if h.url != primary_url][:3]
+
+    def _same_source(hit_url: str) -> bool:
+        # Skip the primary source URL and near-duplicates (e.g. the
+        # arxiv abs page vs the pdf or html variant of the same paper).
+        if not primary_url:
+            return False
+        if hit_url == primary_url:
+            return True
+        primary_stem = primary_url.rstrip("/").split("?", 1)[0]
+        hit_stem = hit_url.rstrip("/").split("?", 1)[0]
+        # arxiv stems share an ID; same for openreview/pmc — compare the
+        # last 2 path segments as a cheap near-dup heuristic.
+        return primary_stem.rsplit("/", 2)[-1] == hit_stem.rsplit("/", 2)[-1]
+
+    independent_hits = [h for h in hits if not _same_source(h.url)][:3]
     logger.info(
         "verify_claim claim_id=%s independent_hits=%d primary=%s",
         claim_id,

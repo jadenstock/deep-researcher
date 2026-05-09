@@ -43,6 +43,12 @@ class ClaimItem(BaseModel):
     # Populated by VERIFY_CLAIM when the claim is checked.
     verification_rationale: str | None = None
     verification_note_id: str | None = None
+    # LLMs the source evaluates this claim on (verbatim from the source).
+    # Empty when the source doesn't specify models, or when the claim is
+    # non-model-evaluation. The synthesizer consumes this to flag claims
+    # that only generalize to older-generation models — in AI research,
+    # a finding validated only on GPT-3 may not hold on current models.
+    models_tested: list[str] = Field(default_factory=list)
 
 
 class EvalItem(BaseModel):

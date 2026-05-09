@@ -103,6 +103,8 @@ def _render_metadata(note: Note) -> list[str]:
                 lines.append(f'  - quote: "{c.quote}"')
                 lines.append(f"  - verification: `{c.verification_status.value}`")
                 lines.append(f"  - extractor confidence: {c.extractor_confidence:.2f}")
+                if c.models_tested:
+                    lines.append(f"  - models tested: {', '.join(c.models_tested)}")
     elif note.type == NoteType.QUESTION:
         lines.extend(
             [

@@ -8,6 +8,7 @@ the terminal.
 
 from __future__ import annotations
 
+import contextvars
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
@@ -40,6 +41,44 @@ from .events import (
 
 logger = logging.getLogger(__name__)
 
+# Per-run log file plumbing. Each run gets its own run.log in its
+# run_dir, colocated with notes/, tasks.json, token_usage.json. We use
+# a contextvar set at run_session entry and a filter keyed off it so
+# concurrent runs don't cross-contaminate: every log record emitted
+# from the same asyncio task chain carries that run's id, and each
+# run's FileHandler only admits records matching its own id.
+_RUN_ID_CTX: contextvars.ContextVar[str | None] = contextvars.ContextVar("dra_run_id", default=None)
+
+_RUN_LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+
+
+class _RunIdFilter(logging.Filter):
+    """Admit only records emitted under this run's contextvar value."""
+
+    def __init__(self, run_id: str) -> None:
+        super().__init__()
+        self._run_id = run_id
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return _RUN_ID_CTX.get() == self._run_id
+
+
+def _attach_run_log_handler(run_dir: Path, run_id: str) -> logging.FileHandler:
+    """Attach a FileHandler writing to run_dir/run.log for this run.
+
+    Pinned at DEBUG unconditionally — the per-run log is a diagnostic
+    artifact you look at only when something's wrong, so capturing
+    every DEBUG line is the right default. Console verbosity is
+    controlled separately by DRA_LOG_LEVEL (app.py:_configure_logging).
+    """
+    run_dir.mkdir(parents=True, exist_ok=True)
+    fh = logging.FileHandler(run_dir / "run.log", mode="w", encoding="utf-8")
+    fh.setFormatter(logging.Formatter(_RUN_LOG_FORMAT))
+    fh.addFilter(_RunIdFilter(run_id))
+    fh.setLevel(logging.DEBUG)
+    logging.getLogger().addHandler(fh)
+    return fh
+
 
 async def run_session(
     session: RunSession,
@@ -55,6 +94,8 @@ async def run_session(
     """
     session.publish(event_run_started(session.run_id, session.query))
     run_dir = runs_dir / session.run_id
+    _RUN_ID_CTX.set(session.run_id)
+    run_log_handler = _attach_run_log_handler(run_dir, session.run_id)
     tracker = TokenUsageTracker()
     # Initialize graphs outside the try so the failure-path export can
     # read them even if setup itself raised.
@@ -144,4 +185,12 @@ async def run_session(
         except Exception:
             logger.exception("token_usage save failed run_id=%s", session.run_id)
         logger.info("run_id=%s %s", session.run_id, tracker.format_table())
+        # Detach the per-run file handler so it's not left hanging on
+        # the root logger (memory leak across many runs) and so the
+        # file descriptor closes.
+        try:
+            logging.getLogger().removeHandler(run_log_handler)
+            run_log_handler.close()
+        except Exception:
+            logger.exception("run_log detach failed run_id=%s", session.run_id)
         session.finished = True

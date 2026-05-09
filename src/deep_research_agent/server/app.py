@@ -33,30 +33,44 @@ _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
 
 def _configure_logging() -> None:
-    """Set up root logging from DRA_LOG_LEVEL and DRA_LOG_FILE env vars.
+    """Set up split-level logging: clean console, verbose per-run files.
 
-    uvicorn's own --log-level controls access logs but not the app's
-    logger tree, which is where everything interesting (scheduler,
-    executor, retrieval) emits. Reading DRA_LOG_LEVEL here means a
-    debug session is `DRA_LOG_LEVEL=DEBUG dra serve` and doesn't
-    require touching code.
+    The root logger runs at DEBUG so DEBUG records can flow through to
+    handlers. Each handler then caps its own level:
+      - Console (stderr): DRA_LOG_LEVEL (default INFO) so your terminal
+        stays readable.
+      - Per-run FileHandler (attached by runner.py at run start): DEBUG
+        unconditionally so the on-disk run.log is a complete diagnostic
+        artifact every time. You never have to remember an env var to
+        capture debug detail when something goes wrong.
+      - Optional DRA_LOG_FILE FileHandler: DRA_LOG_LEVEL. Useful for
+        long-lived process-wide logs where you want the same verbosity
+        as the console.
 
-    DRA_LOG_FILE, when set, also tees the log stream to a file — the
-    file handler is additive, not a replacement, so terminal output
-    still works. This is the easy way to capture a full run for later
-    analysis or to share with a collaborator.
-
-    Idempotent — if handlers are already attached (e.g. configured by
-    uvicorn), we add a FileHandler if needed but don't duplicate the
-    stream handler.
+    DRA_LOG_LEVEL controls the *console* level only. Set it to DEBUG if
+    you want debug lines on stderr too.
     """
-    level_name = os.environ.get("DRA_LOG_LEVEL", "INFO").upper()
-    level = getattr(logging, level_name, logging.INFO)
+    console_level_name = os.environ.get("DRA_LOG_LEVEL", "INFO").upper()
+    console_level = getattr(logging, console_level_name, logging.INFO)
     root = logging.getLogger()
+    # Root must be DEBUG (most permissive) so handlers can decide their
+    # own cap. If root is INFO, DEBUG records never reach any handler
+    # regardless of the handler's level — the root acts as a pre-gate.
+    root.setLevel(logging.DEBUG)
     if not root.handlers:
-        logging.basicConfig(level=level, format=_LOG_FORMAT)
+        # basicConfig would set root to a fixed level; build the console
+        # handler ourselves so we can level it independently.
+        console = logging.StreamHandler()
+        console.setFormatter(logging.Formatter(_LOG_FORMAT))
+        console.setLevel(console_level)
+        root.addHandler(console)
     else:
-        root.setLevel(level)
+        # Handlers already attached (uvicorn). Adjust any StreamHandlers
+        # to the configured console level but leave FileHandlers alone
+        # since they have their own policy.
+        for h in root.handlers:
+            if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
+                h.setLevel(console_level)
 
     log_file = os.environ.get("DRA_LOG_FILE")
     if log_file:
@@ -71,14 +85,15 @@ def _configure_logging() -> None:
         if not already_attached:
             fh = logging.FileHandler(path, mode="a", encoding="utf-8")
             fh.setFormatter(logging.Formatter(_LOG_FORMAT))
-            fh.setLevel(level)
+            fh.setLevel(console_level)
             root.addHandler(fh)
-            root.info("log_file_attached path=%s level=%s", path, level_name)
+            root.info("log_file_attached path=%s level=%s", path, console_level_name)
 
-    # The dra package's own loggers always use the configured level;
-    # noisy third-party loggers (httpx, uvicorn.access) keep their
-    # default — users can still turn them up via DRA_LOG_LEVEL=DEBUG.
-    logging.getLogger("deep_research_agent").setLevel(level)
+    # The dra package's own loggers must also be DEBUG so their records
+    # reach the root (package-level loggers otherwise cap below DEBUG
+    # by default). Noisy third-party loggers (httpx, uvicorn.access)
+    # keep their defaults — their verbosity policy is their own.
+    logging.getLogger("deep_research_agent").setLevel(logging.DEBUG)
 
 
 _configure_logging()

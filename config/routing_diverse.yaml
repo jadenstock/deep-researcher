@@ -21,15 +21,15 @@ description: |
 tiers:
   LOW:
     generative: anthropic/claude-haiku-4-5
-    judgment: openai/gpt-5.4-mini
+    judgment: openai/gpt-5.2
     cheap_deterministic: anthropic/claude-haiku-4-5
   MID:
     generative: anthropic/claude-sonnet-4-6
-    judgment: openai/gpt-5.4-mini
+    judgment: openai/gpt-5.4
     cheap_deterministic: anthropic/claude-haiku-4-5
   HIGH:
     generative: anthropic/claude-opus-4-7
-    judgment: openai/gpt-5.4
+    judgment: openai/gpt-5.5
     cheap_deterministic: anthropic/claude-haiku-4-5
 
 cross_family_invariant:

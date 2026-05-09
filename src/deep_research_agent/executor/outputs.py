@@ -29,6 +29,16 @@ class AnalyzedClaim(BaseModel):
         le=1.0,
         description="0..1 confidence that the quote supports the claim.",
     )
+    models_tested: list[str] = Field(
+        default_factory=list,
+        description=(
+            "LLMs or AI systems the source explicitly evaluates or measures "
+            "this claim on (e.g. ['GPT-4', 'LLaMA-2-7B', 'Claude-3-Opus']). "
+            "Extract only names the source actually states — do NOT infer or "
+            "guess. Empty list when the source does not specify models, or "
+            "when the claim is not a model-evaluation claim."
+        ),
+    )
 
 
 class AnalyzerOutput(BaseModel):

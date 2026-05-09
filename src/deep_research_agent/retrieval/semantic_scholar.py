@@ -40,6 +40,23 @@ async def _s2_throttle() -> None:
 # Fields we pull; keep minimal to stay under S2's per-field response cap.
 _S2_FIELDS = "title,abstract,authors,venue,year,citationCount,openAccessPdf,externalIds,url"
 
+# Retry policy for 429s. Matches the Brave pattern: Retry-After honored,
+# exponential backoff floor, capped total wait so a genuinely exhausted
+# plan doesn't stall the run. S2 is additive so a final failure still
+# returns [] rather than raising — academic hits aren't load-bearing.
+_S2_MAX_429_RETRIES = 3
+_S2_MAX_429_TOTAL_WAIT_S = 20.0
+_S2_DEFAULT_429_BACKOFF_S = 2.0
+
+
+def _parse_retry_after(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
 
 class SemanticScholarClient:
     def __init__(self, api_key: str | None = None, timeout: float = 15.0) -> None:
@@ -49,30 +66,67 @@ class SemanticScholarClient:
     async def search(self, query: str, limit: int = 5) -> list[SearchHit]:
         """Return up to `limit` papers matching `query`.
 
-        Returns an empty list on any API error — academic search is
-        additive; a failure should not break the run.
+        Retries on 429s up to _S2_MAX_429_RETRIES times, honoring
+        Retry-After when present. Returns [] on any terminal API
+        error — academic search is additive; a failure should not
+        break the run.
         """
         headers = {"Accept": "application/json"}
         if self._api_key:
             headers["x-api-key"] = self._api_key
         params = {"query": query, "limit": min(limit, 20), "fields": _S2_FIELDS}
 
-        await _s2_throttle()
-        try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                resp = await client.get(S2_SEARCH_URL, headers=headers, params=params)
-        except httpx.HTTPError as exc:
-            logger.warning("s2_search_failed query=%r err=%s", query[:60], exc)
-            return []
+        total_wait = 0.0
+        attempt = 0
+        while True:
+            await _s2_throttle()
+            try:
+                async with httpx.AsyncClient(timeout=self._timeout) as client:
+                    resp = await client.get(S2_SEARCH_URL, headers=headers, params=params)
+            except httpx.HTTPError as exc:
+                logger.warning(
+                    "s2_search_failed query=%r attempts=%d err=%s",
+                    query[:60],
+                    attempt + 1,
+                    exc,
+                )
+                return []
 
-        if resp.status_code >= 400:
-            logger.warning(
-                "s2_search_non_2xx query=%r status=%d body=%s",
-                query[:60],
-                resp.status_code,
-                resp.text[:200],
-            )
-            return []
+            if resp.status_code == 429 and attempt < _S2_MAX_429_RETRIES:
+                retry_after = _parse_retry_after(resp.headers.get("retry-after"))
+                backoff = _S2_DEFAULT_429_BACKOFF_S * (2**attempt)
+                wait = max(retry_after or 0.0, backoff)
+                if total_wait + wait > _S2_MAX_429_TOTAL_WAIT_S:
+                    logger.warning(
+                        "s2_429_wait_cap query=%r total_wait=%.1f cap=%.1f — giving up",
+                        query[:60],
+                        total_wait + wait,
+                        _S2_MAX_429_TOTAL_WAIT_S,
+                    )
+                    return []
+                logger.info(
+                    "s2_429_retry attempt=%d wait_s=%.1f retry_after=%s query=%r",
+                    attempt + 1,
+                    wait,
+                    resp.headers.get("retry-after"),
+                    query[:60],
+                )
+                await asyncio.sleep(wait)
+                total_wait += wait
+                attempt += 1
+                continue
+
+            if resp.status_code >= 400:
+                logger.warning(
+                    "s2_search_non_2xx query=%r attempts=%d status=%d body=%s",
+                    query[:60],
+                    attempt + 1,
+                    resp.status_code,
+                    resp.text[:200],
+                )
+                return []
+            # Success path falls out of the retry loop.
+            break
 
         data = resp.json()
         papers = data.get("data", []) or []
