@@ -32,6 +32,8 @@ from .events import (
     RunSession,
     event_note_created,
     event_note_replaced,
+    event_replan_done,
+    event_replan_started,
     event_run_done,
     event_run_failed,
     event_run_started,
@@ -117,7 +119,9 @@ async def run_session(
         tg.add(root_task)
 
         def _on_task_start(task: Task) -> None:
-            session.publish(event_task_started(task))
+            # Pass routing so the event carries the resolved model_id for
+            # the UI to display on the agent card.
+            session.publish(event_task_started(task, routing))
 
         def _on_task_done(task: Task, result: TaskResult) -> None:
             verdict = result.verdict or f"wrote {len(task.writes_notes)} note(s)"
@@ -130,10 +134,40 @@ async def run_session(
             else:
                 session.publish(event_note_replaced(mut.note))
 
+        replan_counter = {"n": 0}
+
         async def _replanner(task_graph: TaskGraph, note_graph: NoteGraph):
-            return await run_replanner(
-                task_graph, note_graph, routing, local, root_task.id, tracker=tracker
-            )
+            # Emit synthetic task_started/task_done around each replan
+            # cycle so the UI's Running Agents panel shows a card for
+            # the replanner (which doesn't go through the normal task
+            # dispatch path). The synth_id is ours to own — no entry
+            # is added to the real task_graph.
+            replan_counter["n"] += 1
+            start_evt, synth_id = event_replan_started(replan_counter["n"], routing)
+            session.publish(start_evt)
+            try:
+                result = await run_replanner(
+                    task_graph,
+                    note_graph,
+                    routing,
+                    local,
+                    root_task.id,
+                    tracker=tracker,
+                )
+            except Exception as exc:
+                session.publish(
+                    event_replan_done(
+                        synth_id, f"replan failed: {type(exc).__name__}", failed=True
+                    )
+                )
+                raise
+            # Pull a short verdict from the decision_note returned
+            # alongside the mutations — gives the history row actual
+            # content instead of a bare "done".
+            _mutations, decision_note = result
+            verdict = (decision_note.description or "replan cycle complete")[:140]
+            session.publish(event_replan_done(synth_id, verdict))
+            return result
 
         sched = Scheduler(
             tg,

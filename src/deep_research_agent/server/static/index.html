@@ -91,6 +91,14 @@
     flex: 0 0 auto;
     min-height: 0;
   }
+  /* Left aside is the live "Running Agents" panel. Same aside shape as
+     the right sidebar but narrower by default and with its own width /
+     resize constraints. */
+  aside#left-aside {
+    width: 280px;
+    min-width: 220px;
+    border-right: 1px solid var(--border);
+  }
   section { display: flex; flex-direction: column; min-height: 0; flex: 1 1 0; }
   section h2 {
     font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
@@ -116,6 +124,100 @@
   }
   body.resizing { cursor: col-resize; user-select: none; }
   body.resizing-row { cursor: row-resize; user-select: none; }
+
+  /* Running agents — live cards, one per dispatched task, removed on done. */
+  #running-agents { overflow-y: auto; padding: 6px 8px; font-size: 12px; }
+  #running-agents .empty {
+    padding: 16px 8px;
+    color: var(--muted); font-style: italic; text-align: center;
+  }
+  .agent-card {
+    position: relative;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--muted);
+    border-radius: 4px;
+    padding: 8px 10px 8px 12px;
+    margin-bottom: 6px;
+    cursor: pointer;
+    transition: opacity 0.4s ease, transform 0.4s ease, border-color 0.2s;
+  }
+  .agent-card:hover { border-color: var(--accent); }
+  .agent-card.tier-LOW    { border-left-color: var(--muted); }
+  .agent-card.tier-MID    { border-left-color: var(--accent); }
+  .agent-card.tier-HIGH   { border-left-color: var(--landscape); }
+  .agent-card.done     { border-left-color: var(--ok); }
+  .agent-card.abandoned { border-left-color: var(--err); }
+  .agent-card.fading {
+    opacity: 0;
+    transform: translateX(-8px);
+    pointer-events: none;
+  }
+  .agent-card .head {
+    display: flex; align-items: center; gap: 6px;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 10.5px;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+  .agent-card .head .type {
+    color: var(--accent); font-weight: 600;
+  }
+  .agent-card .head .sep { opacity: 0.5; }
+  .agent-card .head .tier-pill {
+    font-size: 9px; letter-spacing: 0.06em;
+    padding: 1px 5px; border-radius: 2px;
+    background: rgba(255,255,255,0.06);
+  }
+  .agent-card .head .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--warn); animation: pulse 1.2s infinite;
+  }
+  .agent-card.done .head .dot { background: var(--ok); animation: none; }
+  .agent-card.abandoned .head .dot { background: var(--err); animation: none; }
+  .agent-card .goal {
+    font-size: 12px; color: var(--text);
+    line-height: 1.3;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    margin-bottom: 4px;
+  }
+  .agent-card .foot {
+    display: flex; justify-content: space-between;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 10px; color: var(--muted);
+  }
+  .agent-card .foot .io { color: var(--muted); }
+  .agent-card .foot .io b { color: var(--text); font-weight: 500; }
+  .agent-card .foot .elapsed { font-variant-numeric: tabular-nums; }
+  .agent-card .expanded-body {
+    display: none;
+    margin-top: 8px; padding-top: 8px;
+    border-top: 1px dashed rgba(255,255,255,0.08);
+    font-size: 11px; line-height: 1.4;
+  }
+  .agent-card.expanded .expanded-body { display: block; }
+  .agent-card.expanded .goal {
+    -webkit-line-clamp: unset;
+    display: block;
+  }
+  .agent-card .expanded-body .label {
+    color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em;
+    font-size: 9px; margin: 4px 0 2px;
+  }
+  .agent-card .expanded-body .note-link {
+    color: var(--accent); cursor: pointer; padding: 2px 0;
+    font-family: ui-monospace, Menlo, monospace; font-size: 10.5px;
+  }
+  .agent-card .expanded-body .note-link:hover { text-decoration: underline; }
+  .agent-card .expanded-body .kv {
+    color: var(--text); font-family: ui-monospace, Menlo, monospace;
+    font-size: 10.5px;
+  }
+  .agent-card .expanded-body .kv .k { color: var(--muted); margin-right: 6px; }
 
   /* Task list */
   #tasks { overflow-y: auto; padding: 4px 0; font-size: 12px; }
@@ -186,9 +288,18 @@
   <div id="status">idle</div>
 </header>
 <main>
+  <aside id="left-aside">
+    <section id="sec-running-agents">
+      <h2><span id="running-agents-title">Agents Running</span></h2>
+      <div id="running-agents">
+        <div class="empty">No agents running.</div>
+      </div>
+    </section>
+  </aside>
+  <div class="resizer-v" data-resize="cols" data-side="left"></div>
   <div id="graph"></div>
-  <div class="resizer-v" data-resize="cols" data-left="#graph" data-right="aside"></div>
-  <aside>
+  <div class="resizer-v" data-resize="cols" data-side="right"></div>
+  <aside id="right-aside">
     <section id="sec-tasks">
       <h2>Tasks</h2>
       <div id="tasks"><div class="placeholder" style="padding:12px;color:var(--muted);font-style:italic;">No tasks yet.</div></div>
@@ -538,6 +649,169 @@
     })[c]);
   }
 
+  // --- Running agents panel ----------------------------------------------
+  // Live view of dispatched-but-not-done tasks. Each task_started event
+  // inserts a card; each task_done event flashes its card (green for
+  // DONE, red for ABANDONED) then fades + removes after 500ms. The
+  // right-side tasks panel still records full history via upsertTask.
+  const runningAgents = new Map(); // task_id -> { data, el, startedAtMs }
+  const runningAgentsEl = document.getElementById("running-agents");
+  const runningAgentsTitleEl = document.getElementById("running-agents-title");
+
+  function shortModel(modelId) {
+    if (!modelId) return "";
+    // Strip the family prefix ("anthropic/claude-opus-4-7" -> "claude-opus-4-7")
+    // so the card label stays compact.
+    const slash = modelId.indexOf("/");
+    return slash >= 0 ? modelId.slice(slash + 1) : modelId;
+  }
+
+  function fmtElapsed(ms) {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    const mm = String(Math.floor(s / 60)).padStart(2, "0");
+    const ss = String(s % 60).padStart(2, "0");
+    return `${mm}:${ss}`;
+  }
+
+  function updateRunningAgentsTitle() {
+    runningAgentsTitleEl.textContent = `Agents Running (${runningAgents.size})`;
+  }
+
+  function addAgentCard(data) {
+    // Clear the empty placeholder on first card.
+    if (runningAgents.size === 0) runningAgentsEl.innerHTML = "";
+
+    const card = document.createElement("div");
+    card.className = `agent-card tier-${data.tier || "MID"}`;
+    card.dataset.taskId = data.id;
+
+    const head = document.createElement("div");
+    head.className = "head";
+    const dot = document.createElement("span");
+    dot.className = "dot";
+    const type = document.createElement("span");
+    type.className = "type";
+    type.textContent = data.type || "?";
+    const sep1 = document.createElement("span"); sep1.className = "sep"; sep1.textContent = "·";
+    const pill = document.createElement("span");
+    pill.className = "tier-pill";
+    pill.textContent = data.tier || "";
+    const sep2 = document.createElement("span"); sep2.className = "sep"; sep2.textContent = "·";
+    const model = document.createElement("span");
+    model.className = "model";
+    model.textContent = shortModel(data.model_id);
+    head.append(dot, type, sep1, pill, sep2, model);
+
+    const goal = document.createElement("div");
+    goal.className = "goal";
+    goal.textContent = data.goal || "";
+
+    const foot = document.createElement("div");
+    foot.className = "foot";
+    const io = document.createElement("span");
+    io.className = "io";
+    io.innerHTML = `reads <b>${(data.reads_notes || []).length}</b> · writes <b>${(data.writes_notes || []).length}</b>`;
+    const elapsed = document.createElement("span");
+    elapsed.className = "elapsed";
+    elapsed.textContent = "00:00";
+    foot.append(io, elapsed);
+
+    const body = document.createElement("div");
+    body.className = "expanded-body";
+
+    card.append(head, goal, foot, body);
+
+    card.addEventListener("click", () => toggleAgentExpanded(data.id));
+    runningAgentsEl.prepend(card); // newest on top
+
+    const startedAtMs =
+      data.started_at ? new Date(data.started_at).getTime() : Date.now();
+    runningAgents.set(data.id, { data, el: card, elapsedEl: elapsed, startedAtMs });
+    updateRunningAgentsTitle();
+  }
+
+  function finishAgentCard(taskId, status) {
+    const entry = runningAgents.get(taskId);
+    if (!entry) return;
+    entry.el.classList.remove("tier-LOW", "tier-MID", "tier-HIGH");
+    entry.el.classList.add(status === "ABANDONED" ? "abandoned" : "done");
+    // Short flash, then fade + remove. Keeps the momentary state visible
+    // so the user registers that the task completed rather than just
+    // vanishing.
+    setTimeout(() => {
+      entry.el.classList.add("fading");
+      setTimeout(() => {
+        entry.el.remove();
+        runningAgents.delete(taskId);
+        if (runningAgents.size === 0) {
+          runningAgentsEl.innerHTML = `<div class="empty">No agents running.</div>`;
+        }
+        updateRunningAgentsTitle();
+      }, 450);
+    }, 400);
+  }
+
+  function toggleAgentExpanded(taskId) {
+    const entry = runningAgents.get(taskId);
+    if (!entry) return;
+    const body = entry.el.querySelector(".expanded-body");
+    const nowExpanded = !entry.el.classList.contains("expanded");
+    entry.el.classList.toggle("expanded", nowExpanded);
+    if (!nowExpanded) return;
+    // Render expanded content lazily on first open.
+    const d = entry.data;
+    const parts = [];
+    if (d.pattern) {
+      parts.push(`<div class="kv"><span class="k">pattern</span>${d.pattern}</div>`);
+    }
+    if (d.role) {
+      parts.push(`<div class="kv"><span class="k">role</span>${d.role}</div>`);
+    }
+    if (d.model_id) {
+      parts.push(`<div class="kv"><span class="k">model</span>${d.model_id}</div>`);
+    }
+    if ((d.reads_notes || []).length) {
+      parts.push(`<div class="label">reads</div>`);
+      for (const nid of d.reads_notes) {
+        const note = notesById[nid];
+        const label = note ? `${note.type} · ${truncate(note.title, 50)}` : nid;
+        parts.push(`<div class="note-link" data-note-id="${nid}">${label}</div>`);
+      }
+    }
+    if ((d.writes_notes || []).length) {
+      parts.push(`<div class="label">writes</div>`);
+      for (const nid of d.writes_notes) {
+        const note = notesById[nid];
+        const label = note ? `${note.type} · ${truncate(note.title, 50)}` : nid;
+        parts.push(`<div class="note-link" data-note-id="${nid}">${label}</div>`);
+      }
+    }
+    body.innerHTML = parts.join("");
+    // Wire up note-click handlers to re-use the existing details loader.
+    for (const link of body.querySelectorAll(".note-link")) {
+      link.addEventListener("click", ev => {
+        ev.stopPropagation();
+        const nid = link.dataset.noteId;
+        if (nid && typeof loadNoteDetails === "function") loadNoteDetails(nid);
+      });
+    }
+  }
+
+  // One shared tick for all cards. Cheap: ~10 cards max, one textContent
+  // update per tick. No-op when no cards exist.
+  setInterval(() => {
+    const now = Date.now();
+    for (const entry of runningAgents.values()) {
+      entry.elapsedEl.textContent = fmtElapsed(now - entry.startedAtMs);
+    }
+  }, 1000);
+
+  function clearRunningAgents() {
+    runningAgents.clear();
+    runningAgentsEl.innerHTML = `<div class="empty">No agents running.</div>`;
+    updateRunningAgentsTitle();
+  }
+
   // --- Task panel ---------------------------------------------------------
   const tasks = new Map(); // id -> {id, type, goal, status, verdict}
 
@@ -604,14 +878,22 @@
             top.style.flex = `${frac} 1 0`;
             bottom.style.flex = `${1 - frac} 1 0`;
           } else {
-            const aside = document.querySelector("aside");
-            if (!aside) return;
-            const rightEdge = window.innerWidth;
-            // Leave at least ~200px for the graph; otherwise let the sidebar
-            // grow as wide as the user wants.
-            const maxAside = Math.max(240, window.innerWidth - 200);
-            const newWidth = Math.max(200, Math.min(maxAside, rightEdge - ev.clientX));
-            aside.style.width = `${newWidth}px`;
+            // Column resize. Two cases: dragging the resizer between
+            // the left aside and the graph (grow/shrink #left-aside),
+            // or the resizer between the graph and the right aside.
+            const side = r.dataset.side || "right";
+            const target = document.getElementById(
+              side === "left" ? "left-aside" : "right-aside"
+            );
+            if (!target) return;
+            // Both sides share a "leave at least 200px for the graph"
+            // constraint so dragging to extremes doesn't hide it.
+            const maxWidth = Math.max(240, window.innerWidth - 200);
+            const newWidth =
+              side === "left"
+                ? Math.max(200, Math.min(maxWidth, ev.clientX))
+                : Math.max(200, Math.min(maxWidth, window.innerWidth - ev.clientX));
+            target.style.width = `${newWidth}px`;
           }
           cy.resize();
         };
@@ -639,6 +921,7 @@
       case "task_started":
         logRow(kind, `${data.type} — ${truncate(data.goal, 80)}`, at);
         upsertTask({ id: data.id, type: data.type, goal: data.goal, status: "running" });
+        addAgentCard(data);
         break;
       case "task_done":
         logRow(kind, `${data.type} — ${truncate(data.verdict, 120)}`, at);
@@ -647,6 +930,7 @@
           status: data.status === "ABANDONED" ? "abandoned" : "done",
           verdict: data.verdict,
         });
+        finishAgentCard(data.id, data.status);
         break;
       case "note_created":
         logRow(kind, `${data.type} · ${truncate(data.title, 60)}`, at);
@@ -686,6 +970,7 @@
     detailsEl.innerHTML = `<div class="placeholder">Running…</div>`;
     tasks.clear();
     tasksEl.innerHTML = "";
+    clearRunningAgents();
     cy.elements().remove();
     lastReportNoteId = null;
     reportBtn.hidden = true;
