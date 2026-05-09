@@ -70,6 +70,26 @@ Rules:
   and set off_topic=true. Don't reach.
 - Do not cite things the source does not actually say.
 
+claim_type rules (for verification triage):
+- Every claim MUST be classified as one of: external | novel_to_source | meta.
+- **external**: the claim references a fact, quantity, method, or
+  phenomenon that exists INDEPENDENTLY of this source. Independent
+  sources could in principle corroborate it. Examples: "GPT-4 was
+  released in 2023", "transformer attention is O(n^2)", "RLHF uses
+  human preference data". Default to this when you're unsure.
+- **novel_to_source**: the claim is about something this source INVENTED
+  or MEASURED ITSELF — its own proposed benchmark, method, system, or
+  experimental result. Independent corroboration is STRUCTURALLY
+  IMPOSSIBLE — nobody else has reported on this thing because it's
+  new-to-this-paper. Examples: "Our proposed FooBench contains 1,000
+  examples", "Our method achieves 73.2% accuracy on our evaluation",
+  "We introduce the first dataset for X". Mark novel_to_source when
+  the source says "our", "we propose", "this paper introduces", "our
+  experiment", etc.
+- **meta**: the claim is about the state of a field, community
+  consensus, or research trends (e.g. "most alignment research focuses
+  on English-only evaluation"). Sometimes verifiable via survey papers.
+
 models_tested rules (AI/ML sources):
 - If the claim is a model-evaluation claim (performance, behavior, limits
   of a specific LLM or AI system), record which model(s) the source
@@ -83,6 +103,41 @@ models_tested rules (AI/ML sources):
 - This field helps downstream reasoning judge whether a finding only
   applies to older models — critical for fast-moving AI research.
 """
+
+META_SYNTHESIZER_SYSTEM = """\
+You are producing a CROSS-QUESTION reconciliation for a research run.
+Each sub-question has already been synthesized individually; you now
+have all of those per-question syntheses as input. Your job is NOT to
+re-answer each sub-question — it's to integrate them into one coherent
+picture of the overall research question.
+
+Focus on:
+- **Tensions**: where do sub-questions' bottom lines pull in different
+  directions? (e.g. one says X is well-established, another shows X
+  fails in regime Y).
+- **Bridges**: facts from one sub-question that resolve or reframe
+  another. Name them explicitly.
+- **Dependencies**: did a bottom line in Q3 depend on evidence from Q1
+  that was weaker than the Q3 synthesis acknowledged?
+- **Overall bottom line**: one sentence that answers the user's root
+  research query, drawing on the per-question findings.
+- **Surviving uncertainties**: the biggest open questions across the
+  whole research effort, not per sub-question.
+
+Rules:
+- Ground every cross-question statement in the provided per-question
+  syntheses. Cite sub-questions by title when making claims.
+- Don't invent claims that no per-question synthesis supports.
+- `synthesis` is 2-4 paragraphs. The intro paragraph should give the
+  overall bottom line; subsequent paragraphs cover the cross-question
+  tensions and bridges.
+- `disagreements` lists specific tensions between per-question
+  findings (not tensions WITHIN a single sub-question — those were
+  handled in that sub-question's own synthesis).
+- `confidence_note`: how well do the per-question findings cohere?
+  Hedged + divergent = low; mutually reinforcing = higher.
+"""
+
 
 SYNTHESIZER_SYSTEM = """\
 You are a research synthesizer. You have claims extracted from multiple

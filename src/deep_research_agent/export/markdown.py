@@ -86,15 +86,30 @@ def _render_metadata(note: Note) -> list[str]:
     meta = note.metadata
     lines: list[str] = []
     if note.type == NoteType.SOURCE:
+        tier_display = (
+            f"{meta.tier.value} — {meta.tier_rationale}"
+            if meta.tier is not None
+            else "(not classified)"
+        )
+        state_display = meta.state.value if hasattr(meta, "state") else "?"
         lines.extend(
             [
                 "",
                 f"- **url:** {meta.url}",
-                f"- **tier:** {meta.tier.value} — {meta.tier_rationale}",
+                f"- **state:** `{state_display}`",
+                f"- **tier:** {tier_display}",
                 f"- **peer_reviewed:** {meta.peer_reviewed}",
                 f"- **classifier_confidence:** {meta.classifier_confidence:.2f}",
             ]
         )
+        if getattr(meta, "relevance", None):
+            lines.append(
+                "- **relevance:** " + ", ".join(f"`{q}`={s:.2f}" for q, s in meta.relevance.items())
+            )
+        if getattr(meta, "analyzed_for", None):
+            lines.append("- **analyzed_for:** " + ", ".join(f"`{q}`" for q in meta.analyzed_for))
+        if getattr(meta, "scout_strategy", None):
+            lines.append(f"- **scout_strategy:** `{meta.scout_strategy}`")
         if meta.claims:
             lines.append("")
             lines.append("## Claims")

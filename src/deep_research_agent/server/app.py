@@ -22,7 +22,14 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from ..config import LocalConfig, RoutingConfig, load_local_config, load_routing_config
+from ..config import (
+    LocalConfig,
+    PipelineConfig,
+    RoutingConfig,
+    load_local_config,
+    load_pipeline_config,
+    load_routing_config,
+)
 from ..observability import setup_logfire
 from ..retrieval.brave import set_brave_min_interval
 from ..scheduler import new_run_id
@@ -110,9 +117,16 @@ class RunRequest(BaseModel):
 class ServerState:
     """Holds the configs + registry for the lifetime of the server."""
 
-    def __init__(self, routing: RoutingConfig, local: LocalConfig, runs_dir: Path) -> None:
+    def __init__(
+        self,
+        routing: RoutingConfig,
+        local: LocalConfig,
+        pipeline: PipelineConfig,
+        runs_dir: Path,
+    ) -> None:
         self.routing = routing
         self.local = local
+        self.pipeline = pipeline
         self.runs_dir = runs_dir
         self.registry = SessionRegistry()
 
@@ -120,15 +134,22 @@ class ServerState:
 def create_app(
     routing_path: Path | str = "config/routing_diverse.yaml",
     local_path: Path | str = "config/local.toml",
+    pipeline_path: Path | str = "config/pipeline.yaml",
     runs_dir: Path | str = "runs",
 ) -> FastAPI:
     """Build and return a configured FastAPI app."""
     local = load_local_config(local_path)
     routing = load_routing_config(routing_path)
+    pipeline = load_pipeline_config(pipeline_path)
     setup_logfire(local)
     set_brave_min_interval(local.retrieval.brave_min_interval_s)
 
-    state = ServerState(routing=routing, local=local, runs_dir=Path(runs_dir))
+    state = ServerState(
+        routing=routing,
+        local=local,
+        pipeline=pipeline,
+        runs_dir=Path(runs_dir),
+    )
 
     app = FastAPI(title="deep-research-agent live UI")
 
@@ -159,7 +180,13 @@ def create_app(
         # Task is stored on the session so it isn't GC'd mid-run and so a
         # future cancel endpoint can reach it.
         session.task = asyncio.create_task(
-            run_session(session, state.routing, state.local, state.runs_dir)
+            run_session(
+                session,
+                state.routing,
+                state.local,
+                state.pipeline,
+                state.runs_dir,
+            )
         )
         logger.info("run queued run_id=%s query=%r", run_id, body.query[:80])
         return {"run_id": run_id}

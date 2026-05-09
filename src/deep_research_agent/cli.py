@@ -11,7 +11,7 @@ from pathlib import Path
 
 from rich.console import Console
 
-from .config import load_local_config, load_routing_config
+from .config import load_local_config, load_pipeline_config, load_routing_config
 from .executor import AgentExecutor, register_handlers
 from .export import export_run
 from .observability import setup_logfire
@@ -45,6 +45,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Path to the local TOML (endpoints + keys)",
     )
     p_research.add_argument(
+        "--pipeline",
+        default="config/pipeline.yaml",
+        help=(
+            "Path to the pipeline config YAML (thresholds, caps, hygiene "
+            "toggles). Missing file falls back to built-in defaults."
+        ),
+    )
+    p_research.add_argument(
         "--runs-dir",
         default="runs",
         help="Directory to write per-run output into",
@@ -71,6 +79,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Path to the local TOML (endpoints + keys)",
     )
     p_serve.add_argument(
+        "--pipeline",
+        default="config/pipeline.yaml",
+        help="Path to the pipeline config YAML",
+    )
+    p_serve.add_argument(
         "--runs-dir",
         default="runs",
         help="Directory to write per-run output into",
@@ -86,6 +99,12 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         stream=sys.stderr,
     )
+    # Silence third-party libraries that log at DEBUG with extreme verbosity.
+    # pdfminer logs every PDF object parse (GB-scale per long PDF); pypdf and
+    # httpcore/httpx are noisy at DEBUG on every request. We keep WARNING so
+    # real errors still surface.
+    for noisy in ("pdfminer", "pypdf", "httpcore", "httpx", "urllib3", "trafilatura"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
     if args.command == "research":
         return asyncio.run(_run_research(args))
@@ -105,6 +124,7 @@ def _run_serve(args: argparse.Namespace) -> int:
     app = create_app(
         routing_path=args.routing,
         local_path=args.local_config,
+        pipeline_path=args.pipeline,
         runs_dir=args.runs_dir,
     )
     console.print(
@@ -117,6 +137,7 @@ def _run_serve(args: argparse.Namespace) -> int:
 async def _run_research(args: argparse.Namespace) -> int:
     local = load_local_config(args.local_config)
     routing = load_routing_config(args.routing)
+    pipeline = load_pipeline_config(args.pipeline)
     setup_logfire(local)
     set_brave_min_interval(local.retrieval.brave_min_interval_s)
 
@@ -130,7 +151,7 @@ async def _run_research(args: argparse.Namespace) -> int:
     )
 
     tracker = TokenUsageTracker()
-    ex = AgentExecutor(routing=routing, local=local, tracker=tracker)
+    ex = AgentExecutor(routing=routing, local=local, pipeline=pipeline, tracker=tracker)
     register_handlers(ex)
 
     tg = TaskGraph()
@@ -175,6 +196,10 @@ async def _run_research(args: argparse.Namespace) -> int:
             on_task_start=_on_start,
             on_task_done=_on_done,
             replanner=_replanner,
+            replan_cadence=pipeline.replanner.cadence,
+            replan_budget=pipeline.replanner.budget,
+            replan_min_progress_tasks=pipeline.replanner.min_progress_tasks,
+            replan_skip_if_no_new_synthesis=pipeline.replanner.skip_if_no_new_synthesis,
         )
         run_failed = False
         try:

@@ -25,6 +25,8 @@ from ..schemas.task import DepEdge
 from .note_graph import NoteGraph
 from .task_graph import TaskGraph
 
+# Re-exported below for handler convenience.
+
 logger = logging.getLogger(__name__)
 
 TaskCallback = Callable[[Task], None]
@@ -58,6 +60,22 @@ class NoteReader(Protocol):
     def by_type(self, note_type: NoteType) -> list[Note]: ...
     def all(self) -> Iterable[Note]: ...
     def __contains__(self, note_id: object) -> bool: ...
+
+
+@runtime_checkable
+class TaskReader(Protocol):
+    """Read-only view of the task graph passed to executors.
+
+    Used by readiness gates: a handler can inspect pending / in-progress
+    tasks to decide whether to proceed or to re-emit itself with
+    dependencies on the currently-pending work. Handlers MUST NOT
+    mutate the task graph directly — all task mutations travel back via
+    TaskResult.
+    """
+
+    def get(self, task_id: TaskID) -> Task: ...
+    def all(self) -> Iterable[Task]: ...
+    def __contains__(self, task_id: object) -> bool: ...
 
 
 # --- Executor contract ------------------------------------------------------
@@ -102,7 +120,7 @@ class TaskResult(BaseModel):
 class Executor(Protocol):
     """Runs one task and returns its result. No side effects on graph state."""
 
-    async def execute(self, task: Task, notes: NoteReader) -> TaskResult: ...
+    async def execute(self, task: Task, notes: NoteReader, tasks: TaskReader) -> TaskResult: ...
 
 
 # --- Scheduler --------------------------------------------------------------
@@ -126,8 +144,10 @@ class Scheduler:
         on_task_done: TaskDoneCallback | None = None,
         on_note_mutation: NoteMutationCallback | None = None,
         replanner: ReplannerCallback | None = None,
-        replan_cadence: int = 10,
+        replan_cadence: int = 15,
         replan_budget: int = 3,
+        replan_min_progress_tasks: int = 6,
+        replan_skip_if_no_new_synthesis: bool = True,
     ) -> None:
         self.task_graph = task_graph
         self.note_graph = note_graph
@@ -139,6 +159,13 @@ class Scheduler:
         self._replanner = replanner
         self._replan_cadence = replan_cadence
         self._replan_budget = replan_budget
+        # Stability guards: skip a replan cycle when the graph hasn't
+        # materially changed since the last one. Prevents burning budget
+        # on "nothing interesting happened" replans that observationally
+        # dominate runs.
+        self._replan_min_progress_tasks = replan_min_progress_tasks
+        self._replan_skip_if_no_new_synthesis = replan_skip_if_no_new_synthesis
+        self._prev_synthesis_count = 0
 
     async def run(self) -> None:
         """Dispatch ready tasks until every task is terminal.
@@ -183,9 +210,53 @@ class Scheduler:
                 and completed_since_replan >= self._replan_cadence
                 and replans_done < self._replan_budget
             ):
+                # Stability guards: don't burn a replan cycle on a graph
+                # that hasn't materially changed. The counter resets
+                # regardless so the cadence clock keeps ticking; the
+                # budget only decrements if we actually run a cycle.
+                if self._should_skip_replan(completed_since_replan):
+                    logger.info(
+                        "replan skipped (guards trip): completed=%d synthesis_count=%d",
+                        completed_since_replan,
+                        self._current_synthesis_count(),
+                    )
+                    completed_since_replan = 0
+                    continue
                 await self._run_replan_cycle()
                 completed_since_replan = 0
                 replans_done += 1
+                # Snapshot synthesis count AFTER the cycle so the next
+                # "no new synthesis" check compares against post-cycle state.
+                self._prev_synthesis_count = self._current_synthesis_count()
+
+    def _current_synthesis_count(self) -> int:
+        """How many synthesis_notes exist right now. Cheap — just a filter.
+        Used by the replan guard to detect whether the set grew since
+        the prior cycle.
+        """
+        return len(self.note_graph.by_type(NoteType.SYNTHESIS))
+
+    def _should_skip_replan(self, completed_since_last: int) -> bool:
+        """Return True if this replan cycle should be skipped.
+
+        Two guards, either of which trips:
+        1. `completed_since_last < min_progress_tasks`: cadence fired
+           but only a trickle of tasks completed — the graph hasn't
+           moved. Common when many retrieval tasks are in-flight but
+           tasks are completing slowly due to throttling.
+        2. `skip_if_no_new_synthesis` and no new synthesis_note since
+           the previous cycle. The replanner's levers (escalate,
+           trigger_synthesis, abandon_subquestion) are all most useful
+           in reaction to syntheses; pre-synthesis the graph has little
+           for it to act on.
+        """
+        if completed_since_last < self._replan_min_progress_tasks:
+            return True
+        if self._replan_skip_if_no_new_synthesis:
+            current = self._current_synthesis_count()
+            if current <= self._prev_synthesis_count:
+                return True
+        return False
 
     async def _run_replan_cycle(self) -> None:
         """Invoke the replanner and apply its mutations under the write lock.
@@ -273,7 +344,7 @@ class Scheduler:
         if self._on_task_start is not None:
             self._on_task_start(task)
         try:
-            result = await self.executor.execute(task, self.note_graph)
+            result = await self.executor.execute(task, self.note_graph, self.task_graph)
         except Exception as exc:
             self.task_graph.update_status(task.id, TaskStatus.ABANDONED)
             logger.exception("task_id=%s abandoned due to exception", task.id)

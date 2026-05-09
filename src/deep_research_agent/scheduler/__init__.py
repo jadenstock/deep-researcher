@@ -14,6 +14,7 @@ from .scheduler import (
     NoteReader,
     Scheduler,
     SchedulerDeadlock,
+    TaskReader,
     TaskResult,
 )
 from .task_graph import TaskGraph
@@ -28,6 +29,7 @@ __all__ = [
     "Scheduler",
     "SchedulerDeadlock",
     "TaskGraph",
+    "TaskReader",
     "TaskResult",
     "new_note_id",
     "new_run_id",
