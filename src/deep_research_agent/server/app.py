@@ -188,7 +188,7 @@ def create_app(
                 state.runs_dir,
             )
         )
-        logger.info("run queued run_id=%s query=%r", run_id, body.query[:80])
+        logger.info("run queued run_id=%s query=%r", run_id, body.query[:160])
         return {"run_id": run_id}
 
     @app.get("/api/runs")

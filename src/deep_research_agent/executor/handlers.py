@@ -64,12 +64,11 @@ from ..patterns.single_researcher import (
 from ..phases.termination import emit_check_termination_ready, emit_validate_completion
 from ..retrieval import (
     BraveClient,
-    build_structured_content,
     fetch_and_extract,
-    is_long_source,
     render_outline,
     search_academic,
 )
+from ..retrieval.ingestion import IngestionResult, default_fetcher, ingest_source
 from ..retrieval.scout import (
     ScoutQuery,
     landscape_seed_queries,
@@ -110,7 +109,7 @@ from ..schemas.enums import (
     VerificationStatus,
 )
 from ..schemas.note import SourceNoteMetadata as _SourceMeta
-from ..tiering.classifier import classify_source
+from ..tiering.classifier import RunnerBackedTierClassifier
 from ..tiering.simple import REJECT_DOMAINS
 from .executor import AgentExecutor, HandlerContext
 from .outputs import (
@@ -882,63 +881,41 @@ async def handle_fetch_and_extract(ctx: HandlerContext) -> TaskResult:
         return TaskResult(verdict=f"noop: {sid} already {meta.state.value}")
 
     url = meta.url
-    fetch = await fetch_and_extract(url)
-    if fetch is None or not fetch.markdown:
-        logger.info("fetch failed url=%s", url)
-        # Mark the source as FETCHED but with empty content so we don't
-        # re-try it repeatedly; tier=5 so it doesn't accidentally enter
-        # the analyzer pool.
-        failed_meta = meta.model_copy(
-            update={
-                "state": SourceState.FETCHED,
-                "tier": Tier.TIER_5,
-                "tier_rationale": "fetch failed (empty or blocked)",
-                "classifier_confidence": 1.0,
-                "peer_reviewed": False,
-            }
-        )
-        failed_note = src.model_copy(update={"metadata": failed_meta})
-        return TaskResult(
-            note_mutations=[NoteMutation(kind="replace", note=failed_note)],
-            verdict=f"fetch failed for {url}",
-        )
-
-    # Tier-classify on cheap_deterministic LOW.
-    tier_model = ctx.routing.model_id_for(RoleClass.CHEAP_DETERMINISTIC, TaskTier.LOW)
-    tier, rationale, confidence, peer_reviewed = await classify_source(
-        title=fetch.title or meta.title or url,
+    result: IngestionResult = await ingest_source(
         url=url,
         snippet=meta.summary or "",
-        content=fetch.markdown,
-        model_id=tier_model,
-        local=ctx.local,
-        tracker=ctx.tracker,
-    )
-
-    structured = (
-        build_structured_content(fetch.title or meta.title or url, fetch.markdown)
-        if is_long_source(fetch.markdown)
-        else None
+        fetcher=default_fetcher(),
+        tier_classifier=RunnerBackedTierClassifier(runner=ctx.llm),
     )
 
     fetched_meta = meta.model_copy(
         update={
             "state": SourceState.FETCHED,
-            "title": fetch.title or meta.title,
-            "tier": tier,
-            "tier_rationale": rationale,
-            "classifier_confidence": confidence,
-            "peer_reviewed": peer_reviewed,
-            "structured_content": structured,
+            "title": result.title or meta.title,
+            "tier": result.tier,
+            "tier_rationale": result.tier_rationale,
+            "classifier_confidence": result.classifier_confidence,
+            "peer_reviewed": result.peer_reviewed,
+            "structured_content": result.structured_content,
         }
     )
     fetched_note = src.model_copy(
         update={
-            "title": fetch.title or src.title,
-            "content": fetch.markdown[:40000],
+            "title": result.title or src.title,
+            "content": result.content,
             "metadata": fetched_meta,
         }
     )
+
+    if result.status == "fetch_failed":
+        logger.info("fetch failed url=%s", url)
+        return TaskResult(
+            note_mutations=[NoteMutation(kind="replace", note=fetched_note)],
+            verdict=f"fetch failed for {url}",
+        )
+
+    # Local binding so the spawn block below stays unchanged.
+    tier = result.tier
 
     # Spawn ANALYZE_SOURCE per question where relevance ≥ threshold. Cap
     # fan-out to pipeline.promotion.max_analyses_per_source (top N).
@@ -968,7 +945,7 @@ async def handle_fetch_and_extract(ctx: HandlerContext) -> TaskResult:
 
     verdict = (
         f"fetched {url} tier={tier.value} "
-        f"({'peer_reviewed' if peer_reviewed else 'non-pr'}); "
+        f"({'peer_reviewed' if result.peer_reviewed else 'non-pr'}); "
         f"spawned {len(spawned)} ANALYZE"
     )
     return TaskResult(
@@ -1004,7 +981,7 @@ def _analyzer_user_message(question: str, note: Note) -> str:
         )
     else:
         body = f"Content:\n{note.content}"
-    return f"Question: {question}\n\n" f"Source: {note.title}\nURL: {meta.url}\n\n{body}"
+    return f"Question: {question}\n\nSource: {note.title}\nURL: {meta.url}\n\n{body}"
 
 
 async def handle_analyze_source(ctx: HandlerContext) -> TaskResult:
@@ -1169,7 +1146,7 @@ async def _run_ach_flow(
         return str(t.value) if t is not None else "?"
 
     digest_parts = [
-        f"Source {n.id} ({n.title}, tier {_tier_label(n)}):\n" f"{_format_claim_digest(n)}"
+        f"Source {n.id} ({n.title}, tier {_tier_label(n)}):\n{_format_claim_digest(n)}"
         for n in enriched
     ]
     evidence_digest = "\n\n".join(digest_parts)
@@ -1180,8 +1157,7 @@ async def _run_ach_flow(
         system_prompt=ACH_HYPOTHESIS_GEN_SYSTEM,
     )
     gen_user = (
-        f"Question: {question}\n\n"
-        f"Evidence digest ({len(enriched)} sources):\n\n{evidence_digest}"
+        f"Question: {question}\n\nEvidence digest ({len(enriched)} sources):\n\n{evidence_digest}"
     )
     gen_r = await ctx.track(gen_agent, gen_user)
     hypotheses = gen_r.output.hypotheses
@@ -1400,8 +1376,7 @@ async def handle_question_synthesize(ctx: HandlerContext) -> TaskResult:
         logger.warning("qs no claims for question=%s; emitting thin synthesis", q_note_id)
         synth_out = SynthesizerOutput(
             bottom_line=(
-                "Insufficient evidence was retrieved for this question "
-                "within the research budget."
+                "Insufficient evidence was retrieved for this question within the research budget."
             ),
             synthesis=(
                 "No usable claims were extracted from the corpus for this "
@@ -2108,7 +2083,7 @@ async def handle_write_report(ctx: HandlerContext) -> TaskResult:
     ]
     if meta_synth_notes:
         parts.append(
-            "\n## Cross-question synthesis " "(LOAD-BEARING — use this as the report's spine)"
+            "\n## Cross-question synthesis (LOAD-BEARING — use this as the report's spine)"
         )
         for m in meta_synth_notes:
             parts.append(f"Overall bottom line: {m.description}")

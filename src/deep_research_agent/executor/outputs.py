@@ -67,7 +67,7 @@ class AnalyzerOutput(BaseModel):
     claims: list[AnalyzedClaim] = Field(
         default_factory=list,
         description=(
-            "Up to 3 claims from this source that bear on the question. " "Empty if irrelevant."
+            "Up to 3 claims from this source that bear on the question. Empty if irrelevant."
         ),
     )
     off_topic: bool = Field(

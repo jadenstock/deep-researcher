@@ -12,6 +12,7 @@ from .arxiv import ArxivClient
 from .brave import BraveClient, BraveSearchError, SearchHit
 from .cache import RetrievalCache
 from .fetch import FetchResult, fetch_and_extract
+from .ingestion import IngestionResult, default_fetcher, ingest_source
 from .rerank import rerank, score_hit
 from .semantic_scholar import SemanticScholarClient
 from .structure import (
@@ -30,12 +31,15 @@ __all__ = [
     "BraveClient",
     "BraveSearchError",
     "FetchResult",
+    "IngestionResult",
     "RetrievalCache",
     "SearchHit",
     "SemanticScholarClient",
     "UnpaywallClient",
     "build_structured_content",
+    "default_fetcher",
     "fetch_and_extract",
+    "ingest_source",
     "is_long_source",
     "load_source_section",
     "render_outline",

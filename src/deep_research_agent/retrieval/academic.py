@@ -95,7 +95,7 @@ async def search_academic(
 
     logger.info(
         "academic_search query=%r s2=%d arxiv=%d dedup=%d",
-        query[:60],
+        query[:120],
         len(s2_hits),
         len(ax_hits),
         len(combined),

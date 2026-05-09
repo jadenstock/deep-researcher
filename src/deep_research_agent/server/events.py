@@ -180,9 +180,7 @@ def event_replan_started(cycle_num: int, routing: RoutingConfig | None = None) -
     summary = TaskSummary(
         id=synth_id,
         type="REPLAN",
-        goal=(
-            "Re-assess graph state; spawn/abandon/escalate sub-questions " "as evidence warrants."
-        ),
+        goal=("Re-assess graph state; spawn/abandon/escalate sub-questions as evidence warrants."),
         status="RUNNING",
         tier="MID",
         role="judgment",
