@@ -5,8 +5,9 @@ markdown in .content and structured_content=None."""
 
 from __future__ import annotations
 
-from deep_research_agent.retrieval.fetch import FetchResult
 from deep_research_agent.retrieval.ingestion import IngestionResult, ingest_source
+
+from deep_research_agent.retrieval.fetch import FetchResult
 from deep_research_agent.schemas.enums import Tier
 from tests.fakes.retrieval import FakeFetcher, FakeTierClassifier
 
