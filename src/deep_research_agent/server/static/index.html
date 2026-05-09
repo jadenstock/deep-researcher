@@ -56,10 +56,25 @@
   }
   button:hover { filter: brightness(1.05); }
   button:disabled { opacity: 0.5; cursor: default; }
-  #report-btn {
-    background: var(--ok); color: #0b0d12;
-    animation: flash 1.2s ease-out 1;
+
+  /* Top-level view tabs: Live (graph + sidebars) vs Report (full-page markdown). */
+  .tabs {
+    display: flex; gap: 2px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 2px;
   }
+  .tab {
+    background: transparent; color: var(--muted);
+    border: none; border-radius: 4px;
+    padding: 6px 12px; font-size: 12px; font-weight: 600;
+    cursor: pointer; letter-spacing: 0.02em;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { background: var(--panel); color: var(--text); }
+  .tab.has-report { color: var(--ok); }
+  .tab.flash { animation: flash 1.2s ease-out 1; }
   @keyframes flash {
     0%   { box-shadow: 0 0 0 0 var(--ok); }
     50%  { box-shadow: 0 0 0 8px rgba(107, 216, 143, 0.4); }
@@ -262,6 +277,94 @@
   .log-row.run-failed .tag { color: var(--err); }
   .log-row.run-failed { color: var(--err); }
 
+  /* Full-page report view — shown when the "Report" tab is active. */
+  #report-view { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+  #live-view[hidden], #report-view[hidden] { display: none !important; }
+  #report-view {
+    overflow-y: auto;
+    background: var(--bg);
+    padding: 40px 24px 80px;
+  }
+  #report-view .report-container {
+    max-width: 860px;
+    margin: 0 auto;
+    color: var(--text);
+    font-family: ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
+    font-size: 16px;
+    line-height: 1.7;
+  }
+  #report-view .report-empty {
+    color: var(--muted); font-style: italic; text-align: center; padding: 80px 0;
+  }
+  #report-view .report-head {
+    padding-bottom: 16px; margin-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  #report-view .report-head h1 {
+    font-size: 28px; font-weight: 700; margin: 0 0 6px;
+    letter-spacing: -0.01em;
+  }
+  #report-view .report-head .sub {
+    color: var(--muted); font-size: 12px;
+    font-family: ui-monospace, Menlo, monospace;
+  }
+  #report-view .report-body h1 { font-size: 26px; margin: 32px 0 12px; }
+  #report-view .report-body h2 { font-size: 21px; margin: 28px 0 10px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  #report-view .report-body h3 { font-size: 17px; margin: 22px 0 8px; color: var(--accent); }
+  #report-view .report-body h4 { font-size: 15px; margin: 18px 0 6px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  #report-view .report-body p { margin: 0 0 14px; }
+  #report-view .report-body ul,
+  #report-view .report-body ol { margin: 0 0 14px; padding-left: 28px; }
+  #report-view .report-body li { margin: 4px 0; }
+  #report-view .report-body li > ul,
+  #report-view .report-body li > ol { margin: 4px 0; }
+  #report-view .report-body blockquote {
+    margin: 14px 0; padding: 8px 16px;
+    border-left: 3px solid var(--accent);
+    background: var(--panel-2); color: var(--muted);
+    border-radius: 0 4px 4px 0;
+  }
+  #report-view .report-body code {
+    background: var(--panel-2); padding: 1px 6px;
+    border-radius: 3px; font-size: 14px;
+    font-family: ui-monospace, Menlo, monospace;
+  }
+  #report-view .report-body pre {
+    background: var(--panel-2); border: 1px solid var(--border);
+    padding: 12px 14px; border-radius: 6px; overflow-x: auto;
+    font-size: 13px; line-height: 1.5;
+  }
+  #report-view .report-body pre code {
+    background: transparent; padding: 0;
+  }
+  #report-view .report-body a { color: var(--accent); text-decoration: none; }
+  #report-view .report-body a:hover { text-decoration: underline; }
+  #report-view .report-body table {
+    border-collapse: collapse; margin: 14px 0; width: 100%;
+    font-size: 14px;
+  }
+  #report-view .report-body th,
+  #report-view .report-body td {
+    border: 1px solid var(--border);
+    padding: 8px 12px; text-align: left;
+  }
+  #report-view .report-body th { background: var(--panel-2); font-weight: 600; }
+  #report-view .report-body hr {
+    border: none; border-top: 1px solid var(--border); margin: 24px 0;
+  }
+  #report-view .report-meta {
+    background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 4px; padding: 8px 12px;
+    font-family: ui-monospace, Menlo, monospace; font-size: 11px;
+    color: var(--muted); white-space: pre-wrap;
+    margin-bottom: 24px;
+  }
+  #report-view .report-meta summary {
+    cursor: pointer; color: var(--muted);
+    font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
+  }
+  #report-view .report-meta[open] summary { margin-bottom: 8px; }
+
   #details { overflow-y: auto; padding: 12px; font-size: 13px; line-height: 1.55; }
   #details h3 { margin: 0 0 4px; font-size: 14px; }
   #details .subtitle { color: var(--muted); font-size: 11px; margin-bottom: 12px; }
@@ -283,11 +386,14 @@
   <h1>dra <span>·</span> live</h1>
   <input id="query" placeholder="Ask a research question…" autocomplete="off" />
   <button id="go">Run</button>
-  <button id="report-btn" hidden>📄 Report</button>
+  <div class="tabs" role="tablist">
+    <button class="tab active" id="tab-live" data-view="live" role="tab">Live</button>
+    <button class="tab" id="tab-report" data-view="report" role="tab" hidden>Report</button>
+  </div>
   <div id="debug" title="events received · nodes in graph · layout engine">evt=0 · nodes=0 · layout=?</div>
   <div id="status">idle</div>
 </header>
-<main>
+<main id="live-view">
   <aside id="left-aside">
     <section id="sec-running-agents">
       <h2><span id="running-agents-title">Agents Running</span></h2>
@@ -316,16 +422,25 @@
     </section>
   </aside>
 </main>
+<section id="report-view" hidden>
+  <div class="report-container">
+    <div id="report-content"><div class="report-empty">No report yet — start a run.</div></div>
+  </div>
+</section>
 <script>
 (() => {
   const queryInput = document.getElementById("query");
   const goBtn = document.getElementById("go");
-  const reportBtn = document.getElementById("report-btn");
   const statusEl = document.getElementById("status");
   const activityEl = document.getElementById("activity");
   const detailsEl = document.getElementById("details");
   const tasksEl = document.getElementById("tasks");
   const debugEl = document.getElementById("debug");
+  const liveView = document.getElementById("live-view");
+  const reportView = document.getElementById("report-view");
+  const reportContent = document.getElementById("report-content");
+  const tabLive = document.getElementById("tab-live");
+  const tabReport = document.getElementById("tab-report");
   let lastReportNoteId = null;
   let eventCount = 0;
   function updateDebug(extra) {
@@ -334,9 +449,20 @@
     debugEl.textContent = `evt=${eventCount} · nodes=${nodeCount} · layout=${engine}${extra ? " · " + extra : ""}`;
   }
 
-  reportBtn.addEventListener("click", () => {
-    if (lastReportNoteId) loadNoteDetails(lastReportNoteId);
-  });
+  function switchView(view) {
+    const showLive = view === "live";
+    liveView.hidden = !showLive;
+    reportView.hidden = showLive;
+    tabLive.classList.toggle("active", showLive);
+    tabReport.classList.toggle("active", !showLive);
+    // Cytoscape needs a resize + relayout kick when the graph container
+    // transitions from hidden to visible — it caches container dims.
+    if (showLive) {
+      setTimeout(() => { try { cy.resize(); cy.fit(undefined, 40); } catch {} }, 0);
+    }
+  }
+  tabLive.addEventListener("click", () => switchView("live"));
+  tabReport.addEventListener("click", () => switchView("report"));
 
   // Verification decision_notes (subtype "verification") get their own
   // visual treatment so checked claims stand out from AIMS / final-report
@@ -649,6 +775,32 @@
     })[c]);
   }
 
+  async function loadReport(noteId) {
+    if (!currentRunId) return;
+    reportContent.innerHTML = `<div class="report-empty">Loading report…</div>`;
+    try {
+      const res = await fetch(`/api/note/${currentRunId}/${noteId}`);
+      if (!res.ok) throw new Error(`${res.status}`);
+      const note = await res.json();
+      renderReport(note);
+    } catch (err) {
+      reportContent.innerHTML = `<div class="report-empty">Failed to load: ${escape(String(err))}</div>`;
+    }
+  }
+
+  function renderReport(note) {
+    const body = note.content ? marked.parse(note.content) : "<em>(no content)</em>";
+    const meta = JSON.stringify(note.metadata || {}, null, 2);
+    reportContent.innerHTML = `
+      <div class="report-head">
+        <h1>${escape(note.title || "Report")}</h1>
+        <div class="sub">${escape(note.type || "")} · v${note.version ?? 1} · ${escape(note.id || "")}</div>
+      </div>
+      <details class="report-meta"><summary>metadata</summary>${escape(meta)}</details>
+      <div class="report-body">${body}</div>
+    `;
+  }
+
   // --- Running agents panel ----------------------------------------------
   // Live view of dispatched-but-not-done tasks. Each task_started event
   // inserts a card; each task_done event flashes its card (green for
@@ -946,12 +1098,15 @@
         goBtn.disabled = false;
         if (data.report_note_id) {
           lastReportNoteId = data.report_note_id;
-          reportBtn.hidden = false;
-          // Re-trigger flash in case button was already visible.
-          reportBtn.style.animation = "none";
-          void reportBtn.offsetWidth;
-          reportBtn.style.animation = "";
-          loadNoteDetails(data.report_note_id);
+          tabReport.hidden = false;
+          tabReport.classList.add("has-report");
+          // Re-trigger flash so the tab draws the eye even if it was
+          // already unhidden from a prior run.
+          tabReport.classList.remove("flash");
+          void tabReport.offsetWidth;
+          tabReport.classList.add("flash");
+          loadReport(data.report_note_id);
+          switchView("report");
         }
         break;
       case "run_failed":
@@ -973,7 +1128,10 @@
     clearRunningAgents();
     cy.elements().remove();
     lastReportNoteId = null;
-    reportBtn.hidden = true;
+    tabReport.hidden = true;
+    tabReport.classList.remove("has-report", "flash");
+    reportContent.innerHTML = `<div class="report-empty">No report yet — start a run.</div>`;
+    switchView("live");
     goBtn.disabled = true;
     setStatus("starting…");
     let res;
