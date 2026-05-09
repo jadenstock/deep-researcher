@@ -92,3 +92,46 @@ async def test_long_content_builds_structured_content() -> None:
     assert len(result.structured_content.section_headers) >= 5
     # Raw markdown also stored, truncated
     assert len(result.content) <= 40_000
+
+
+async def test_fetch_failure_returns_tier_5_result() -> None:
+    fetcher = FakeFetcher()
+    classifier = FakeTierClassifier()  # must not be called
+    fetcher.script("https://gone.example.com/", None)
+
+    result = await ingest_source(
+        url="https://gone.example.com/",
+        snippet="",
+        fetcher=fetcher,
+        tier_classifier=classifier,
+    )
+    assert result.status == "fetch_failed"
+    assert result.tier == Tier.TIER_5
+    assert result.content == ""
+    assert classifier.calls == []
+
+
+async def test_empty_markdown_treated_as_fetch_failure() -> None:
+    fetcher = FakeFetcher()
+    classifier = FakeTierClassifier()
+    fetcher.script(
+        "https://paywall.example.com/",
+        FetchResult(
+            url="https://paywall.example.com/",
+            final_url="https://paywall.example.com/",
+            status_code=200,
+            content_type="text/html",
+            title=None,
+            markdown=None,
+            byte_length=1000,
+        ),
+    )
+    result = await ingest_source(
+        url="https://paywall.example.com/",
+        snippet="",
+        fetcher=fetcher,
+        tier_classifier=classifier,
+    )
+    assert result.status == "fetch_failed"
+    assert result.tier == Tier.TIER_5
+    assert classifier.calls == []
