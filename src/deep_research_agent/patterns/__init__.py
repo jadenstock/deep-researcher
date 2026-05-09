@@ -18,12 +18,7 @@ from .ach import (
     ACH_HYPOTHESIS_GEN_SYSTEM,
 )
 from .debate import DEBATE_FRAMINGS
-from .maker_checker import (
-    MAX_CLAIMS_PER_RUN,
-    MAX_CLAIMS_PER_SYNTHESIS,
-    emit_verify_claim,
-    select_claims_to_verify,
-)
+from .maker_checker import emit_verify_claim, select_claims_to_verify
 from .multi_perspective import PERSPECTIVES, Perspective, get_perspective
 from .single_researcher import emit_decompose, emit_question_synthesize, emit_write_report
 
@@ -32,8 +27,6 @@ __all__ = [
     "ACH_CONSISTENCY_SYSTEM",
     "ACH_HYPOTHESIS_GEN_SYSTEM",
     "DEBATE_FRAMINGS",
-    "MAX_CLAIMS_PER_RUN",
-    "MAX_CLAIMS_PER_SYNTHESIS",
     "PERSPECTIVES",
     "Perspective",
     "emit_decompose",

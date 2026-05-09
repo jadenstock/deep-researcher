@@ -20,8 +20,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from ..config import LocalConfig, RoutingConfig
-from ..scheduler import NoteReader, TaskResult
+from ..config import LocalConfig, PipelineConfig, RoutingConfig
+from ..scheduler import NoteReader, TaskReader, TaskResult
 from ..schemas import Task, TaskType
 from ..token_usage import TokenUsageTracker
 from .routing import select_model
@@ -35,9 +35,11 @@ class HandlerContext:
 
     task: Task
     notes: NoteReader
+    tasks: TaskReader
     model_id: str
     routing: RoutingConfig
     local: LocalConfig
+    pipeline: PipelineConfig
     tracker: TokenUsageTracker
 
     async def track(self, agent: Any, user_input: Any) -> Any:
@@ -86,14 +88,16 @@ class AgentExecutor:
         self,
         routing: RoutingConfig,
         local: LocalConfig,
+        pipeline: PipelineConfig | None = None,
         tracker: TokenUsageTracker | None = None,
     ) -> None:
         self.routing = routing
         self.local = local
-        # The tracker is per-run. Callers (runner.py / cli.py) pass one
-        # in so they can emit a summary and save JSON at end of run; if
-        # nothing is passed (e.g. in a unit test), we create a local
-        # one so handlers don't have to branch on None.
+        # Pipeline config defaults to the built-in PipelineConfig() so
+        # callers that don't supply one still get working thresholds —
+        # useful for tests and for code paths that instantiate an
+        # executor without threading a full config through.
+        self.pipeline = pipeline if pipeline is not None else PipelineConfig()
         self.tracker = tracker or TokenUsageTracker()
         self._handlers: dict[TaskType, HandlerFn] = {}
 
@@ -105,7 +109,7 @@ class AgentExecutor:
     def has_handler(self, task_type: TaskType) -> bool:
         return task_type in self._handlers
 
-    async def execute(self, task: Task, notes: NoteReader) -> TaskResult:
+    async def execute(self, task: Task, notes: NoteReader, tasks: TaskReader) -> TaskResult:
         handler = self._handlers.get(task.type)
         if handler is None:
             raise UnhandledTaskType(
@@ -123,9 +127,11 @@ class AgentExecutor:
         ctx = HandlerContext(
             task=task,
             notes=notes,
+            tasks=tasks,
             model_id=model_id,
             routing=self.routing,
             local=self.local,
+            pipeline=self.pipeline,
             tracker=self.tracker,
         )
         return await handler(ctx)

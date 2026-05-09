@@ -6,6 +6,7 @@ reads and writes them.
 """
 
 from .enums import (
+    ClaimType,
     DependencyType,
     Methodology,
     NoteType,
@@ -14,6 +15,7 @@ from .enums import (
     QuestionRound,
     Reproducibility,
     RoleClass,
+    SourceState,
     TaskStatus,
     TaskTier,
     TaskType,
@@ -40,6 +42,7 @@ from .task import DepEdge, DepScope, Task
 
 __all__ = [
     # enums
+    "ClaimType",
     "DependencyType",
     "Methodology",
     "NoteType",
@@ -48,6 +51,7 @@ __all__ = [
     "QuestionRound",
     "Reproducibility",
     "RoleClass",
+    "SourceState",
     "TaskStatus",
     "TaskTier",
     "TaskType",

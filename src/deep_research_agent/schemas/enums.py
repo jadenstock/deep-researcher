@@ -8,11 +8,14 @@ from enum import Enum
 class TaskType(str, Enum):
     LANDSCAPE_SURVEY = "LANDSCAPE_SURVEY"
     DECOMPOSE = "DECOMPOSE"
+    SCOUT_SOURCES = "SCOUT_SOURCES"
     SEARCH = "SEARCH"
     SCAN_SEARCH_RESULTS = "SCAN_SEARCH_RESULTS"
     FETCH_AND_EXTRACT = "FETCH_AND_EXTRACT"
     ANALYZE_SOURCE = "ANALYZE_SOURCE"
+    RESCORE_RELEVANCE = "RESCORE_RELEVANCE"
     QUESTION_SYNTHESIZE = "QUESTION_SYNTHESIZE"
+    META_SYNTHESIZE = "META_SYNTHESIZE"
     VERIFY_CLAIM = "VERIFY_CLAIM"
     ADVERSARIAL_CRITIQUE = "ADVERSARIAL_CRITIQUE"
     ANALYZE_CONSISTENCY = "ANALYZE_CONSISTENCY"
@@ -99,6 +102,50 @@ class VerificationStatus(str, Enum):
     SUPPORTS = "SUPPORTS"
     REFUTES = "REFUTES"
     INCONCLUSIVE = "INCONCLUSIVE"
+
+
+class ClaimType(str, Enum):
+    """Claim taxonomy for verification triage.
+
+    EXTERNAL       — claim references a fact, quantity, or phenomenon that
+                     could plausibly be corroborated by an independent source
+                     (e.g. "GPT-4 was released in 2023", "transformer attention
+                     is quadratic in sequence length"). Best candidate for
+                     cross-family VERIFY_CLAIM.
+
+    NOVEL_TO_SOURCE — claim is about something introduced or measured only in
+                     this source: a benchmark the paper created, a method it
+                     proposes, a specific result from its own experiment.
+                     Verification is structurally impossible — no independent
+                     source will corroborate "Our FooBench contains 1,000
+                     examples". Skip verify unless configured otherwise.
+
+    META           — claim about the state of a field or community
+                     consensus (e.g. "most alignment research focuses on
+                     English"). Sometimes verifiable via survey papers or
+                     meta-analyses; treat as medium priority.
+    """
+
+    EXTERNAL = "external"
+    NOVEL_TO_SOURCE = "novel_to_source"
+    META = "meta"
+
+
+class SourceState(str, Enum):
+    """Lifecycle state of a source_note in the shared corpus.
+
+    SCOUTED  — URL + title + snippet discovered by SCOUT_SOURCES. Not fetched
+               yet; tier/peer_review unknown. Shared across all open questions.
+    FETCHED  — Full content pulled and tier-classified. Candidate for analysis.
+    ANALYZED — At least one ANALYZE_SOURCE has run against it for some
+               question; claims exist on the note. Still eligible for further
+               analysis against other questions (same source, different
+               question lenses).
+    """
+
+    SCOUTED = "SCOUTED"
+    FETCHED = "FETCHED"
+    ANALYZED = "ANALYZED"
 
 
 class Methodology(str, Enum):

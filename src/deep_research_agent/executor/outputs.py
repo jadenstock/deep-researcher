@@ -29,6 +29,28 @@ class AnalyzedClaim(BaseModel):
         le=1.0,
         description="0..1 confidence that the quote supports the claim.",
     )
+    claim_type: Literal["external", "novel_to_source", "meta"] = Field(
+        default="external",
+        description=(
+            "Taxonomy for verification triage:\n"
+            "- external: references a fact, quantity, method, or phenomenon "
+            "that exists independently of this source (e.g. 'transformer "
+            "attention is O(n^2)', 'GPT-4 was released in 2023'). "
+            "Independent sources can corroborate.\n"
+            "- novel_to_source: the claim is about something this source "
+            "invented or measured itself (its own proposed benchmark, "
+            "method, or experimental result). Independent verification is "
+            "STRUCTURALLY IMPOSSIBLE — nobody else has reported on this. "
+            "Example: 'Our proposed FooBench contains 1,000 examples', "
+            "'Model X achieved 73% on our evaluation'.\n"
+            "- meta: claim about the state of a field or consensus "
+            "(e.g. 'most alignment research focuses on English'). "
+            "Sometimes verifiable via survey papers.\n\n"
+            "Default to 'external' when ambiguous — it's the safe path. "
+            "Mark 'novel_to_source' only when the source unambiguously "
+            "introduces the thing the claim is about."
+        ),
+    )
     models_tested: list[str] = Field(
         default_factory=list,
         description=(

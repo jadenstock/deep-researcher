@@ -13,7 +13,7 @@ import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
-from ..config import LocalConfig, RoutingConfig
+from ..config import LocalConfig, PipelineConfig, RoutingConfig
 from ..executor import AgentExecutor, register_handlers
 from ..export import export_run
 from ..replanner import run_replanner
@@ -65,6 +65,15 @@ class _RunIdFilter(logging.Filter):
         return _RUN_ID_CTX.get() == self._run_id
 
 
+# Third-party libraries that log at DEBUG with extreme verbosity —
+# pdfminer emits one line per PDF object parse (GB-scale per long PDF),
+# pypdf is similar, and httpcore/httpx log every request internal. Pin
+# them at WARNING globally; real errors still surface. Applied once at
+# module import so every run in this process benefits.
+for _noisy in ("pdfminer", "pypdf", "httpcore", "httpx", "urllib3", "trafilatura"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
+
+
 def _attach_run_log_handler(run_dir: Path, run_id: str) -> logging.FileHandler:
     """Attach a FileHandler writing to run_dir/run.log for this run.
 
@@ -72,6 +81,9 @@ def _attach_run_log_handler(run_dir: Path, run_id: str) -> logging.FileHandler:
     artifact you look at only when something's wrong, so capturing
     every DEBUG line is the right default. Console verbosity is
     controlled separately by DRA_LOG_LEVEL (app.py:_configure_logging).
+    Third-party noisy loggers (pdfminer, pypdf, httpcore, httpx) are
+    pinned to WARNING at module import, so their DEBUG lines don't
+    reach this handler regardless of its level.
     """
     run_dir.mkdir(parents=True, exist_ok=True)
     fh = logging.FileHandler(run_dir / "run.log", mode="w", encoding="utf-8")
@@ -86,6 +98,7 @@ async def run_session(
     session: RunSession,
     routing: RoutingConfig,
     local: LocalConfig,
+    pipeline: PipelineConfig,
     runs_dir: Path,
 ) -> None:
     """Execute one research run and stream events onto `session`.
@@ -105,7 +118,7 @@ async def run_session(
     ng = NoteGraph()
 
     try:
-        ex = AgentExecutor(routing=routing, local=local, tracker=tracker)
+        ex = AgentExecutor(routing=routing, local=local, pipeline=pipeline, tracker=tracker)
         register_handlers(ex)
         root_task = Task(
             id=new_task_id(),
@@ -156,9 +169,7 @@ async def run_session(
                 )
             except Exception as exc:
                 session.publish(
-                    event_replan_done(
-                        synth_id, f"replan failed: {type(exc).__name__}", failed=True
-                    )
+                    event_replan_done(synth_id, f"replan failed: {type(exc).__name__}", failed=True)
                 )
                 raise
             # Pull a short verdict from the decision_note returned
@@ -177,6 +188,10 @@ async def run_session(
             on_task_done=_on_task_done,
             on_note_mutation=_on_note_mutation,
             replanner=_replanner,
+            replan_cadence=pipeline.replanner.cadence,
+            replan_budget=pipeline.replanner.budget,
+            replan_min_progress_tasks=pipeline.replanner.min_progress_tasks,
+            replan_skip_if_no_new_synthesis=pipeline.replanner.skip_if_no_new_synthesis,
         )
         await sched.run()
 

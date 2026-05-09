@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 from ..scheduler.ids import new_task_id
 from ..schemas import DepScope, Note, Task
 from ..schemas.enums import (
+    ClaimType,
     OrchestrationPattern,
     QuestionRound,
     RoleClass,
@@ -31,32 +32,45 @@ from ..schemas.enums import (
 from ..schemas.ids import TaskID
 from ..schemas.source import ClaimItem
 
-# v2a budget: per synthesis + global ceiling. Tuned empirically — a
-# typical 3-subquestion run produces 8-12 claims total; verifying ~6 of
-# them costs roughly one QUESTION_SYNTHESIZE worth of tokens.
-MAX_CLAIMS_PER_SYNTHESIS = 2
-MAX_CLAIMS_PER_RUN = 6
+# Legacy fallbacks retained for callers that don't pass a config. The
+# real defaults live in config.VerificationConfig.
+DEFAULT_MAX_CLAIMS_PER_SYNTHESIS = 2
+DEFAULT_MAX_CLAIMS_PER_RUN = 10
 
 
 def select_claims_to_verify(
     source_notes: list[Note],
     already_selected: int = 0,
+    *,
+    max_per_synthesis: int = DEFAULT_MAX_CLAIMS_PER_SYNTHESIS,
+    max_per_run: int = DEFAULT_MAX_CLAIMS_PER_RUN,
+    skip_novel: bool = True,
 ) -> list[tuple[Note, ClaimItem]]:
     """Pick (source_note, claim) pairs worth independent verification.
 
-    Returns claims sorted by extractor_confidence descending, capped at
-    `MAX_CLAIMS_PER_SYNTHESIS` for this call and `MAX_CLAIMS_PER_RUN`
-    minus `already_selected` for the run overall.
+    Filters:
+    - Claims with empty quotes are excluded.
+    - When `skip_novel` is true, claims tagged NOVEL_TO_SOURCE are
+      excluded — they're about something invented / measured only in the
+      source (e.g. "our proposed benchmark contains 1000 examples") so
+      independent corroboration is structurally impossible.
+
+    Returns remaining claims sorted by extractor_confidence descending,
+    capped at `max_per_synthesis` for this call and `max_per_run` minus
+    `already_selected` for the run overall.
     """
     candidates: list[tuple[Note, ClaimItem]] = []
     for note in source_notes:
         claims = getattr(note.metadata, "claims", None) or []
         for claim in claims:
-            if claim.quote.strip():
-                candidates.append((note, claim))
+            if not claim.quote.strip():
+                continue
+            if skip_novel and claim.claim_type == ClaimType.NOVEL_TO_SOURCE:
+                continue
+            candidates.append((note, claim))
     candidates.sort(key=lambda pair: pair[1].extractor_confidence, reverse=True)
-    budget = max(0, MAX_CLAIMS_PER_RUN - already_selected)
-    return candidates[: min(MAX_CLAIMS_PER_SYNTHESIS, budget)]
+    budget = max(0, max_per_run - already_selected)
+    return candidates[: min(max_per_synthesis, budget)]
 
 
 def emit_verify_claim(

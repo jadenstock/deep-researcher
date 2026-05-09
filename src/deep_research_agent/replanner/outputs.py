@@ -1,13 +1,10 @@
 """Output types for the bounded replanner.
 
-The replanner's LLM returns a ReplanDecision that the scheduler
-translates into concrete task/note mutations. Actions are a
-discriminated union so the scheduler can match per-action-type without
-re-parsing fields.
-
-v3 step 1 scope: SpawnSubQuestion + NoOp. AbandonTask and
-EscalatePattern land with cascade semantics (step 2) and the
-multi_perspective / debate patterns (step 3+).
+Mid-run the replanner is the dynamic-coverage engine: it can add more
+scouting, promote specific sources, trigger synthesis when a question is
+saturated, and the original four levers (spawn / abandon / escalate /
+no_op). The scheduler translates a ReplanDecision into concrete
+task/note mutations through `_apply_*` in replanner.py.
 """
 
 from __future__ import annotations
@@ -21,8 +18,9 @@ class SpawnSubQuestion(BaseModel):
     """Add a new sub-question under the root decomposition.
 
     The scheduler will create a question_note, spawn a
-    QUESTION_SYNTHESIZE task reading it, and add a dep edge onto the
-    existing WRITE_REPORT so the report waits for the new synthesis.
+    QUESTION_SYNTHESIZE task reading it + a per-question SCOUT_SOURCES
+    task, and add a dep edge onto the termination gate so CHECK only
+    runs once the new question has synthesized.
     """
 
     action: Literal["spawn_subquestion"] = "spawn_subquestion"
@@ -45,15 +43,10 @@ class SpawnSubQuestion(BaseModel):
 class AbandonSubQuestion(BaseModel):
     """Close out a sub-question that is not productive.
 
-    Per ADR 0009: in-progress tasks on the sub-question complete but
-    their outputs go to an archive decision_note; PENDING descendants
-    are marked ABANDONED; dep edges from downstream tasks (e.g.
-    WRITE_REPORT) pointing at those descendants are dropped so the
-    run doesn't deadlock.
-
-    Use sparingly — budget is scarce and abandoning work is a high-cost
-    decision. Prefer spawn_subquestion to complement thin coverage over
-    abandon_subquestion to remove it.
+    PENDING descendants are marked ABANDONED; dep edges from downstream
+    tasks pointing at those descendants are dropped so the run doesn't
+    deadlock. Use sparingly — budget is scarce; prefer spawn_subquestion
+    to complement thin coverage over abandon to remove it.
     """
 
     action: Literal["abandon_subquestion"] = "abandon_subquestion"
@@ -71,13 +64,10 @@ class AbandonSubQuestion(BaseModel):
 class EscalatePattern(BaseModel):
     """Re-run a sub-question under a heavier orchestration pattern.
 
-    Use when single_researcher's synthesis has surviving dissent that
-    wasn't adequately engaged — multi_perspective runs three framings
-    (neutral/skeptic/advocate) over the same sources so disagreement
-    surfaces in the claim stream.
-
-    Scope for v3: only multi_perspective is supported. debate and ach
-    land in subsequent steps.
+    Spawns ANALYZE_SOURCE tasks with the new pattern against the top
+    existing analyzed sources for this question, then a QUESTION_SYNTHESIZE
+    with the corresponding synthesizer mode. Original synthesis stays —
+    the report writer sees both.
     """
 
     action: Literal["escalate_pattern"] = "escalate_pattern"
@@ -85,14 +75,9 @@ class EscalatePattern(BaseModel):
     target_pattern: Literal["multi_perspective", "debate", "ach"] = Field(
         ...,
         description=(
-            "Pattern to escalate to. multi_perspective: three framings "
-            "(neutral/skeptic/advocate) for broad engagement. debate: two "
-            "adversarial framings (affirmative/negative) + judge "
-            "synthesizer, for directly contested yes/no propositions. "
-            "ach (Analysis of Competing Hypotheses): enumerate hypotheses, "
-            "evaluate each against all sources, adopt the one with fewest "
-            "inconsistencies. Use for questions with 3+ plausible answers "
-            "where the evidence needs structural disambiguation."
+            "multi_perspective: three framings (neutral/skeptic/advocate). "
+            "debate: two framings + judge synthesizer. "
+            "ach: enumerate + adjudicate hypotheses."
         ),
     )
     rationale: str = Field(
@@ -104,6 +89,63 @@ class EscalatePattern(BaseModel):
     )
 
 
+class SpawnScoutBurst(BaseModel):
+    """Widen coverage on an under-covered question (or topic).
+
+    Emits a new SCOUT_SOURCES task that runs the standard per-question
+    reformulation bundle (direct / evidence / review). Use when a
+    question's analyzed-source count is low AND no retrieval is pending
+    (corpus has saturated on a thin evidence base).
+    """
+
+    action: Literal["spawn_scout_burst"] = "spawn_scout_burst"
+    question_note_id: str = Field(
+        ...,
+        description=(
+            "The question_note this scout burst serves. The topic of the "
+            "scout task defaults to the question's title."
+        ),
+    )
+    rationale: str = Field(
+        ...,
+        description=(
+            "Cite the specific coverage gap — e.g. 'only 2 fetched sources "
+            "at tier ≤ 3 for this question, and no scout is in flight'."
+        ),
+    )
+
+
+class PromoteSource(BaseModel):
+    """Force ANALYZE_SOURCE for a specific (source, question) pair.
+
+    Use when a high-tier source is in the corpus but scored below the
+    analyze threshold for a specific question — the relevance scorer
+    was too conservative. Rare; mostly a safety valve.
+    """
+
+    action: Literal["promote_source"] = "promote_source"
+    source_note_id: str = Field(..., description="The source_note to analyze.")
+    question_note_id: str = Field(..., description="The question to analyze it for.")
+    rationale: str = Field(..., description="Why this source should be analyzed.")
+
+
+class TriggerSynthesis(BaseModel):
+    """Force a question's synthesis NOW regardless of the readiness gate.
+
+    Use when the replanner decides this question has diminishing returns
+    on further retrieval (e.g. contested with no new evidence surfacing)
+    or when the run is approaching budget. Spawns a fresh QS with
+    poll_count=MAX_QS_POLLS so the readiness gate auto-passes on the
+    `polls_exhausted` branch.
+    """
+
+    action: Literal["trigger_synthesis"] = "trigger_synthesis"
+    question_note_id: str = Field(..., description="Which question to synthesize.")
+    rationale: str = Field(
+        ..., description="Why the gate should be skipped — cite a specific reason."
+    )
+
+
 class NoOp(BaseModel):
     """Skip this replan cycle with a stated reason."""
 
@@ -111,7 +153,15 @@ class NoOp(BaseModel):
     rationale: str = Field(..., description="Why no changes are warranted.")
 
 
-ReplanAction = SpawnSubQuestion | AbandonSubQuestion | EscalatePattern | NoOp
+ReplanAction = (
+    SpawnSubQuestion
+    | AbandonSubQuestion
+    | EscalatePattern
+    | SpawnScoutBurst
+    | PromoteSource
+    | TriggerSynthesis
+    | NoOp
+)
 
 
 class ReplanDecision(BaseModel):
@@ -123,9 +173,9 @@ class ReplanDecision(BaseModel):
     )
     actions: list[ReplanAction] = Field(
         default_factory=list,
-        max_length=3,
+        max_length=4,
         description=(
-            "Mutations to apply. Keep to at most 3 per cycle. Prefer fewer, "
+            "Mutations to apply. Keep to at most 4 per cycle. Prefer fewer, "
             "higher-signal actions over many speculative ones. Empty list is "
             "allowed and equivalent to [NoOp]."
         ),

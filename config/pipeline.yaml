@@ -1,0 +1,123 @@
+# Streaming pipeline tunables.
+#
+# All thresholds + caps that govern how the pipeline scouts, promotes,
+# analyzes, synthesizes, and verifies. Edit this file to rebalance
+# coverage vs cost; defaults are calibrated on the observed behavior
+# of a 7-sub-question run with a 136-source corpus.
+
+scouting:
+  # Direct query (topic as-is). Baseline breadth.
+  direct_max_hits: 6
+
+  # Contrarian reformulations ("criticism of X", "limitations of X").
+  # Dropped from 3 to 2 reformulations — the third one consistently
+  # returned SEO rehashes of the first two on observed runs.
+  contrarian_n_reformulations: 2
+  contrarian_max_hits: 4
+
+  # Recency-biased query. The current implementation appends a
+  # year hint; upstream ranking can still surface older work.
+  time_bounded_max_hits: 4
+
+  # Per-venue site: queries. Dropped nature.com (usually paywalled HTML
+  # that fails the fetch anyway); bumped arxiv to 5 because primary-source
+  # coverage matters most for fast-moving fields.
+  venue_queries:
+    - ["arxiv.org", 5]
+    - ["openreview.net", 2]
+
+  # Per-question scout bundle (runs after DECOMPOSE).
+  question_direct_max_hits: 5
+  question_evidence_max_hits: 4
+  question_review_max_hits: 3
+
+  # Verify-seed bundle — pulled during VERIFY_CLAIM for corroboration.
+  verify_seed_max_hits: 5
+
+
+promotion:
+  # SCOUTED → FETCHED gate: a source gets fetched if its relevance for
+  # ANY open question is ≥ this. Keep below analyze_relevance so sources
+  # can be fetched speculatively and filtered harder at analyze time.
+  fetch_relevance_threshold: 0.30
+
+  # FETCHED → ANALYZE_SOURCE gate per (source, question) pair.
+  # Lowered from 0.40 after observing thin per-question coverage —
+  # the relevance scorer tends to be conservative on the 0.35-0.40 band.
+  analyze_relevance_threshold: 0.35
+
+  # Max (source, question) pairs analyzed per source. 5 lets a high-value
+  # paper serve every sub-question without blowing per-source cost.
+  max_analyses_per_source: 5
+
+  # How many SCOUTED sources per RESCORE_RELEVANCE task. Larger batches
+  # amortize the per-task overhead; too large and one LLM call slows.
+  rescore_batch_size: 12
+
+
+synthesis:
+  # Minimum analyzed sources before QS will synthesize. Raised from 4 to
+  # 6 after observing thin syntheses that hit the poll cap at 2-3 sources.
+  min_analyzed_sources: 6
+
+  # Poll ceiling. If still not ready after this many re-emissions,
+  # synthesize with what we have. Raised from 6 to 10 so questions wait
+  # longer for retrieval to drain.
+  max_qs_polls: 10
+
+  # Prompt-size cap. If more than this many sources are analyzed for
+  # the question, the synthesizer only sees the top N by
+  # (tier_weight, relevance, max extractor_confidence).
+  max_sources_per_synthesis: 12
+
+
+verification:
+  max_claims_per_synthesis: 2
+  # Raised from 6 to 10 so every synthesized question gets at least one
+  # verify pass on a 5-6 question run.
+  max_claims_per_run: 10
+  # Independent hits pulled during each VERIFY_CLAIM for corroboration.
+  independent_hits: 5
+  # When all questions are already SYNTHESIZED by the time VERIFY_CLAIM
+  # runs, skip adding new sources to the corpus — they'd just clutter.
+  skip_seeding_after_synthesis: true
+  # Skip claims tagged novel_to_source by the analyzer — a paper's own
+  # proposed benchmark / method / experimental result can't be
+  # corroborated by independent sources (they don't exist). Verifying
+  # them always collapses to INCONCLUSIVE; filter them to save budget.
+  skip_novel_claims: true
+
+
+hygiene:
+  # Before promoting SCOUTED → FETCHED, consult the URL reject-list
+  # (social, aggregators, etc.) and skip promotion for known junk.
+  # Saves a fetch + tier classifier call on ~30% of promotions.
+  prefetch_reject_list: true
+
+  # When analyzer rules a source off_topic for a question, zero out the
+  # (source, question) relevance so it never gets re-promoted to analyze.
+  off_topic_relevance_penalty: true
+
+  # At the end of the run, emit a decision_note counting SCOUTED
+  # sources that were never promoted. Records the wasted breadth for
+  # audit; doesn't delete notes.
+  record_pruned_scouted: true
+
+
+replanner:
+  # How many task completions between replan cycles. Raised from 5 to
+  # 15 after observing most cycles were no-ops ("things going well /
+  # work ongoing") — invoking every 5 tasks wastes a JUDGMENT-tier LLM
+  # call on a graph that hasn't changed much since the last cycle.
+  cadence: 15
+  # Total replan cycles per run. Lowered to 3 — with cadence=15 and a
+  # ~200-task run, that's one cycle after landscape+decompose, one
+  # mid-run, one near the end. Enough to intervene when something is
+  # actually off without running the LLM repeatedly on stable graphs.
+  budget: 3
+  # Skip the LLM call entirely if nothing material has happened since
+  # the previous cycle — fewer than `min_progress_tasks` tasks have
+  # completed AND no new syntheses have landed. Cheap guard against
+  # "replan budget burned on quiet periods."
+  min_progress_tasks: 6
+  skip_if_no_new_synthesis: true

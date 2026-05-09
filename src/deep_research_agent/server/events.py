@@ -155,9 +155,7 @@ def event_note_replaced(note: Note) -> Event:
     return Event(kind="note_replaced", data=NoteSummary.from_note(note).model_dump())
 
 
-def event_replan_started(
-    cycle_num: int, routing: RoutingConfig | None = None
-) -> tuple[Event, str]:
+def event_replan_started(cycle_num: int, routing: RoutingConfig | None = None) -> tuple[Event, str]:
     """Synthetic task_started event for a replanner cycle.
 
     The replanner runs between scheduler ticks and doesn't go through
@@ -183,8 +181,7 @@ def event_replan_started(
         id=synth_id,
         type="REPLAN",
         goal=(
-            "Re-assess graph state; spawn/abandon/escalate sub-questions "
-            "as evidence warrants."
+            "Re-assess graph state; spawn/abandon/escalate sub-questions " "as evidence warrants."
         ),
         status="RUNNING",
         tier="MID",
