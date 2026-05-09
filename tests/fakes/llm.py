@@ -56,6 +56,9 @@ class FakeLLMRunner:
         user_prompt: str,
         task_type: str | None = None,
     ) -> Any:
+        # output_type and task_type are accepted for signature compatibility
+        # with the real LLMRunner; the fake doesn't exercise them.
+        del output_type, task_type
         call = RunnerCall(
             script_key=script_key,
             role=str(role),
