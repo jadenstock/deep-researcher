@@ -130,21 +130,22 @@ class PydanticAIRunner:
         elapsed_ms = int((time.monotonic() - t0) * 1000)
         usage = r.usage() if hasattr(r, "usage") else None
         task_label = tt.value if tt is not None else (str(task_type) if task_type else "UNKNOWN")
-        if usage is not None and self.tracker is not None:
-            await self.tracker.record(model_id, usage, task_type=task_label)
+        if usage is None:
+            logger.info(
+                "llm_call model=%s task=%s usage=unavailable ms=%d",
+                model_id,
+                task_label,
+                elapsed_ms,
+            )
+        else:
+            if self.tracker is not None:
+                await self.tracker.record(model_id, usage, task_type=task_label)
             logger.info(
                 "llm_call model=%s task=%s in=%d out=%d ms=%d",
                 model_id,
                 task_label,
                 getattr(usage, "input_tokens", 0) or 0,
                 getattr(usage, "output_tokens", 0) or 0,
-                elapsed_ms,
-            )
-        else:
-            logger.info(
-                "llm_call model=%s task=%s usage=unavailable ms=%d",
-                model_id,
-                task_label,
                 elapsed_ms,
             )
         return LLMResult(output=r.output, model_id=model_id, elapsed_ms=elapsed_ms)
