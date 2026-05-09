@@ -28,10 +28,11 @@ from pydantic_ai import Agent
 
 from ..agent_factory import make_model
 from ..config import LocalConfig
-from ..schemas.enums import Tier
+from ..schemas.enums import RoleClass, TaskTier, Tier
 from .simple import REJECT_DOMAINS
 
 if TYPE_CHECKING:
+    from ..executor.llm import LLMRunner
     from ..token_usage import TokenUsageTracker
 
 logger = logging.getLogger(__name__)
@@ -170,4 +171,45 @@ async def classify_source(
                 elapsed_ms,
             )
 
+    return Tier(out.tier), out.rationale, out.confidence, out.peer_reviewed
+
+
+async def classify_source_via_runner(
+    *,
+    runner: LLMRunner,
+    title: str,
+    url: str,
+    snippet: str,
+    content: str,
+) -> tuple[Tier, str, float, bool]:
+    """Classify one source. Same semantics as classify_source() but routes
+    through the LLMRunner seam instead of building an Agent directly.
+    Reject-list short-circuits still apply and skip the LLM call."""
+    hit_rejected = _reject_list_tier(url)
+    if hit_rejected is not None:
+        tier, rationale = hit_rejected
+        return tier, rationale, 1.0, False
+
+    user = (
+        f"Title: {title}\n"
+        f"URL: {url}\n"
+        f"Snippet: {snippet}\n\n"
+        f"Content excerpt (first {CONTENT_EXCERPT_CHARS} chars):\n"
+        f"{content[:CONTENT_EXCERPT_CHARS]}"
+    )
+    try:
+        result = await runner.run(
+            role=RoleClass.CHEAP_DETERMINISTIC,
+            tier=TaskTier.LOW,
+            output_type=TierClassifierOutput,
+            system_prompt=TIER_CLASSIFIER_SYSTEM,
+            user_prompt=user,
+            task_type="TIER_CLASSIFY",
+            script_key="tier_classify",
+        )
+    except Exception as exc:
+        logger.warning("tier classifier failed url=%s err=%s", url, exc)
+        return Tier.TIER_3, "classifier failed; default to generic web tier", 0.2, False
+
+    out = result.output
     return Tier(out.tier), out.rationale, out.confidence, out.peer_reviewed

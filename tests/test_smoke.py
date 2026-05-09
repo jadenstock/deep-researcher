@@ -31,6 +31,6 @@ async def test_fake_runner_returns_scripted_response() -> None:
         system_prompt="",
         user_prompt="ping?",
     )
-    assert got == {"ok": True}
+    assert got.output == {"ok": True}
     assert len(runner.calls) == 1
     assert runner.calls[0].user_prompt == "ping?"

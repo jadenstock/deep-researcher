@@ -6,6 +6,7 @@ Usage:
         tier=2, rationale="arXiv preprint", confidence=0.8, peer_reviewed=False
     ))
     result = await runner.run(script_key="tier_classify", ...)
+    # result is an LLMResult; result.output is the scripted value.
 """
 
 from __future__ import annotations
@@ -13,6 +14,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
+
+from deep_research_agent.executor.llm import LLMResult
 
 
 class ScriptMissing(KeyError):
@@ -35,7 +38,8 @@ class FakeLLMRunner:
     calls: list[RunnerCall] = field(default_factory=list)
 
     def script(self, key: str, response: Any) -> None:
-        """Register a literal response for `key`."""
+        """Register a literal response for `key`. The fake wraps the response
+        in an LLMResult to match the real runner's contract."""
         self._responses[key] = response
 
     def script_fn(self, key: str, fn: Callable[[RunnerCall], Any]) -> None:
@@ -68,10 +72,14 @@ class FakeLLMRunner:
         )
         self.calls.append(call)
         if script_key in self._handlers:
-            return self._handlers[script_key](call)
-        if script_key not in self._responses:
+            raw = self._handlers[script_key](call)
+        elif script_key not in self._responses:
             raise ScriptMissing(
                 f"No scripted response for key={script_key!r}. "
                 f"Registered keys: {list(self._responses)}"
             )
-        return self._responses[script_key]
+        else:
+            raw = self._responses[script_key]
+        # Wrap in LLMResult so callers can uniformly use `.output` on both
+        # the real runner and the fake.
+        return LLMResult(output=raw, model_id="fake-model", elapsed_ms=0)
