@@ -126,7 +126,7 @@ class BraveClient:
             "X-Subscription-Token": self._api_key,
         }
         params = {"q": query, "count": min(count, 20)}
-        logger.debug("brave_search_start query=%r count=%d", query[:80], params["count"])
+        logger.debug("brave_search_start query=%r count=%d", query[:160], params["count"])
         total_wait = 0.0
         attempt = 0
         while True:
@@ -144,7 +144,7 @@ class BraveClient:
                 if total_wait + wait > MAX_429_TOTAL_WAIT_S:
                     logger.warning(
                         "brave_429_wait_cap query=%r total_wait=%.1f cap=%.1f — giving up",
-                        query[:80],
+                        query[:160],
                         total_wait + wait,
                         MAX_429_TOTAL_WAIT_S,
                     )
@@ -157,7 +157,7 @@ class BraveClient:
                     attempt + 1,
                     wait,
                     resp.headers.get("retry-after"),
-                    query[:80],
+                    query[:160],
                 )
                 await asyncio.sleep(wait)
                 total_wait += wait
@@ -195,7 +195,7 @@ class BraveClient:
             ]
             logger.info(
                 "brave_search query=%r hits=%d elapsed_ms=%d attempts=%d",
-                query[:80],
+                query[:160],
                 len(hits),
                 elapsed_ms,
                 attempt + 1,

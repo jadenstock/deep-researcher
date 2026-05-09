@@ -127,9 +127,7 @@ def _run_serve(args: argparse.Namespace) -> int:
         pipeline_path=args.pipeline,
         runs_dir=args.runs_dir,
     )
-    console.print(
-        f"[bold cyan]dra serve[/] — live UI at " f"[bold]http://{args.host}:{args.port}[/]"
-    )
+    console.print(f"[bold cyan]dra serve[/] — live UI at [bold]http://{args.host}:{args.port}[/]")
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     return 0
 
@@ -170,15 +168,12 @@ async def _run_research(args: argparse.Namespace) -> int:
     with console.status("[cyan]starting...", spinner="dots") as status:
 
         def _on_start(task: Task) -> None:
-            status.update(
-                f"[cyan]running [bold]{task.type.value}[/] " f"[dim]id={task.id[-6:]}[/]..."
-            )
+            status.update(f"[cyan]running [bold]{task.type.value}[/] [dim]id={task.id[-6:]}[/]...")
 
         def _on_done(task: Task, result: TaskResult) -> None:
             verdict = result.verdict or f"wrote {len(task.writes_notes)} note(s)"
             console.print(
-                f"  [dim]✓[/] [bold green]{task.type.value}[/] "
-                f"[dim]{task.id[-6:]}[/] — {verdict}"
+                f"  [dim]✓[/] [bold green]{task.type.value}[/] [dim]{task.id[-6:]}[/] — {verdict}"
             )
             status.update("[cyan]working...")
 

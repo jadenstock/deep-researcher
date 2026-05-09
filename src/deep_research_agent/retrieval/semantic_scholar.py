@@ -86,7 +86,7 @@ class SemanticScholarClient:
             except httpx.HTTPError as exc:
                 logger.warning(
                     "s2_search_failed query=%r attempts=%d err=%s",
-                    query[:60],
+                    query[:120],
                     attempt + 1,
                     exc,
                 )
@@ -99,7 +99,7 @@ class SemanticScholarClient:
                 if total_wait + wait > _S2_MAX_429_TOTAL_WAIT_S:
                     logger.warning(
                         "s2_429_wait_cap query=%r total_wait=%.1f cap=%.1f — giving up",
-                        query[:60],
+                        query[:120],
                         total_wait + wait,
                         _S2_MAX_429_TOTAL_WAIT_S,
                     )
@@ -109,7 +109,7 @@ class SemanticScholarClient:
                     attempt + 1,
                     wait,
                     resp.headers.get("retry-after"),
-                    query[:60],
+                    query[:120],
                 )
                 await asyncio.sleep(wait)
                 total_wait += wait
@@ -119,7 +119,7 @@ class SemanticScholarClient:
             if resp.status_code >= 400:
                 logger.warning(
                     "s2_search_non_2xx query=%r attempts=%d status=%d body=%s",
-                    query[:60],
+                    query[:120],
                     attempt + 1,
                     resp.status_code,
                     resp.text[:200],
@@ -179,5 +179,5 @@ class SemanticScholarClient:
                     pdf_url=pdf_url,
                 )
             )
-        logger.info("s2_search query=%r hits=%d", query[:60], len(hits))
+        logger.info("s2_search query=%r hits=%d", query[:120], len(hits))
         return hits

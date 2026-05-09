@@ -137,13 +137,13 @@ class ArxivClient:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
                 resp = await client.get(ARXIV_QUERY_URL, params=params)
         except httpx.HTTPError as exc:
-            logger.warning("arxiv_search_failed query=%r err=%s", query[:60], exc)
+            logger.warning("arxiv_search_failed query=%r err=%s", query[:120], exc)
             return []
 
         if resp.status_code >= 400:
-            logger.warning("arxiv_search_non_2xx query=%r status=%d", query[:60], resp.status_code)
+            logger.warning("arxiv_search_non_2xx query=%r status=%d", query[:120], resp.status_code)
             return []
 
         hits = _parse_feed(resp.text)
-        logger.info("arxiv_search query=%r hits=%d", query[:60], len(hits))
+        logger.info("arxiv_search query=%r hits=%d", query[:120], len(hits))
         return hits
