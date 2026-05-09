@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
@@ -213,3 +214,25 @@ async def classify_source_via_runner(
 
     out = result.output
     return Tier(out.tier), out.rationale, out.confidence, out.peer_reviewed
+
+
+@dataclass
+class RunnerBackedTierClassifier:
+    """Adapter: LLMRunner → TierClassifier protocol.
+
+    Lets the source extraction pipeline depend only on the TierClassifier
+    interface, while this adapter threads the real LLMRunner through.
+    """
+
+    runner: LLMRunner
+
+    async def classify(
+        self, *, title: str, url: str, snippet: str, content: str
+    ) -> tuple[Tier, str, float, bool]:
+        return await classify_source_via_runner(
+            runner=self.runner,
+            title=title,
+            url=url,
+            snippet=snippet,
+            content=content,
+        )
