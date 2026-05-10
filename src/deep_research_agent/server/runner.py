@@ -79,7 +79,7 @@ class SessionPublisher(EventPublisher):
     """EventPublisher that forwards agent + note events onto a RunSession.
 
     Implements the Deps.events protocol used by researcher.py,
-    question_investigator.py, and NoteMemory. Keeps a back-reference
+    analyst.py, and NoteMemory. Keeps a back-reference
     to the session so the WebSocket handler can replay + stream every
     event for this run.
     """

@@ -28,9 +28,9 @@ from pydantic_ai import Agent, RunContext
 
 from ..agent_factory import make_model
 from ..schemas.enums import RoleClass, TaskTier
+from .analyst import analyst_run
 from .deps import Deps
 from .events import reset_current_agent_id, set_current_agent_id
-from .question_investigator import investigate_question_run
 from .schemas import QuestionSynthesis, ResearcherReport
 from .tools.notes import (
     create_question_note,
@@ -122,16 +122,44 @@ def build_researcher(deps: Deps) -> Agent[Deps, str]:
     agent.tool(write_research_report)
 
     @agent.tool
-    async def investigate_question(ctx: RunContext[Deps], question: str) -> QuestionSynthesis:
-        """Delegate a specific sub-question to a research sub-agent.
+    async def investigate_question(
+        ctx: RunContext[Deps],
+        question: str,
+    ) -> QuestionSynthesis:
+        """Delegate a specific sub-question to an analyst sub-agent.
 
-        The sub-agent searches, reads sources, extracts claims, and
-        commits a `QuestionSynthesis` into shared memory. The tool
-        returns that synthesis back to you as structured data so you
-        can compose your final report. Safe to call multiple times
-        per turn to dispatch sub-questions in parallel.
+        Creates a QUESTION note for the sub-question (status=OPEN,
+        parent_question_id=root_id), then dispatches the analyst. The
+        analyst updates the note's metadata in place on commit. Returns
+        the resulting QuestionSynthesis so you can compose the final
+        report. Safe to call multiple times per turn to dispatch
+        sub-questions in parallel.
         """
-        return await investigate_question_run(ctx.deps, question)
+        from datetime import UTC, datetime
+
+        from ..schemas.enums import NoteType, QuestionClassification
+        from ..schemas.ids import NoteID
+        from ..schemas.note import Note, QuestionMetadata
+        from .memory import new_note_id
+
+        q_id = new_note_id("question")
+        root_id = ctx.deps.outputs.get("__root_question_id__")
+        note = Note(
+            id=q_id,
+            type=NoteType.QUESTION,
+            title=question[:120],
+            description=question,
+            content="",
+            metadata=QuestionMetadata(
+                classification=QuestionClassification.SYNTHESIS,
+                status="IN_PROGRESS",
+                parent_question_id=root_id if isinstance(root_id, NoteID) else None,
+            ),
+            last_modified_at=datetime.now(UTC),
+            created_at=datetime.now(UTC),
+        )
+        await ctx.deps.memory.create(note)
+        return await analyst_run(ctx.deps, q_id, question)
 
     return agent
 
