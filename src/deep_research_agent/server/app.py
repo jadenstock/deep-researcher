@@ -31,7 +31,7 @@ from ..config import (
     load_routing_config,
 )
 from ..observability import setup_logfire
-from ..retrieval.brave import set_brave_min_interval
+from ..retrieval import apply_retrieval_rate_limits
 from .events import SessionRegistry
 from .runner import run_session
 
@@ -122,7 +122,7 @@ def create_app(
     local = load_local_config(local_path)
     routing = load_routing_config(routing_path)
     setup_logfire(local)
-    set_brave_min_interval(local.retrieval.brave_min_interval_s)
+    apply_retrieval_rate_limits(local.retrieval)
 
     state = ServerState(
         routing=routing,

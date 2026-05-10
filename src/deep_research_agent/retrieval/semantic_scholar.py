@@ -10,31 +10,42 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 
 import httpx
 
 from .brave import SearchHit
+from .rate_limit import get_bucket
 
 logger = logging.getLogger(__name__)
 
 S2_SEARCH_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
 
-# S2 unauthenticated tier is ~100 req / 5min. We only make 1 request per
-# QS so a modest throttle is ample; the lock just avoids bursting when
-# sub-questions dispatch in parallel.
-_S2_LOCK = asyncio.Lock()
-_S2_LAST_CALL_AT = 0.0
-_S2_MIN_INTERVAL_S = 1.0
+# Defaults by auth state:
+#   unauthenticated: ~100 req / 5min -> 3.0s interval (0.33/s)
+#   authenticated:   ~1/s per key on /paper/search
+# Picked in set_s2_min_interval() when config wires it up; bucket starts at
+# the unauthenticated default so an un-wired import can't exceed the public
+# quota.
+_S2_INTERVAL_UNAUTH_S = 3.0
+_S2_INTERVAL_AUTH_S = 1.0
 
 
-async def _s2_throttle() -> None:
-    global _S2_LAST_CALL_AT
-    async with _S2_LOCK:
-        wait = _S2_MIN_INTERVAL_S - (time.monotonic() - _S2_LAST_CALL_AT)
-        if wait > 0:
-            await asyncio.sleep(wait)
-        _S2_LAST_CALL_AT = time.monotonic()
+def _s2_bucket():
+    return get_bucket("semantic_scholar", rate=1.0 / _S2_INTERVAL_UNAUTH_S)
+
+
+def set_s2_min_interval(interval_s: float | None, *, authenticated: bool) -> None:
+    """Configure the Semantic Scholar rate limit.
+
+    If `interval_s` is None, picks a default based on `authenticated`:
+    3.0s unauthenticated (matches ~100 req/5min public quota), 1.0s
+    authenticated. Callers who know their plan allows more can pass an
+    explicit smaller value.
+    """
+    if interval_s is None:
+        interval_s = _S2_INTERVAL_AUTH_S if authenticated else _S2_INTERVAL_UNAUTH_S
+    interval_s = max(0.01, interval_s)
+    _s2_bucket().set_rate(rate=1.0 / interval_s)
 
 
 # Fields we pull; keep minimal to stay under S2's per-field response cap.
@@ -79,7 +90,7 @@ class SemanticScholarClient:
         total_wait = 0.0
         attempt = 0
         while True:
-            await _s2_throttle()
+            await _s2_bucket().acquire()
             try:
                 async with httpx.AsyncClient(timeout=self._timeout) as client:
                     resp = await client.get(S2_SEARCH_URL, headers=headers, params=params)

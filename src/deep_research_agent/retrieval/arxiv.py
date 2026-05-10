@@ -7,15 +7,14 @@ under arXiv's published 1 req/3s guideline for the public endpoint.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
-import time
 from xml.etree import ElementTree as ET
 
 import httpx
 
 from .brave import SearchHit
+from .rate_limit import get_bucket
 
 logger = logging.getLogger(__name__)
 
@@ -42,23 +41,24 @@ def _arxiv_html_url(abs_url: str) -> str | None:
     return f"https://arxiv.org/html/{arxiv_id}"
 
 
-_ARXIV_LOCK = asyncio.Lock()
-_ARXIV_LAST_CALL_AT = 0.0
-_ARXIV_MIN_INTERVAL_S = 3.0
+# arXiv's public endpoint guideline is 1 req / 3s.
+_ARXIV_DEFAULT_INTERVAL_S = 3.0
+
+
+def _arxiv_bucket():
+    return get_bucket("arxiv", rate=1.0 / _ARXIV_DEFAULT_INTERVAL_S)
+
+
+def set_arxiv_min_interval(interval_s: float) -> None:
+    """Override the arXiv rate (as a min interval in seconds)."""
+    interval_s = max(0.01, interval_s)
+    _arxiv_bucket().set_rate(rate=1.0 / interval_s)
+
 
 _NS = {
     "atom": "http://www.w3.org/2005/Atom",
     "arxiv": "http://arxiv.org/schemas/atom",
 }
-
-
-async def _arxiv_throttle() -> None:
-    global _ARXIV_LAST_CALL_AT
-    async with _ARXIV_LOCK:
-        wait = _ARXIV_MIN_INTERVAL_S - (time.monotonic() - _ARXIV_LAST_CALL_AT)
-        if wait > 0:
-            await asyncio.sleep(wait)
-        _ARXIV_LAST_CALL_AT = time.monotonic()
 
 
 def _parse_feed(xml_text: str) -> list[SearchHit]:
@@ -132,7 +132,7 @@ class ArxivClient:
             "max_results": min(limit, 20),
             "sortBy": "relevance",
         }
-        await _arxiv_throttle()
+        await _arxiv_bucket().acquire()
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
                 resp = await client.get(ARXIV_QUERY_URL, params=params)

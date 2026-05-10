@@ -225,6 +225,14 @@ class RetrievalKeys(BaseModel):
     # practice, 1.5s is safe. Paid plans can drop to ~0.05 (20 req/s) or
     # ~0.02 (50 req/s).
     brave_min_interval_s: float = 1.5
+    # Min interval (seconds) between Semantic Scholar calls. Unauthenticated
+    # is ~100 req / 5min (~0.33/s, so 3.0s); authenticated plans typically
+    # allow 1/s per key. If None, the client picks a default based on
+    # whether semantic_scholar_api_key is set.
+    semantic_scholar_min_interval_s: float | None = None
+    # Min interval (seconds) between arXiv queries. arXiv's published
+    # guideline is 1 req / 3s on the public endpoint.
+    arxiv_min_interval_s: float = 3.0
 
 
 class ObservabilityKeys(BaseModel):

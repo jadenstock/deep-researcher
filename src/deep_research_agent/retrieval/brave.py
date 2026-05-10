@@ -14,48 +14,26 @@ import time
 import httpx
 from pydantic import BaseModel
 
+from .rate_limit import get_bucket
+
 logger = logging.getLogger(__name__)
 
 BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
 
-# Serialize across all BraveClient instances so concurrent QUESTION_SYNTHESIZE
-# dispatches don't stampede into 429s. Interval is configurable via
-# LocalConfig.retrieval.brave_min_interval_s - set by BraveClient on init.
-_BRAVE_LOCK = asyncio.Lock()
-_BRAVE_LAST_CALL_AT = 0.0
-_BRAVE_MIN_INTERVAL_S = 1.5
+# Brave free tier is 1 QPS with a strict sliding window; 1.5s min-interval
+# (rate ~0.67/s) is safe in practice. Paid plans can raise this via
+# set_brave_min_interval().
+_BRAVE_DEFAULT_INTERVAL_S = 1.5
+
+
+def _brave_bucket():
+    return get_bucket("brave", rate=1.0 / _BRAVE_DEFAULT_INTERVAL_S)
 
 
 def set_brave_min_interval(interval_s: float) -> None:
-    """Override the cross-client min-interval (seconds)."""
-    global _BRAVE_MIN_INTERVAL_S
-    _BRAVE_MIN_INTERVAL_S = max(0.0, interval_s)
-
-
-async def _brave_throttle() -> None:
-    """Acquire the shared Brave throttle slot.
-
-    Logs the queue wait whenever a caller blocked on the throttle (not
-    the sleep itself - that's enforced pacing, not the bug). A long
-    wait means many QS tasks are queued behind a single Brave budget.
-    """
-    global _BRAVE_LAST_CALL_AT
-    enter_at = time.monotonic()
-    async with _BRAVE_LOCK:
-        acquired_at = time.monotonic()
-        wait = _BRAVE_MIN_INTERVAL_S - (acquired_at - _BRAVE_LAST_CALL_AT)
-        if wait > 0:
-            await asyncio.sleep(wait)
-        _BRAVE_LAST_CALL_AT = time.monotonic()
-    queue_ms = int((acquired_at - enter_at) * 1000)
-    pace_ms = int(max(wait, 0.0) * 1000)
-    if queue_ms > 100 or pace_ms > 100:
-        logger.info(
-            "brave_throttle queue_ms=%d pace_ms=%d interval_s=%.2f",
-            queue_ms,
-            pace_ms,
-            _BRAVE_MIN_INTERVAL_S,
-        )
+    """Override the cross-client Brave rate (as a min interval in seconds)."""
+    interval_s = max(0.01, interval_s)
+    _brave_bucket().set_rate(rate=1.0 / interval_s)
 
 
 class SearchHit(BaseModel):
@@ -130,7 +108,7 @@ class BraveClient:
         total_wait = 0.0
         attempt = 0
         while True:
-            await _brave_throttle()
+            await _brave_bucket().acquire()
             t0 = time.monotonic()
             async with httpx.AsyncClient(timeout=self._timeout) as client:
                 resp = await client.get(BRAVE_SEARCH_URL, headers=headers, params=params)

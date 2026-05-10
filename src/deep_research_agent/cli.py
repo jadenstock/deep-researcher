@@ -29,7 +29,7 @@ from .agents.researcher import research_run
 from .agents.schemas import ResearcherReport, compose_report_markdown
 from .config import load_local_config, load_routing_config
 from .observability import setup_logfire
-from .retrieval.brave import set_brave_min_interval
+from .retrieval import apply_retrieval_rate_limits
 
 logger = logging.getLogger(__name__)
 console = Console(stderr=True)
@@ -129,7 +129,7 @@ async def _run_research(args: argparse.Namespace) -> int:
     local = load_local_config(args.local_config)
     routing = load_routing_config(args.routing)
     setup_logfire(local)
-    set_brave_min_interval(local.retrieval.brave_min_interval_s)
+    apply_retrieval_rate_limits(local.retrieval)
 
     run_id = _new_run_id()
     run_dir = Path(args.runs_dir) / run_id
