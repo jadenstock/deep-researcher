@@ -66,14 +66,33 @@ async def create_source_note(
     url: str,
     title: str,
     snippet: str = "",
+    topics: list[str] | None = None,
 ) -> NoteID:
     """Record a source you've found but not yet read fully.
 
-    Returns the NoteID of the new source note. Use this as soon as a
-    search hit looks worth examining - it reserves a handle you can
-    update later with content, tier, and claims. Does not fetch the
-    URL; call `fetch_url` separately when you want the content.
+    If a source with the same URL already exists in memory, returns
+    the existing NoteID (dedup). Otherwise creates a new SCOUTED
+    source note. Does not fetch - call `fetch_url` separately.
+
+    Args:
+      topics: optional topic hints (1-3 short labels). Useful at scout
+        time to cluster sources in the corpus view; analysts can
+        ignore or overwrite.
     """
+    existing = ctx.deps.memory.find_source_by_url(url)
+    if existing is not None:
+        # Merge topics if the caller supplied new ones - helps when
+        # landscape scouts the same URL on two different rounds with
+        # different topic framings.
+        if topics:
+            existing_meta = existing.metadata
+            assert isinstance(existing_meta, SourceNoteMetadata)
+            merged = list(dict.fromkeys([*existing_meta.topics, *topics]))
+            if merged != existing_meta.topics:
+                new_meta = existing_meta.model_copy(update={"topics": merged})
+                await ctx.deps.memory.update(existing.id, metadata=new_meta)
+        return existing.id
+
     source_id = new_note_id("source")
     note = Note(
         id=source_id,
@@ -86,6 +105,7 @@ async def create_source_note(
             title=title or "Untitled",
             state=SourceState.SCOUTED,
             summary=snippet or None,
+            topics=list(topics or []),
         ),
         last_modified_at=_now(),
         created_at=_now(),

@@ -29,6 +29,19 @@ def new_note_id(prefix: str) -> NoteID:
     return NoteID(f"{prefix}-{uuid.uuid4().hex[:12]}")
 
 
+def _normalize_url(url: str) -> str:
+    u = url.strip().rstrip("/")
+    # Lowercase scheme + host only - keep path case-sensitive.
+    if "://" in u:
+        scheme, rest = u.split("://", 1)
+        if "/" in rest:
+            host, path = rest.split("/", 1)
+            u = f"{scheme.lower()}://{host.lower()}/{path}"
+        else:
+            u = f"{scheme.lower()}://{rest.lower()}"
+    return u
+
+
 class NoteMemory:
     """Async-safe note graph keyed by NoteID.
 
@@ -85,6 +98,24 @@ class NoteMemory:
 
     def list_by_type(self, note_type: NoteType) -> list[Note]:
         return [n for n in self._notes.values() if n.type == note_type]
+
+    def find_source_by_url(self, url: str) -> Note | None:
+        """Return the existing source note for this URL, or None.
+
+        URLs are compared with trivial normalization - strip trailing
+        slash and case-fold the scheme/host. Good enough to dedup
+        identical links from different search providers; not a full
+        canonicalizer.
+        """
+        from ..schemas.note import SourceNoteMetadata
+
+        needle = _normalize_url(url)
+        for n in self._notes.values():
+            if not isinstance(n.metadata, SourceNoteMetadata):
+                continue
+            if _normalize_url(n.metadata.url) == needle:
+                return n
+        return None
 
     def all(self) -> Iterable[Note]:
         return list(self._notes.values())
