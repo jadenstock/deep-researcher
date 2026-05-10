@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from typing import Literal
 
 from pydantic_ai import Agent
 
@@ -41,6 +42,56 @@ from .tools.notes import (
 from .tools.search import search_academic, search_web
 
 logger = logging.getLogger(__name__)
+
+AnalystMode = Literal["explore", "verify", "adversarial"]
+
+
+# Mode-conditional framing block prepended to ANALYST_SYSTEM. Explore
+# is the default (empty) framing; verify/adversarial add Round-3
+# falsification discipline so the judgment-family model isn't just
+# re-running the same investigation the explore already did.
+MODE_FRAMING: dict[AnalystMode, str] = {
+    "explore": "",
+    "verify": """\
+## Mode: VERIFY (Round 3 — falsification)
+You are INDEPENDENTLY verifying a specific prior claim, not running a
+fresh investigation. The question you were given references that prior
+claim (often with a [question-...] ID).
+
+Discipline for this mode:
+  - If the question cites a prior question note (e.g. [question-abc123]),
+    call `load_note` on it FIRST to read the claim you're testing.
+  - Phrase your searches to deliberately find counter-evidence. Use
+    different query wording, different venues, and different time
+    windows than the original claim's sources used.
+  - Your final report must explicitly state one of: SUPPORTS (new
+    independent evidence confirms the claim), REFUTES (independent
+    evidence contradicts it), or INCONCL (can't find evidence either
+    way). Your `confidence` reflects how strong that verdict is.
+  - Populate `disagreements` if your verdict differs from the original.
+
+""",
+    "adversarial": """\
+## Mode: ADVERSARIAL (Round 3 — steelman the opposite)
+You are constructing the strongest possible case AGAINST a prior
+adopted position. This is not a balanced review. Your job is to make
+the best argument for the opposite side.
+
+Discipline for this mode:
+  - If the question cites a prior question note (e.g. [question-abc123]),
+    call `load_note` on it FIRST to read the position you're opposing.
+  - Search for evidence, authors, and framings that the original
+    investigation likely missed or dismissed.
+  - Your `report` must LEAD with the counter-case, not a summary of
+    both sides. Steelman, don't strawman.
+  - Your `confidence` reflects how strong the counter-case is (high =
+    the original position is seriously vulnerable; low = the original
+    position largely survives scrutiny).
+  - Populate `disagreements` with the specific points where you'd
+    overturn the original.
+
+""",
+}
 
 
 ANALYST_SYSTEM = """\
@@ -97,13 +148,26 @@ corpus doesn't cover your angle.
 """
 
 
-def build_analyst(deps: Deps) -> Agent[Deps, str]:
-    model_id = deps.routing.model_id_for(RoleClass.GENERATIVE, TaskTier.MID)
+def _routing_for_mode(mode: AnalystMode) -> tuple[RoleClass, TaskTier]:
+    """Map dispatch mode to (role_class, tier) for model resolution.
+
+    explore stays on the generative family (current behavior).
+    verify/adversarial route to the judgment family so their output
+    comes from a different model family than the explore that
+    produced the claim/position being challenged — ADR 0008.
+    """
+    if mode == "explore":
+        return RoleClass.GENERATIVE, TaskTier.MID
+    return RoleClass.JUDGMENT, TaskTier.MID
+
+
+def build_analyst(deps: Deps, mode: AnalystMode, model_id: str) -> Agent[Deps, str]:
+    system_prompt = MODE_FRAMING[mode] + ANALYST_SYSTEM
     agent = Agent(
         make_model(model_id, deps.local),
         deps_type=Deps,
         output_type=str,
-        system_prompt=ANALYST_SYSTEM,
+        system_prompt=system_prompt,
         tool_retries=5,
     )
     agent.tool(search_web)
@@ -121,25 +185,42 @@ async def analyst_run(
     deps: Deps,
     question_id: NoteID,
     question: str,
+    mode: AnalystMode = "explore",
 ) -> QuestionSynthesis:
     """Run the analyst against a pre-created QUESTION note.
+
+    `mode` selects the model family + framing block:
+      - "explore" (default): generative family; fresh investigation.
+      - "verify": judgment family; Round-3 independent re-retrieval
+        on a specific prior claim.
+      - "adversarial": judgment family; Round-3 steelman the opposite
+        of a prior adopted position.
 
     Returns the QuestionSynthesis. On the rare path where the agent
     ends without calling answer_question, returns a low-confidence
     fallback so the researcher sees a gap rather than a missing result.
     """
-    agent = build_analyst(deps)
+    role, tier = _routing_for_mode(mode)
+    model_id = deps.routing.model_id_for(role, tier)
+    agent = build_analyst(deps, mode, model_id)
     agent_id = f"an-{uuid.uuid4().hex[:8]}"
-    model_id = deps.routing.model_id_for(RoleClass.GENERATIVE, TaskTier.MID)
     deps.events.on_agent_start(
         agent_id=agent_id,
         agent_type="ANALYST",
         goal=question,
-        tier=TaskTier.MID.value,
-        role=RoleClass.GENERATIVE.value,
+        tier=tier.value,
+        role=role.value,
         model_id=model_id,
+        mode=mode,
     )
-    logger.info("analyst start agent_id=%s qid=%s q=%r", agent_id, question_id, question[:140])
+    logger.info(
+        "analyst start agent_id=%s qid=%s mode=%s model=%s q=%r",
+        agent_id,
+        question_id,
+        mode,
+        model_id,
+        question[:140],
+    )
     token = set_current_agent_id(agent_id)
     try:
         try:
@@ -192,7 +273,7 @@ async def analyst_run(
                 ],
             )
 
-        verdict = f"{qs.confidence} confidence, {len(qs.sources_cited)} sources cited"
+        verdict = f"{mode}: {qs.confidence} confidence, {len(qs.sources_cited)} sources cited"
         deps.events.on_agent_done(
             agent_id=agent_id,
             agent_type="ANALYST",

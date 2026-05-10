@@ -58,6 +58,7 @@ class EventPublisher(Protocol):
         tier: str,
         role: str,
         model_id: str | None,
+        mode: str | None = None,
     ) -> None: ...
 
     def on_agent_done(

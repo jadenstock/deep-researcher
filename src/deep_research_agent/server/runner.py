@@ -100,6 +100,7 @@ class SessionPublisher(EventPublisher):
         tier: str,
         role: str,
         model_id: str | None,
+        mode: str | None = None,
     ) -> None:
         self._session.publish(
             event_agent_started(
@@ -109,6 +110,7 @@ class SessionPublisher(EventPublisher):
                 tier=tier,
                 role=role,
                 model_id=model_id,
+                mode=mode,
             )
         )
 

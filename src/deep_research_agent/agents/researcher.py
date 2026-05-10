@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import UTC, datetime
+from typing import Literal
 
 from pydantic_ai import Agent, ModelRetry, RunContext
 
@@ -30,7 +31,7 @@ from ..schemas.enums import NoteType, QuestionClassification, RoleClass, TaskTie
 from ..schemas.ids import NoteID
 from ..schemas.note import Note, QuestionMetadata, SourceNoteMetadata
 from ._usage import record_run_usage
-from .analyst import analyst_run
+from .analyst import AnalystMode, analyst_run
 from .deps import Deps
 from .events import reset_current_agent_id, set_current_agent_id
 from .landscape import landscape_run
@@ -65,10 +66,24 @@ searches - that's the landscape agent's job, and the analysts will
 do targeted search for their own questions as needed.
 
 ## Tools
-- `investigate_question(question)`: create a sub-question note and
-  dispatch an analyst on it. Returns a QuestionSynthesis (the
+- `investigate_question(question, mode)`: create a sub-question note
+  and dispatch an analyst on it. Returns a QuestionSynthesis (the
   analyst's answer). Can be called multiple times per turn in
-  parallel. Counts against your dispatch budget.
+  parallel. Counts against your dispatch budget. `mode` is one of:
+    * `explore` — default. Fresh investigation on a new sub-question.
+      Runs on the primary (generative) model family.
+    * `verify` — independent re-check of a specific prior claim.
+      Runs on a different (judgment) model family with instructions
+      to find counter-evidence. Use AFTER an `explore` has landed a
+      load-bearing claim you want confirmed by a different set of
+      priors.
+    * `adversarial` — steelman the OPPOSITE of a prior adopted
+      position. Also judgment family. Use AFTER an `explore` on a
+      `contested` sub-question, to stress-test the finding.
+  When using `verify` or `adversarial`, write the `question` string
+  so it explicitly references the prior question note (e.g.
+  "Verify the claim from [question-abc1234] that X causes Y") — the
+  analyst will load that note first.
 - `get_research_state()`: compact snapshot of all questions (with
   their status/confidence) + source corpus shape + your remaining
   dispatch budget. Call between rounds to decide next moves.
@@ -78,23 +93,66 @@ do targeted search for their own questions as needed.
 - `answer_question(question_id=<root_id>, ...)`: commit the final
   report. This is your terminal tool - call it last.
 
+## Classify before dispatching (grounded in the landscape brief)
+Before your first batch, label each sub-question you plan to dispatch
+as one of:
+  - `lookup` — single retrieval suffices; landscape points to a clear
+    authoritative source.
+  - `synthesis` — multiple sources agree; no real controversy visible
+    in the landscape.
+  - `contested` — landscape surfaced ≥ 2 distinct positions with
+    non-trivial support. Disagreement is a feature of the topic.
+  - `sparse` — landscape evidence is thin; the topic is emerging or
+    under-covered.
+Include the label in the dispatched `question` string (e.g.
+"[contested] Is X the primary cause of Y?") so the analyst sees it
+and so later review calls can tell what kind of work was done.
+
+## Mode-selection heuristics (the point of having 3 modes)
+- `lookup`, `synthesis` → one `explore` dispatch each is usually
+  enough. `verify` only if a specific claim is load-bearing for the
+  final report.
+- `contested` → dispatch `explore` first. After the synthesis lands,
+  dispatch at least one `adversarial` against the adopted position
+  before committing the report. The adversarial counter-case belongs
+  in the report body, not a footnote.
+- `sparse` → dispatch `explore` with the expectation of low
+  confidence; `verify` any load-bearing claim that survives.
+- For any claim you're about to cite as central to the final report
+  and that rests on a single source or a single model's reading,
+  dispatch `verify` before committing.
+
 ## How to work
-1. **Round 1 — initial decomposition.** Based on the query and the
-   landscape brief, dispatch 2-5 `investigate_question` calls in
-   parallel. Each should be a focused, independently-answerable
-   sub-question.
+1. **Round 1 — initial decomposition.** Read the landscape brief.
+   Classify. Dispatch 2-5 `explore` calls in parallel. Each should be
+   a focused, independently-answerable sub-question with its label
+   in the question text.
 2. **Review round.** After analysts return, call
    `get_research_state()` to see the shape. Use `load_note` on
    specific sub-question notes when you need their full report.
-3. **Decide next move.** Options (choose based on what's weak):
-     - Dispatch more `investigate_question` calls to fill gaps,
-       follow up on low-confidence answers, or probe open_issues.
-     - If coverage is good and confidence is reasonable, move to
-       committing the final report.
+3. **Decide next move.** Options:
+     - Dispatch more `explore` calls to fill gaps or follow up on
+       low-confidence answers.
+     - Dispatch `adversarial` on contested sub-questions whose
+       `explore` has landed.
+     - Dispatch `verify` on specific claims you plan to rely on.
+     - If coverage is good and the pre-commit audit (below) passes,
+       move to committing the final report.
    You may do multiple review/dispatch rounds. Stop when further
    work wouldn't meaningfully change the report - or when your
    dispatch budget runs out.
-4. **Commit.** Call
+4. **Pre-commit self-audit.** Before calling `answer_question` on
+   the root, re-read `get_research_state` and ask yourself:
+     - For each sub-question I labeled `contested`: has at least one
+       `adversarial` dispatch completed against it?
+     - For each claim central to my forming report: does it rest on
+       more than one source OR has a `verify` dispatch confirmed it?
+     - For each `sparse` sub-question whose claim I'm citing: have I
+       acknowledged the evidence thinness in the report?
+   If any answer is "no" AND your budget has room, dispatch the
+   missing work now. If budget is exhausted, be explicit about the
+   gap in `open_issues`.
+5. **Commit.** Call
    `answer_question(question_id=<root_id from get_research_state>,
                     report=..., confidence=...,
                     sources_cited=[...], disagreements=[...],
@@ -103,24 +161,36 @@ do targeted search for their own questions as needed.
      brief takeaway (1-3 sentences) then the full write-up with
      headings, reasoning, and citations. Cite source notes inline
      as [source-abc123]. Weave sub-question findings into the body;
-     do not just concatenate them.
+     do not just concatenate them. When an `adversarial` or `verify`
+     surfaced real dissent, the report body must show it.
    - confidence: high/medium/low across the investigation as a whole.
    - sources_cited: NoteIDs of source notes the report leans on.
-   - disagreements/open_issues: honest about friction.
-5. **End.** After `answer_question` returns, produce a one-line ack
+   - disagreements: anything where `verify` said REFUTES/INCONCL or
+     where `adversarial` landed a credible counter-case.
+   - open_issues: honest about what's unresolved or under-tested.
+6. **End.** After `answer_question` returns, produce a one-line ack
    ("Report committed") and stop.
 
 ## Judgment calls
-- If the query is simple, one good sub-question is fine - don't force 4.
+- If the query is simple (pure `lookup`), one good sub-question is
+  fine — don't force 4, and don't dispatch `verify`/`adversarial`
+  just because they exist.
 - A low-confidence analyst result isn't a failure: deciding whether
-  to chase it vs. report the uncertainty IS your job.
+  to chase it (another `explore`, or a `verify`) vs. report the
+  uncertainty IS your job.
 - Never call investigate_question just because budget is left over.
   Stop when the report won't improve.
+- `verify` and `adversarial` are expensive (they burn the same budget
+  as `explore`). Use them where they change the report, not
+  everywhere.
 
 ## Quality bar
 - Every factual claim in the report should trace to a source note.
 - Cite liberally. [source-...] references are the report's spine.
 - If sources disagree, say so. Don't paper over it.
+- If an `adversarial` dispatch produced a credible counter-case, the
+  final report must engage with it — at minimum in `disagreements`,
+  ideally in the body.
 """
 
 
@@ -169,11 +239,24 @@ def build_researcher(deps: Deps) -> Agent[Deps, str]:
     async def investigate_question(
         ctx: RunContext[Deps],
         question: str,
+        mode: Literal["explore", "verify", "adversarial"] = "explore",
     ) -> QuestionSynthesis:
         """Create a sub-question note and dispatch an analyst.
 
+        Args:
+            question: The sub-question to investigate. For `verify` or
+                `adversarial` dispatches, include the referenced prior
+                question-note id in the text (e.g., "[question-abc123]")
+                so the analyst loads it before working.
+            mode: One of "explore" (default; generative family, fresh
+                investigation), "verify" (judgment family; Round-3
+                independent confirm/refute of a prior claim), or
+                "adversarial" (judgment family; Round-3 steelman the
+                opposite of a prior adopted position).
+
         Parent-links the new question to the root. Decrements the
-        analyst dispatch budget; refuses if budget is exhausted.
+        analyst dispatch budget; refuses if budget is exhausted. All
+        three modes draw from the same budget.
         """
         budget = ctx.deps.outputs.get("__analyst_budget__")
         if isinstance(budget, int) and budget <= 0:
@@ -202,7 +285,8 @@ def build_researcher(deps: Deps) -> Agent[Deps, str]:
             created_at=datetime.now(UTC),
         )
         await ctx.deps.memory.create(note)
-        return await analyst_run(ctx.deps, q_id, question)
+        analyst_mode: AnalystMode = mode
+        return await analyst_run(ctx.deps, q_id, question, mode=analyst_mode)
 
     return agent
 

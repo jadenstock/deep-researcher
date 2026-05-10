@@ -87,6 +87,7 @@ class AgentSummary(BaseModel):
     tier: str | None = None
     role: str | None = None
     model_id: str | None = None
+    mode: str | None = None
     started_at: datetime | None = None
 
 
@@ -123,6 +124,7 @@ def event_agent_started(
     role: str | None,
     model_id: str | None,
     parent_id: str | None = None,
+    mode: str | None = None,
 ) -> Event:
     summary = AgentSummary(
         id=agent_id,
@@ -133,6 +135,7 @@ def event_agent_started(
         tier=tier,
         role=role,
         model_id=model_id,
+        mode=mode,
         started_at=datetime.now(UTC),
     )
     return Event(kind="task_started", data=summary.model_dump(mode="json"))

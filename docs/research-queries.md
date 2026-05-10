@@ -17,7 +17,7 @@ of this literature is on arXiv / NeurIPS / ICLR).
 
 ## 2. Tool-use agent architectures in 2025-2026
 
-> How have tool-use agent architectures evolved between 2024 and late 2026? Compare ReAct, reflexion-style self-critique, planner-executor splits, and modern multi-agent orchestration patterns. Which patterns hold up at scale?
+> How have tool-use agent architectures evolved between 2024 and 2026? Compare ReAct, reflexion-style self-critique, planner-executor splits, and modern multi-agent orchestration patterns. Which patterns hold up at scale?
 
 Why this one: informs the next iteration of this very system. Mix of
 peer-reviewed work, arXiv preprints, and industry writeups (Anthropic,
