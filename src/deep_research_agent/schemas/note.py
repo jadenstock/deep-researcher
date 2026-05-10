@@ -61,6 +61,24 @@ class QuestionMetadata(BaseModel):
     adopted_position: str | None = None
     status: Literal["OPEN", "IN_PROGRESS", "SYNTHESIZED"] = "OPEN"
 
+    # Tree structure: None for the root question (the user's original query),
+    # otherwise the id of the question this one was spawned from.
+    parent_question_id: NoteID | None = None
+
+    # Populated when an analyst answers the question via answer_question.
+    # Kept here (on the question note) rather than on a separate synthesis
+    # note so a question's lifecycle and answer live in one place.
+    bottom_line: str | None = None
+    synthesis_markdown: str | None = None
+    confidence: Literal["high", "medium", "low"] | None = None
+    sources_cited: list[NoteID] = Field(default_factory=list)
+    disagreements: list[str] = Field(default_factory=list)
+    open_issues: list[str] = Field(default_factory=list)
+
+    # Which analyst agent_id last updated this. Useful for the event UI
+    # and for the researcher to tell "did I already dispatch on this?".
+    answered_by_agent_id: str | None = None
+
 
 class SynthesisMetadata(BaseModel):
     type: Literal[NoteType.SYNTHESIS] = NoteType.SYNTHESIS
