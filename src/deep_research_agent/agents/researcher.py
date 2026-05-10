@@ -23,7 +23,7 @@ import logging
 import uuid
 from datetime import UTC, datetime
 
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent, ModelRetry, RunContext
 
 from ..agent_factory import make_model
 from ..schemas.enums import NoteType, QuestionClassification, RoleClass, TaskTier
@@ -169,7 +169,7 @@ def build_researcher(deps: Deps) -> Agent[Deps, str]:
         """
         budget = ctx.deps.outputs.get("__analyst_budget__")
         if isinstance(budget, int) and budget <= 0:
-            raise RuntimeError(
+            raise ModelRetry(
                 "analyst dispatch budget exhausted - stop dispatching and commit "
                 "the final report with answer_question(question_id=root_id, ...)."
             )

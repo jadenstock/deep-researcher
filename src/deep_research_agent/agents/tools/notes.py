@@ -16,7 +16,7 @@ import logging
 from datetime import UTC, datetime
 
 from pydantic import BaseModel, Field
-from pydantic_ai import RunContext
+from pydantic_ai import ModelRetry, RunContext
 
 from ...schemas.enums import ClaimType, NoteType, SourceState, Tier, VerificationStatus
 from ...schemas.ids import NoteID
@@ -142,20 +142,31 @@ async def update_source_after_reading(
       - claims: list of extracted claims (each with a verbatim quote). Can be empty if
         the source was unhelpful.
 
-    Returns a one-line confirmation string. Failure (source not found
-    in memory) raises - the agent should not have called this for a
-    non-existent source.
+    Returns a one-line confirmation string. If the source_id is not in
+    memory or has the wrong type, a ModelRetry is raised so the model
+    sees the error as a tool failure it can recover from (e.g. by
+    calling list_source_notes to find valid ids).
     """
     try:
         tier_enum = Tier(tier)
     except ValueError as exc:
-        raise ValueError(f"tier must be 1..5, got {tier}") from exc
+        raise ModelRetry(
+            f"tier must be an integer 1..5; got {tier!r}. "
+            "Pick the number that best matches the source quality."
+        ) from exc
 
     existing = ctx.deps.memory.get(source_id)
     if existing is None:
-        raise KeyError(f"source note {source_id} not in memory")
+        raise ModelRetry(
+            f"source note {source_id!r} not in memory. "
+            "Call list_source_notes() to see valid source ids, "
+            "or create the source first with create_source_note()."
+        )
     if existing.type != NoteType.SOURCE:
-        raise ValueError(f"note {source_id} is {existing.type.value}, not a source_note")
+        raise ModelRetry(
+            f"note {source_id!r} is a {existing.type.value}, not a source_note. "
+            "Pass a source_note id here."
+        )
 
     claim_items: list[ClaimItem] = []
     for i, c in enumerate(claims or []):
@@ -322,8 +333,9 @@ async def create_question_note(
     try:
         cls = QuestionClassification(classification)
     except ValueError as exc:
-        raise ValueError(
-            "classification must be one of: lookup, synthesis, contested, sparse"
+        raise ModelRetry(
+            "classification must be one of: lookup, synthesis, contested, sparse; "
+            f"got {classification!r}"
         ) from exc
 
     q_id = new_note_id("question")
@@ -381,13 +393,21 @@ async def answer_question(
     """
     confidence_lc = confidence.strip().lower()
     if confidence_lc not in {"high", "medium", "low"}:
-        raise ValueError(f"confidence must be 'high', 'medium', or 'low'; got {confidence!r}")
+        raise ModelRetry(f"confidence must be 'high', 'medium', or 'low'; got {confidence!r}")
 
     existing = ctx.deps.memory.get(question_id)
     if existing is None:
-        raise KeyError(f"question note {question_id} not in memory")
+        raise ModelRetry(
+            f"question note {question_id!r} not in memory. "
+            "The researcher should have created the question note before "
+            "dispatching you; if you're seeing this, pass the question_id "
+            "exactly as it was given in your opening message."
+        )
     if existing.type != NoteType.QUESTION:
-        raise ValueError(f"note {question_id} is {existing.type.value}, not a question_note")
+        raise ModelRetry(
+            f"note {question_id!r} is a {existing.type.value}, not a question_note. "
+            "Pass the question id you were assigned."
+        )
 
     existing_meta = existing.metadata
     assert isinstance(existing_meta, QuestionMetadata)
@@ -455,7 +475,10 @@ async def write_landscape_brief(
     """
 
     if not brief_markdown.strip():
-        raise ValueError("brief_markdown must be non-empty")
+        raise ModelRetry(
+            "brief_markdown must be non-empty - this field is the actual brief "
+            "the researcher will read. Write a short markdown summary of the terrain."
+        )
 
     agent_id = current_agent_id() or "anonymous"
     # Stash raw markdown for landscape_run to forward to the researcher.
