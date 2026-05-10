@@ -50,10 +50,14 @@ class NoteSummary(BaseModel):
     by_task_id: str | None = None
     links: list[dict[str, str]] = Field(default_factory=list)
     version: int = 1
+    # Source notes carry a SourceState ("SCOUTED"|"FETCHED"|"ANALYZED") that
+    # drives stage-aware rendering in the graph. None for non-source notes.
+    state: str | None = None
 
     @classmethod
     def from_note(cls, note: Note) -> NoteSummary:
         subtype = getattr(note.metadata, "category", None)
+        state = getattr(note.metadata, "state", None)
         return cls(
             id=note.id,
             type=note.type.value,
@@ -65,6 +69,7 @@ class NoteSummary(BaseModel):
                 {"target_id": link.target_id, "edge_type": link.edge_type} for link in note.links
             ],
             version=note.version,
+            state=str(state.value) if state is not None else None,
         )
 
 
@@ -264,6 +269,7 @@ class RunSession:
         self.run_id = run_id
         self.query = query
         self.started_at = datetime.now(UTC)
+        self.finished_at: datetime | None = None
         self.finished = False
         self.history: list[Event] = []
         self.subscribers: set[asyncio.Queue[Event]] = set()
@@ -272,6 +278,12 @@ class RunSession:
         self.notes: dict[str, Note] = {}
         # Holds the asyncio.Task running the session so it isn't GC'd.
         self.task: asyncio.Task[None] | None = None
+        # Populated by runner.run_session after build_deps so the run
+        # summary endpoint can read per-model totals without reaching
+        # into agent memory. Typed as Any to keep server.events free of
+        # a token_usage import cycle.
+        self.tracker: Any = None
+        self.report_note_id: str | None = None
 
     def publish(self, event: Event) -> None:
         self.history.append(event)

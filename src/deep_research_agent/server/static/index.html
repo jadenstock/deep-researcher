@@ -110,23 +110,81 @@
     min-height: 0;
     min-width: 0;
     overflow: hidden;
+    position: relative; /* anchor for #note-overlay */
   }
   #graph { flex: 1 1 auto; background: var(--bg); min-width: 0; overflow: hidden; }
   aside {
     display: flex;
     flex-direction: column;
-    width: 360px;
-    min-width: 200px;
     flex: 0 0 auto;
     min-height: 0;
   }
-  /* Left aside is the live "Running Agents" panel. Same aside shape as
-     the right sidebar but narrower by default and with its own width /
-     resize constraints. */
+  /* Left aside stacks Agents Running / Tasks / Activity. The three sections
+     are resizable via horizontal gutters between them. */
   aside#left-aside {
-    width: 280px;
-    min-width: 220px;
+    width: 320px;
+    min-width: 240px;
     border-right: 1px solid var(--border);
+  }
+
+  /* Floating note viewer - slides in from the right when a node is
+     clicked, without reflowing the graph. Stays pinned until dismissed
+     (X, Escape, or clicking the same node again). */
+  #note-overlay {
+    position: absolute;
+    top: 0; right: 0; bottom: 0;
+    width: 500px;
+    background: var(--panel);
+    border-left: 1px solid var(--border);
+    box-shadow: -8px 0 24px rgba(0, 0, 0, 0.3);
+    display: none;
+    flex-direction: column;
+    z-index: 30;
+    animation: slideInRight 0.18s ease-out;
+  }
+  #note-overlay.open { display: flex; }
+  @keyframes slideInRight {
+    from { transform: translateX(16px); opacity: 0; }
+    to   { transform: translateX(0); opacity: 1; }
+  }
+  #note-overlay .overlay-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 12px; border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  #note-overlay .overlay-head h2 {
+    font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--muted); margin: 0; padding: 0; border: none; background: none;
+  }
+  #note-overlay .overlay-close {
+    background: transparent; color: var(--muted);
+    border: 1px solid transparent; border-radius: 4px;
+    padding: 2px 8px; font-size: 16px; cursor: pointer;
+    line-height: 1;
+  }
+  #note-overlay .overlay-close:hover {
+    color: var(--text); border-color: var(--border);
+  }
+
+  /* Graph overlay controls - small floating cluster top-right of the
+     graph viewport for view toggles that belong with the graph, not the
+     global header. */
+  #graph-controls {
+    position: absolute;
+    top: 10px; right: 14px;
+    display: flex; gap: 6px; align-items: center;
+    background: rgba(23, 26, 33, 0.85);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 11px; color: var(--muted);
+    font-family: ui-monospace, Menlo, monospace;
+    z-index: 20;
+    user-select: none;
+  }
+  #graph-controls label { cursor: pointer; display: flex; align-items: center; gap: 5px; }
+  #graph-controls input[type="checkbox"] {
+    accent-color: var(--accent); cursor: pointer;
   }
   section { display: flex; flex-direction: column; min-height: 0; flex: 1 1 0; }
   section h2 {
@@ -418,6 +476,114 @@
   }
   #report-view .report-meta[open] summary { margin-bottom: 8px; }
 
+  /* Summary view — end-of-run debrief: tokens, counts, duration. */
+  #summary-view { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+  #summary-view[hidden] { display: none !important; }
+  #summary-view {
+    overflow-y: auto; background: var(--bg);
+    padding: 32px 24px 80px;
+  }
+  #summary-view .summary-container {
+    max-width: 960px; margin: 0 auto;
+  }
+  #summary-view h1 {
+    font-size: 22px; font-weight: 700; margin: 0 0 4px;
+  }
+  #summary-view .summary-sub {
+    color: var(--muted); font-size: 12px;
+    font-family: ui-monospace, Menlo, monospace;
+    margin-bottom: 24px;
+  }
+  #summary-view h2 {
+    font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--muted); margin: 28px 0 10px;
+    padding: 0; border: none; background: none;
+  }
+  .tile-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 10px;
+  }
+  .tile {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 6px; padding: 12px 14px;
+  }
+  .tile .k {
+    color: var(--muted); font-size: 10px; letter-spacing: 0.08em;
+    text-transform: uppercase; margin-bottom: 4px;
+  }
+  .tile .v {
+    color: var(--text); font-size: 20px; font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .tile .v small {
+    color: var(--muted); font-size: 11px; font-weight: 400; margin-left: 4px;
+  }
+  .summary-table {
+    width: 100%; border-collapse: collapse; font-size: 12px;
+    font-family: ui-monospace, Menlo, monospace;
+  }
+  .summary-table th, .summary-table td {
+    padding: 6px 10px; border-bottom: 1px solid var(--border);
+    text-align: right;
+  }
+  .summary-table th {
+    color: var(--muted); font-weight: 500; letter-spacing: 0.04em;
+    text-transform: uppercase; font-size: 10px;
+  }
+  .summary-table th:first-child, .summary-table td:first-child {
+    text-align: left;
+  }
+  .summary-table tr:last-child td { border-bottom: none; }
+  .summary-table tr.total td {
+    color: var(--text); font-weight: 600;
+    border-top: 1px solid var(--border);
+  }
+  .summary-empty {
+    color: var(--muted); font-style: italic; text-align: center; padding: 60px 0;
+  }
+  .count-pills {
+    display: flex; flex-wrap: wrap; gap: 8px;
+  }
+  .count-pill {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 20px; padding: 4px 12px;
+    font-size: 12px; font-family: ui-monospace, Menlo, monospace;
+  }
+  .count-pill .k { color: var(--muted); margin-right: 6px; }
+  .count-pill .v { color: var(--text); font-weight: 600; }
+
+  /* Completion banner - slides in from top on run_done, dismissable. */
+  #completion-banner {
+    position: fixed;
+    top: 10px; left: 50%; transform: translateX(-50%) translateY(-120%);
+    background: var(--panel); border: 1px solid var(--ok);
+    box-shadow: 0 4px 24px rgba(107, 216, 143, 0.2);
+    border-radius: 8px;
+    padding: 10px 16px;
+    display: flex; align-items: center; gap: 14px;
+    font-size: 13px;
+    z-index: 100;
+    transition: transform 0.3s ease-out;
+  }
+  #completion-banner.show {
+    transform: translateX(-50%) translateY(0);
+  }
+  #completion-banner .banner-text { color: var(--text); font-weight: 500; }
+  #completion-banner .banner-text .v { color: var(--ok); font-weight: 600; }
+  #completion-banner .banner-text .sep { color: var(--muted); margin: 0 8px; }
+  #completion-banner .banner-link {
+    color: var(--accent); cursor: pointer; text-decoration: none;
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 3px 10px; font-size: 11px; background: var(--panel-2);
+  }
+  #completion-banner .banner-link:hover { border-color: var(--accent); }
+  #completion-banner .banner-close {
+    color: var(--muted); cursor: pointer; background: transparent;
+    border: none; font-size: 18px; line-height: 1; padding: 0 4px;
+  }
+  #completion-banner .banner-close:hover { color: var(--text); }
+
   #details { overflow-y: auto; padding: 12px; font-size: 13px; line-height: 1.55; }
   #details h3 { margin: 0 0 4px; font-size: 14px; }
   #details .subtitle { color: var(--muted); font-size: 11px; margin-bottom: 12px; }
@@ -445,6 +611,7 @@
   <div class="tabs" role="tablist">
     <button class="tab active" id="tab-live" data-view="live" role="tab">Live</button>
     <button class="tab" id="tab-report" data-view="report" role="tab" hidden>Report</button>
+    <button class="tab" id="tab-summary" data-view="summary" role="tab" hidden>Summary</button>
   </div>
   <div id="debug" title="events received · nodes in graph · layout engine">evt=0 · nodes=0 · layout=?</div>
   <div id="tokens" title="Total tokens used by this run (hover for per-model breakdown)"><span class="label">tokens:</span> <span class="n" id="tokens-in">0</span> in / <span class="n" id="tokens-out">0</span> out</div>
@@ -452,31 +619,37 @@
 </header>
 <main id="live-view">
   <aside id="left-aside">
-    <section id="sec-running-agents">
+    <section id="sec-running-agents" style="flex: 1 1 0;">
       <h2><span id="running-agents-title">Agents Running</span></h2>
       <div id="running-agents">
         <div class="empty">No agents running.</div>
       </div>
     </section>
-  </aside>
-  <div class="resizer-v" data-resize="cols" data-side="left"></div>
-  <div id="graph"></div>
-  <div class="resizer-v" data-resize="cols" data-side="right"></div>
-  <aside id="right-aside">
-    <section id="sec-tasks">
+    <div class="resizer-h" data-resize="rows" data-top="#sec-running-agents" data-bottom="#sec-tasks"></div>
+    <section id="sec-tasks" style="flex: 1 1 0;">
       <h2>Tasks</h2>
       <div id="tasks"><div class="placeholder" style="padding:12px;color:var(--muted);font-style:italic;">No tasks yet.</div></div>
     </section>
     <div class="resizer-h" data-resize="rows" data-top="#sec-tasks" data-bottom="#sec-activity"></div>
-    <section id="sec-activity">
+    <section id="sec-activity" style="flex: 1 1 0;">
       <h2>Activity</h2>
       <div id="activity"></div>
     </section>
-    <div class="resizer-h" data-resize="rows" data-top="#sec-activity" data-bottom="#sec-details"></div>
-    <section id="sec-details">
+  </aside>
+  <div class="resizer-v" data-resize="cols" data-side="left"></div>
+  <div id="graph"></div>
+  <div id="graph-controls">
+    <label title="Hide SCOUTED source candidates — URLs that were never fetched or analyzed.">
+      <input type="checkbox" id="toggle-hide-scouted" />
+      <span>Hide scouted</span>
+    </label>
+  </div>
+  <aside id="note-overlay">
+    <div class="overlay-head">
       <h2>Note details</h2>
-      <div id="details"><div class="placeholder">Click a node to view its note.</div></div>
-    </section>
+      <button class="overlay-close" id="overlay-close" title="Close (Esc)">×</button>
+    </div>
+    <div id="details"><div class="placeholder" style="padding:12px;color:var(--muted);font-style:italic;">Click a node to view its note.</div></div>
   </aside>
 </main>
 <section id="report-view" hidden>
@@ -484,6 +657,16 @@
     <div id="report-content"><div class="report-empty">No report yet — start a run.</div></div>
   </div>
 </section>
+<section id="summary-view" hidden>
+  <div class="summary-container">
+    <div id="summary-content"><div class="summary-empty">Summary appears when the run finishes.</div></div>
+  </div>
+</section>
+<div id="completion-banner" hidden>
+  <span class="banner-text" id="banner-text"></span>
+  <a class="banner-link" id="banner-link">See summary</a>
+  <button class="banner-close" id="banner-close" title="Dismiss">×</button>
+</div>
 <script>
 (() => {
   const queryInput = document.getElementById("query");
@@ -498,6 +681,13 @@
   const reportContent = document.getElementById("report-content");
   const tabLive = document.getElementById("tab-live");
   const tabReport = document.getElementById("tab-report");
+  const tabSummary = document.getElementById("tab-summary");
+  const summaryView = document.getElementById("summary-view");
+  const summaryContent = document.getElementById("summary-content");
+  const bannerEl = document.getElementById("completion-banner");
+  const bannerTextEl = document.getElementById("banner-text");
+  const bannerLinkEl = document.getElementById("banner-link");
+  const bannerCloseBtn = document.getElementById("banner-close");
   const tokensEl = document.getElementById("tokens");
   const tokensInEl = document.getElementById("tokens-in");
   const tokensOutEl = document.getElementById("tokens-out");
@@ -566,19 +756,21 @@
   }
 
   function switchView(view) {
-    const showLive = view === "live";
-    liveView.hidden = !showLive;
-    reportView.hidden = showLive;
-    tabLive.classList.toggle("active", showLive);
-    tabReport.classList.toggle("active", !showLive);
+    liveView.hidden = view !== "live";
+    reportView.hidden = view !== "report";
+    summaryView.hidden = view !== "summary";
+    tabLive.classList.toggle("active", view === "live");
+    tabReport.classList.toggle("active", view === "report");
+    tabSummary.classList.toggle("active", view === "summary");
     // Cytoscape needs a resize + relayout kick when the graph container
     // transitions from hidden to visible — it caches container dims.
-    if (showLive) {
+    if (view === "live") {
       setTimeout(() => { try { cy.resize(); cy.fit(undefined, 40); } catch {} }, 0);
     }
   }
   tabLive.addEventListener("click", () => switchView("live"));
   tabReport.addEventListener("click", () => switchView("report"));
+  tabSummary.addEventListener("click", () => switchView("summary"));
 
   // Verification decision_notes (subtype "verification") get their own
   // visual treatment so checked claims stand out from AIMS / final-report
@@ -669,6 +861,36 @@
           "label": "data(title)",
           "z-index": 20,
         },
+      },
+      // Source notes carry SourceState (SCOUTED/FETCHED/ANALYZED). SCOUTED
+      // is almost always noise (candidate URL, never read); shrink + dim so
+      // the analyzed sources dominate the eye. ANALYZED uses the default
+      // node style.
+      {
+        selector: 'node[state = "SCOUTED"]',
+        style: {
+          "width": 9,
+          "height": 9,
+          "opacity": 0.35,
+          "border-width": 0,
+          "text-opacity": 0,
+          "font-size": 0,
+        },
+      },
+      {
+        selector: 'node[state = "FETCHED"]',
+        style: {
+          "width": 15,
+          "height": 15,
+          "opacity": 0.75,
+        },
+      },
+      // When the user has toggled "Hide scouted", drop SCOUTED nodes out
+      // of rendering entirely. `display: none` also prunes their edges
+      // from the graph.
+      {
+        selector: 'node[state = "SCOUTED"].hide-scouted',
+        style: { "display": "none" },
       },
       {
         selector: "node:selected, node.hover",
@@ -766,18 +988,68 @@
   // any events arrive.
   updateDebug();
 
+  // --- Note overlay (right-side slide-in viewer) --------------------------
+  // Opens on node tap, closes on X, Escape, or re-tap of the currently
+  // pinned node. Overlay is position:absolute so the graph does NOT
+  // reflow when it opens - critical during live runs where reflowing
+  // would jostle the cola physics layout.
+  const noteOverlayEl = document.getElementById("note-overlay");
+  const overlayCloseBtn = document.getElementById("overlay-close");
+  let overlayPinnedNodeId = null;
+
+  function openNoteOverlay(noteId) {
+    overlayPinnedNodeId = noteId;
+    noteOverlayEl.classList.add("open");
+    loadNoteDetails(noteId);
+  }
+  function closeNoteOverlay() {
+    overlayPinnedNodeId = null;
+    noteOverlayEl.classList.remove("open");
+    cy.nodes().removeClass("titled");
+  }
+  overlayCloseBtn.addEventListener("click", closeNoteOverlay);
+  document.addEventListener("keydown", e => {
+    if (e.key === "Escape" && noteOverlayEl.classList.contains("open")) {
+      closeNoteOverlay();
+    }
+  });
+
   cy.on("tap", "node", evt => {
     const node = evt.target;
-    // Toggle the title label on the clicked node; load details panel too.
-    const wasTitled = node.hasClass("titled");
+    const nodeId = node.id();
+    // Re-tapping the pinned node closes the overlay (and its title).
+    if (overlayPinnedNodeId === nodeId && noteOverlayEl.classList.contains("open")) {
+      closeNoteOverlay();
+      return;
+    }
     cy.nodes().removeClass("titled");
-    if (!wasTitled) node.addClass("titled");
-    loadNoteDetails(node.id());
+    node.addClass("titled");
+    openNoteOverlay(nodeId);
   });
 
   cy.on("tap", evt => {
-    // Click on empty canvas clears pinned titles.
+    // Click on empty canvas clears pinned titles only; leave overlay
+    // open so the user can compare the node they clicked against others
+    // without the viewer disappearing on every stray canvas click.
     if (evt.target === cy) cy.nodes().removeClass("titled");
+  });
+
+  // --- "Hide scouted" toggle ---------------------------------------------
+  // Persists in localStorage so the user's preference survives refreshes
+  // and past-run reconnects.
+  const HIDE_SCOUTED_KEY = "dra:hideScouted";
+  const hideScoutedEl = document.getElementById("toggle-hide-scouted");
+  function applyHideScouted(hidden) {
+    cy.nodes('[state = "SCOUTED"]').toggleClass("hide-scouted", hidden);
+  }
+  function loadHideScoutedPref() {
+    try { return localStorage.getItem(HIDE_SCOUTED_KEY) === "1"; } catch { return false; }
+  }
+  hideScoutedEl.checked = loadHideScoutedPref();
+  hideScoutedEl.addEventListener("change", () => {
+    const hidden = hideScoutedEl.checked;
+    try { localStorage.setItem(HIDE_SCOUTED_KEY, hidden ? "1" : "0"); } catch {}
+    applyHideScouted(hidden);
   });
 
   function setStatus(text, cls = "") {
@@ -825,6 +1097,7 @@
         id: data.id,
         title: truncate(data.title || data.id, 40),
         styleKey: nodeKey(data),
+        state: data.state || null,
       };
       const existing = cy.getElementById(data.id);
       if (existing.nonempty()) {
@@ -833,6 +1106,13 @@
         cy.add({ data: payload });
         cy.getElementById(data.id).addClass("new");
         setTimeout(() => cy.getElementById(data.id).removeClass("new"), 1500);
+      }
+      // Apply the hide-scouted class to any SCOUTED node so the user's
+      // toggle preference takes effect on new arrivals (and on promotion
+      // from SCOUTED to FETCHED the class becomes inert because the
+      // selector no longer matches).
+      if (hideScoutedEl && hideScoutedEl.checked && payload.state === "SCOUTED") {
+        cy.getElementById(data.id).addClass("hide-scouted");
       }
       for (const link of data.links || []) {
         const targetExists = cy.getElementById(link.target_id).nonempty();
@@ -915,6 +1195,169 @@
       reportContent.innerHTML = `<div class="report-empty">Failed to load: ${escape(String(err))}</div>`;
     }
   }
+
+  // --- Run summary view --------------------------------------------------
+
+  function fmtDuration(seconds) {
+    if (seconds == null) return "—";
+    const s = Math.max(0, Math.floor(seconds));
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    const rem = s % 60;
+    return `${m}m${String(rem).padStart(2, "0")}s`;
+  }
+
+  function fmtPct(v) {
+    if (v == null || !isFinite(v)) return "—";
+    return `${(v * 100).toFixed(1)}%`;
+  }
+
+  function renderSummary(s) {
+    if (!s) {
+      summaryContent.innerHTML = `<div class="summary-empty">No summary available.</div>`;
+      return;
+    }
+    const grand = (s.tokens && s.tokens.grand_totals) || {};
+    const perModel = (s.tokens && s.tokens.per_model) || {};
+    const totalIn = grand.input_tokens || 0;
+    const totalOut = grand.output_tokens || 0;
+    const cacheR = grand.cache_read_tokens || 0;
+    const cacheW = grand.cache_write_tokens || 0;
+    const cacheDenom = cacheR + totalIn;
+    const cacheHit = cacheDenom > 0 ? cacheR / cacheDenom : null;
+
+    const notesByType = s.notes_by_type || {};
+    const sourcesByState = s.sources_by_state || {};
+    const qByStatus = s.questions_by_status || {};
+
+    const notePills = Object.entries(notesByType)
+      .sort((a, b) => b[1] - a[1])
+      .map(([k, v]) => `<div class="count-pill"><span class="k">${escape(k)}</span><span class="v">${v}</span></div>`)
+      .join("");
+    const sourcePills = Object.entries(sourcesByState)
+      .map(([k, v]) => `<div class="count-pill"><span class="k">${escape(k)}</span><span class="v">${v}</span></div>`)
+      .join("") || `<div class="summary-empty" style="padding:12px 0;">No source notes.</div>`;
+
+    const perModelRows = Object.entries(perModel)
+      .sort((a, b) => (b[1].total_tokens || 0) - (a[1].total_tokens || 0))
+      .map(([model, t]) => `
+        <tr>
+          <td>${escape(model)}</td>
+          <td>${(t.calls || 0).toLocaleString()}</td>
+          <td>${(t.input_tokens || 0).toLocaleString()}</td>
+          <td>${(t.output_tokens || 0).toLocaleString()}</td>
+          <td>${(t.cache_read_tokens || 0).toLocaleString()}</td>
+          <td>${(t.total_tokens || 0).toLocaleString()}</td>
+        </tr>
+      `).join("");
+
+    const perModelTable = perModelRows
+      ? `<table class="summary-table">
+          <thead>
+            <tr><th>model</th><th>calls</th><th>input</th><th>output</th><th>cache read</th><th>total</th></tr>
+          </thead>
+          <tbody>
+            ${perModelRows}
+            <tr class="total">
+              <td>TOTAL</td>
+              <td>${(grand.calls || 0).toLocaleString()}</td>
+              <td>${totalIn.toLocaleString()}</td>
+              <td>${totalOut.toLocaleString()}</td>
+              <td>${cacheR.toLocaleString()}</td>
+              <td>${((grand.total_tokens) || 0).toLocaleString()}</td>
+            </tr>
+          </tbody>
+        </table>`
+      : `<div class="summary-empty" style="padding:12px 0;">No model calls recorded.</div>`;
+
+    summaryContent.innerHTML = `
+      <h1>Run summary</h1>
+      <div class="summary-sub">${escape(s.query || "")} · ${escape(s.run_id || "")}</div>
+
+      <h2>At a glance</h2>
+      <div class="tile-grid">
+        <div class="tile"><div class="k">duration</div><div class="v">${fmtDuration(s.duration_s)}</div></div>
+        <div class="tile"><div class="k">total tokens</div><div class="v">${fmtNum(totalIn + totalOut)} <small>${fmtNum(totalIn)}↓ / ${fmtNum(totalOut)}↑</small></div></div>
+        <div class="tile"><div class="k">cache hit</div><div class="v">${fmtPct(cacheHit)}</div></div>
+        <div class="tile"><div class="k">llm calls</div><div class="v">${(grand.calls || 0).toLocaleString()}</div></div>
+        <div class="tile"><div class="k">notes</div><div class="v">${(s.notes_total || 0).toLocaleString()}</div></div>
+        <div class="tile"><div class="k">tasks dispatched</div><div class="v">${(s.tasks || 0).toLocaleString()}</div></div>
+      </div>
+
+      <h2>Tokens by model</h2>
+      ${perModelTable}
+
+      <h2>Notes by type</h2>
+      <div class="count-pills">${notePills || '<div class="summary-empty" style="padding:12px 0;">No notes.</div>'}</div>
+
+      <h2>Sources by state</h2>
+      <div class="count-pills">${sourcePills}</div>
+
+      <h2>Questions</h2>
+      <div class="count-pills">
+        <div class="count-pill"><span class="k">open</span><span class="v">${qByStatus.OPEN || 0}</span></div>
+        <div class="count-pill"><span class="k">in progress</span><span class="v">${qByStatus.IN_PROGRESS || 0}</span></div>
+        <div class="count-pill"><span class="k">synthesized</span><span class="v">${qByStatus.SYNTHESIZED || 0}</span></div>
+      </div>
+    `;
+  }
+
+  async function loadSummary(runId) {
+    if (!runId) return;
+    summaryContent.innerHTML = `<div class="summary-empty">Loading…</div>`;
+    try {
+      const res = await fetch(`/api/run/${runId}/summary`);
+      if (!res.ok) throw new Error(`${res.status}`);
+      const s = await res.json();
+      renderSummary(s);
+    } catch (err) {
+      summaryContent.innerHTML = `<div class="summary-empty">Failed to load summary: ${escape(String(err))}</div>`;
+    }
+  }
+
+  // --- Completion banner -------------------------------------------------
+  // Per-run key so dismissing for one run doesn't silence future runs.
+  function bannerDismissKey(runId) { return `dra:bannerDismissed:${runId}`; }
+  let bannerHideTimer = null;
+
+  function hideBanner() {
+    if (bannerHideTimer) { clearTimeout(bannerHideTimer); bannerHideTimer = null; }
+    bannerEl.classList.remove("show");
+    setTimeout(() => { bannerEl.hidden = true; }, 300);
+  }
+
+  function showCompletionBanner(runId, summary) {
+    if (!runId) return;
+    try {
+      if (localStorage.getItem(bannerDismissKey(runId)) === "1") return;
+    } catch {}
+    const parts = [];
+    parts.push(`<span class="v">Done</span>`);
+    if (summary) {
+      if (summary.duration_s != null) parts.push(`<span class="sep">·</span>${fmtDuration(summary.duration_s)}`);
+      if (summary.notes_total != null) parts.push(`<span class="sep">·</span>${summary.notes_total} notes`);
+      const grand = (summary.tokens && summary.tokens.grand_totals) || {};
+      const total = (grand.input_tokens || 0) + (grand.output_tokens || 0);
+      if (total) parts.push(`<span class="sep">·</span>${fmtNum(total)} tokens`);
+    }
+    bannerTextEl.innerHTML = parts.join("");
+    bannerEl.hidden = false;
+    // Double-raf to let the element land in layout before transitioning.
+    requestAnimationFrame(() => requestAnimationFrame(() => bannerEl.classList.add("show")));
+    if (bannerHideTimer) clearTimeout(bannerHideTimer);
+    bannerHideTimer = setTimeout(hideBanner, 15000);
+  }
+
+  bannerCloseBtn.addEventListener("click", () => {
+    if (currentRunId) {
+      try { localStorage.setItem(bannerDismissKey(currentRunId), "1"); } catch {}
+    }
+    hideBanner();
+  });
+  bannerLinkEl.addEventListener("click", () => {
+    switchView("summary");
+    hideBanner();
+  });
 
   function renderReport(note) {
     const body = note.content ? marked.parse(note.content) : "<em>(no content)</em>";
@@ -1300,6 +1743,24 @@
           loadReport(data.report_note_id);
           switchView("report");
         }
+        // Summary is available whether or not a report was produced.
+        tabSummary.hidden = false;
+        tabSummary.classList.remove("flash");
+        void tabSummary.offsetWidth;
+        tabSummary.classList.add("flash");
+        (async () => {
+          const runId = currentRunId;
+          try {
+            const res = await fetch(`/api/run/${runId}/summary`);
+            if (!res.ok) throw new Error(`${res.status}`);
+            const s = await res.json();
+            renderSummary(s);
+            showCompletionBanner(runId, s);
+          } catch (err) {
+            summaryContent.innerHTML = `<div class="summary-empty">Failed to load summary: ${escape(String(err))}</div>`;
+            showCompletionBanner(runId, null);
+          }
+        })();
         break;
       case "run_failed":
         logRow(kind, `FAILED — ${data.error}`, at);
@@ -1326,6 +1787,11 @@
     tabReport.hidden = true;
     tabReport.classList.remove("has-report", "flash");
     reportContent.innerHTML = `<div class="report-empty">No report yet — start a run.</div>`;
+    tabSummary.hidden = true;
+    tabSummary.classList.remove("flash");
+    summaryContent.innerHTML = `<div class="summary-empty">Summary appears when the run finishes.</div>`;
+    hideBanner();
+    closeNoteOverlay();
     switchView("live");
     goBtn.disabled = true;
     setStatus("starting…");
@@ -1417,6 +1883,11 @@
     tabReport.hidden = true;
     tabReport.classList.remove("has-report", "flash");
     reportContent.innerHTML = `<div class="report-empty">No report yet — start a run.</div>`;
+    tabSummary.hidden = true;
+    tabSummary.classList.remove("flash");
+    summaryContent.innerHTML = `<div class="summary-empty">Summary appears when the run finishes.</div>`;
+    hideBanner();
+    closeNoteOverlay();
     switchView("live");
     eventCount = 0;
     updateDebug();

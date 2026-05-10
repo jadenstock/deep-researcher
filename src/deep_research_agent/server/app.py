@@ -191,6 +191,59 @@ def create_app(
             raise HTTPException(status_code=404, detail="note not found")
         return note.model_dump(mode="json")
 
+    @app.get("/api/run/{run_id}/summary")
+    async def get_run_summary(run_id: str) -> dict:
+        """End-of-run debrief: tokens by model, counts, duration.
+
+        Usable mid-run but the Summary tab only flashes after run_done;
+        fields like `duration_s` are None until the run finishes.
+        """
+        session = state.registry.get(run_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="run not found")
+
+        notes_by_type: dict[str, int] = {}
+        sources_by_state: dict[str, int] = {}
+        questions_by_status: dict[str, int] = {"OPEN": 0, "IN_PROGRESS": 0, "SYNTHESIZED": 0}
+        for note in session.notes.values():
+            t = note.type.value
+            notes_by_type[t] = notes_by_type.get(t, 0) + 1
+            st = getattr(note.metadata, "state", None)
+            if st is not None:
+                key = str(getattr(st, "value", st))
+                sources_by_state[key] = sources_by_state.get(key, 0) + 1
+            status = getattr(note.metadata, "status", None)
+            if status in questions_by_status:
+                questions_by_status[status] += 1
+
+        # Task count comes from the event history so we don't have to
+        # reach into the scheduler state.
+        tasks_count = sum(1 for e in session.history if e.kind == "task_started")
+
+        duration_s: float | None = None
+        if session.finished_at is not None:
+            duration_s = (session.finished_at - session.started_at).total_seconds()
+
+        tokens_payload: dict = {"per_model": {}, "grand_totals": {}}
+        if session.tracker is not None:
+            tokens_payload = session.tracker.to_dict()
+
+        return {
+            "run_id": session.run_id,
+            "query": session.query,
+            "finished": session.finished,
+            "started_at": session.started_at.isoformat(),
+            "finished_at": session.finished_at.isoformat() if session.finished_at else None,
+            "duration_s": duration_s,
+            "report_note_id": session.report_note_id,
+            "tokens": tokens_payload,
+            "notes_by_type": notes_by_type,
+            "sources_by_state": sources_by_state,
+            "questions_by_status": questions_by_status,
+            "tasks": tasks_count,
+            "notes_total": len(session.notes),
+        }
+
     @app.websocket("/api/ws/{run_id}")
     async def ws(websocket: WebSocket, run_id: str) -> None:
         session = state.registry.get(run_id)

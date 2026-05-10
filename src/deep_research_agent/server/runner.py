@@ -310,6 +310,7 @@ async def run_session(
 
     publisher = SessionPublisher(session)
     deps = build_deps(local, routing, events=publisher)
+    session.tracker = deps.tracker
 
     try:
         report = await research_run(deps, session.query)
@@ -344,6 +345,7 @@ async def run_session(
             ),
             report_json=report.model_dump(mode="json"),
         )
+        session.report_note_id = report_note_id
         session.publish(event_run_done(report_note_id))
         # Count answered sub-question notes for an accurate log line.
         answered_subs = [
@@ -407,4 +409,5 @@ async def run_session(
             run_log_handler.close()
         except Exception:
             logger.exception("run_log detach failed run_id=%s", session.run_id)
+        session.finished_at = _now()
         session.finished = True
