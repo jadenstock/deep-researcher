@@ -370,6 +370,79 @@ async def write_question_synthesis(
 
 
 @instrumented
+async def answer_question(
+    ctx: RunContext[Deps],
+    question_id: NoteID,
+    bottom_line: str,
+    synthesis: str,
+    confidence: str,
+    sources_cited: list[NoteID] | None = None,
+    disagreements: list[str] | None = None,
+    open_issues: list[str] | None = None,
+) -> str:
+    """Commit your answer to a pre-created question note.
+
+    Updates the QUESTION note's metadata in place (status ->
+    SYNTHESIZED) rather than creating a new synthesis note. Called by
+    the analyst at the end of its turn, and by the researcher to
+    commit the final report (answer to the root question).
+
+    Raises if `question_id` is not a QUESTION note in memory.
+    """
+    confidence_lc = confidence.strip().lower()
+    if confidence_lc not in {"high", "medium", "low"}:
+        raise ValueError(f"confidence must be 'high', 'medium', or 'low'; got {confidence!r}")
+
+    existing = ctx.deps.memory.get(question_id)
+    if existing is None:
+        raise KeyError(f"question note {question_id} not in memory")
+    if existing.type != NoteType.QUESTION:
+        raise ValueError(f"note {question_id} is {existing.type.value}, not a question_note")
+
+    existing_meta = existing.metadata
+    assert isinstance(existing_meta, QuestionMetadata)
+    agent_id = current_agent_id() or "anonymous"
+    new_meta = existing_meta.model_copy(
+        update={
+            "status": "SYNTHESIZED",
+            "bottom_line": bottom_line,
+            "synthesis_markdown": synthesis,
+            "confidence": confidence_lc,
+            "sources_cited": list(sources_cited or []),
+            "disagreements": list(disagreements or []),
+            "open_issues": list(open_issues or []),
+            "answered_by_agent_id": agent_id,
+        }
+    )
+    await ctx.deps.memory.update(
+        question_id,
+        description=bottom_line[:280] or existing.description,
+        content=synthesis,
+        links=[Link(target_id=src, edge_type="cites") for src in (sources_cited or [])],
+        metadata=new_meta,
+    )
+
+    # Stash so the wrapping *_run function can read the structured
+    # payload without reconstructing from the note.
+    from ..schemas import QuestionSynthesis
+
+    qs = QuestionSynthesis(
+        question=existing.description or existing.title,
+        bottom_line=bottom_line,
+        synthesis=synthesis,
+        confidence=confidence_lc,
+        sources_cited=list(sources_cited or []),
+        disagreements=list(disagreements or []),
+        open_issues=list(open_issues or []),
+    )
+    ctx.deps.outputs[agent_id] = qs
+    return (
+        f"answered question {question_id} "
+        f"({confidence_lc} confidence, {len(qs.sources_cited)} sources cited)"
+    )
+
+
+@instrumented
 async def write_research_report(
     ctx: RunContext[Deps],
     bottom_line: str,
