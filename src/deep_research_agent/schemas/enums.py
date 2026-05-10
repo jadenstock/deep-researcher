@@ -5,38 +5,6 @@ from __future__ import annotations
 from enum import Enum
 
 
-class TaskType(str, Enum):
-    LANDSCAPE_SURVEY = "LANDSCAPE_SURVEY"
-    DECOMPOSE = "DECOMPOSE"
-    SCOUT_SOURCES = "SCOUT_SOURCES"
-    SEARCH = "SEARCH"
-    SCAN_SEARCH_RESULTS = "SCAN_SEARCH_RESULTS"
-    FETCH_AND_EXTRACT = "FETCH_AND_EXTRACT"
-    ANALYZE_SOURCE = "ANALYZE_SOURCE"
-    RESCORE_RELEVANCE = "RESCORE_RELEVANCE"
-    QUESTION_SYNTHESIZE = "QUESTION_SYNTHESIZE"
-    META_SYNTHESIZE = "META_SYNTHESIZE"
-    VERIFY_CLAIM = "VERIFY_CLAIM"
-    ADVERSARIAL_CRITIQUE = "ADVERSARIAL_CRITIQUE"
-    ANALYZE_CONSISTENCY = "ANALYZE_CONSISTENCY"
-    SYNTHESIZE = "SYNTHESIZE"
-    REPLAN = "REPLAN"
-    SCOPE_ESCALATION = "SCOPE_ESCALATION"
-    CHECK_TERMINATION_READY = "CHECK_TERMINATION_READY"
-    VALIDATE_COMPLETION = "VALIDATE_COMPLETION"
-    WRITE_REPORT = "WRITE_REPORT"
-
-
-class TaskStatus(str, Enum):
-    PENDING = "PENDING"
-    RUNNING = "RUNNING"
-    BLOCKED_ON_SYNTHESIS_DEP = "BLOCKED_ON_SYNTHESIS_DEP"
-    BLOCKED_ON_SPLIT = "BLOCKED_ON_SPLIT"
-    DONE = "DONE"
-    ESCALATED = "ESCALATED"
-    ABANDONED = "ABANDONED"
-
-
 class RoleClass(str, Enum):
     GENERATIVE = "generative"
     JUDGMENT = "judgment"
@@ -47,22 +15,6 @@ class TaskTier(str, Enum):
     LOW = "LOW"
     MID = "MID"
     HIGH = "HIGH"
-
-
-class OrchestrationPattern(str, Enum):
-    SINGLE_RESEARCHER = "single_researcher"
-    MAKER_CHECKER = "maker_checker"
-    MULTI_PERSPECTIVE = "multi_perspective"
-    DEBATE = "debate"
-    ACH = "ach"
-
-
-class QuestionRound(int, Enum):
-    STARBURSTING = 1
-    STRUCTURAL = 2
-    FALSIFICATION = 3
-    PREMORTEM = 4
-    METACOGNITIVE = 5
 
 
 class DependencyType(str, Enum):
@@ -146,18 +98,3 @@ class SourceState(str, Enum):
     SCOUTED = "SCOUTED"
     FETCHED = "FETCHED"
     ANALYZED = "ANALYZED"
-
-
-class Methodology(str, Enum):
-    EMPIRICAL = "empirical"
-    THEORETICAL = "theoretical"
-    OPINION = "opinion"
-    SURVEY = "survey"
-    BENCHMARK = "benchmark"
-
-
-class Reproducibility(str, Enum):
-    HIGH = "HIGH"
-    MEDIUM = "MEDIUM"
-    LOW = "LOW"
-    UNKNOWN = "UNKNOWN"

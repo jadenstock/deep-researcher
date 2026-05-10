@@ -19,8 +19,6 @@ from pydantic import BaseModel, Field
 
 from .enums import (
     ClaimType,
-    Methodology,
-    Reproducibility,
     SourceState,
     Tier,
     VerificationStatus,
@@ -88,14 +86,6 @@ class ClaimItem(BaseModel):
     # different lens finds it continues to apply; we append rather than
     # duplicate the ClaimItem.
     for_questions: list[str] = Field(default_factory=list)
-
-
-class EvalItem(BaseModel):
-    methodology: Methodology
-    sample_size: int | None = None
-    reproducibility: Reproducibility = Reproducibility.UNKNOWN
-    limitations_noted_by_authors: list[str] = Field(default_factory=list)
-    agent_skepticism: str
 
 
 class ReadingEntry(BaseModel):
@@ -168,7 +158,6 @@ class SourceMetadata(BaseModel):
     # overwrite each other; the stack tells the full story of what's been
     # mined from this source and for whom.
     readings: list[ReadingEntry] = Field(default_factory=list)
-    evaluation: EvalItem | None = None  # populated on analyzer upgrade
     # Shared-corpus fields. `relevance` maps question_id → 0..1 score from
     # the batch relevance scorer and determines which questions get their
     # own ANALYZE_SOURCE spawned against this source. `analyzed_for` records

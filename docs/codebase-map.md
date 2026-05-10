@@ -27,12 +27,6 @@ Both paths share `research_run` from `agents/researcher.py`.
   retrieval API keys, rate-limit overrides, optional Logfire token.
 - `RoutingConfig` (YAML, tracked): `tiers[LOW|MID|HIGH]` each with
   `generative` / `judgment` / `cheap_deterministic` → model_id strings.
-  Also defines the cross-family invariant metadata.
-
-The file also carries a `PipelineConfig` (scouting/promotion/synthesis
-thresholds) — **unused by the current agentic loop**. It's left over from
-the earlier phase-1 scheduler design and is slated for removal if we don't
-re-use it.
 
 **`agent_factory.py`** — pure glue. Takes a routing model_id like
 `anthropic/claude-opus-4-7`, strips the family prefix, and builds an
@@ -53,17 +47,15 @@ Pure pydantic models. No behavior.
 
 - **`enums.py`** — `NoteType`, `SourceState` (SCOUTED/FETCHED/ANALYZED),
   `Tier` (1..5), `QuestionClassification`, `RoleClass`, `TaskTier`,
-  `OrchestrationPattern`, `ClaimType`, `VerificationStatus`, etc. Some
-  enums (notably `TaskType`, `TaskStatus`) are vestigial — kept for
-  compatibility with artifacts on disk.
+  `ClaimType`, `VerificationStatus`.
 - **`ids.py`** — `NoteID`, `SourceID`, `TaskID` newtypes.
 - **`note.py`** — `Note` proper plus the discriminated
   `NoteMetadata` union (`LandscapeMetadata`, `SourceNoteMetadata`,
   `QuestionMetadata`, `SynthesisMetadata`, …).
 - **`source.py`** — `SourceMetadata` (the payload behind a source note),
-  `ReadingEntry`, `ClaimItem`, `StructuredContent`, `EvalItem`.
-  Source-note semantics live here: append-only `readings`, per-analyst
-  quoted claims, tier + peer-review flags, content-kind classification.
+  `ReadingEntry`, `ClaimItem`, `StructuredContent`. Source-note
+  semantics live here: append-only `readings`, per-analyst quoted
+  claims, tier + peer-review flags, content-kind classification.
 
 ## `retrieval/`
 
@@ -135,10 +127,10 @@ with `@instrumented`.
 
 - **`notes.py`** — note-graph tools. `create_source_note`,
   `update_source_after_reading`, `load_note`, `list_source_notes`,
-  `get_research_state`, `create_question_note`, plus the three
-  terminal commits: `answer_question`, `commit_scout_result`,
-  `write_landscape_brief`. This is the longest file in the agents
-  layer and the most important one to read when tracing behavior.
+  `get_research_state`, plus the three terminal commits:
+  `answer_question`, `commit_scout_result`, `write_landscape_brief`.
+  This is the longest file in the agents layer and the most important
+  one to read when tracing behavior.
 - **`search.py`** — `search_web`, `search_academic`,
   `find_related_papers` (S2 citation traversal).
 - **`fetch.py`** — `fetch_url` (general markdown extract) and
@@ -200,6 +192,4 @@ be aware that the current architecture has no:
 
 Those ideas were the phase-1 technical design. The codebase pivoted to an
 agentic shape — budgets + prompts + tools do the work the scheduler used
-to do. `schemas/enums.py` still carries some leftover enums
-(`TaskType`, `TaskStatus`) for compatibility but they aren't on the live
-path.
+to do.

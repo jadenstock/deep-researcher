@@ -16,7 +16,6 @@ description: |
   ADR 0008 cross-family invariant by construction.
 
 # Model IDs use "family/model" form (LiteLLM convention).
-# family_of(model_id) returns the part before "/".
 # The full string is sent to the router as the model name.
 tiers:
   LOW:
@@ -31,8 +30,3 @@ tiers:
     generative: anthropic/claude-opus-4-7
     judgment: openai/gpt-5.5
     cheap_deterministic: anthropic/claude-haiku-4-5
-
-cross_family_invariant:
-  enabled: true
-  applies_to:
-    - VERIFY_CLAIM

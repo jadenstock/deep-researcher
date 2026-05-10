@@ -2,7 +2,7 @@
 
 Input: a (question_id, question_text) pair. The QUESTION note must
 already exist in memory - the caller (researcher) is responsible for
-creating it via create_question_note before dispatching the analyst.
+creating it before dispatching the analyst.
 
 Output: the analyst commits its answer by UPDATING the question note
 in place via the `answer_question` tool. The wrapping

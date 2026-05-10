@@ -7,10 +7,8 @@ discriminated metadata payload specific to that type.
 
 from .enums import (
     ClaimType,
-    Methodology,
     NoteType,
     QuestionClassification,
-    Reproducibility,
     RoleClass,
     SourceState,
     TaskTier,
@@ -32,7 +30,7 @@ from .note import (
     SynthesisMetadata,
     ThemeItem,
 )
-from .source import ClaimItem, EvalItem, SourceMetadata, StructuredContent
+from .source import ClaimItem, SourceMetadata, StructuredContent
 
 __all__ = [
     # source
@@ -41,11 +39,9 @@ __all__ = [
     "ClaimType",
     # note
     "DecisionMetadata",
-    "EvalItem",
     "HypothesisMetadata",
     "LandscapeMetadata",
     "Link",
-    "Methodology",
     "Note",
     # ids
     "NoteID",
@@ -55,7 +51,6 @@ __all__ = [
     "PositionItem",
     "QuestionClassification",
     "QuestionMetadata",
-    "Reproducibility",
     "RoleClass",
     "RunID",
     "SourceID",

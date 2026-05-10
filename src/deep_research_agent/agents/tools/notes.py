@@ -441,54 +441,6 @@ async def get_research_state(ctx: RunContext[Deps]) -> dict[str, object]:
     }
 
 
-@instrumented
-async def create_question_note(
-    ctx: RunContext[Deps],
-    question: str,
-    classification: str = "synthesis",
-) -> NoteID:
-    """Record a sub-question you plan to investigate.
-
-    Typically called from the top-level researcher to register a
-    sub-question before dispatching an analyst on it. Returns the
-    new question NoteID.
-
-    Args:
-      question: The question text. A good sub-question is focused,
-        independently answerable with a few sources, and doesn't
-        overlap with sibling sub-questions.
-      classification: One of 'lookup' / 'synthesis' / 'contested' /
-        'sparse'. 'lookup' = a factual question with a clear answer;
-        'synthesis' = integrative question across multiple sources;
-        'contested' = question where sources are known to disagree;
-        'sparse' = question with limited source coverage. Default is
-        'synthesis'.
-    """
-    from ...schemas.enums import QuestionClassification
-
-    try:
-        cls = QuestionClassification(classification)
-    except ValueError as exc:
-        raise ModelRetry(
-            "classification must be one of: lookup, synthesis, contested, sparse; "
-            f"got {classification!r}"
-        ) from exc
-
-    q_id = new_note_id("question")
-    note = Note(
-        id=q_id,
-        type=NoteType.QUESTION,
-        title=question[:120],
-        description=question,
-        content="",
-        metadata=QuestionMetadata(classification=cls),
-        last_modified_at=_now(),
-        created_at=_now(),
-    )
-    await ctx.deps.memory.create(note)
-    return q_id
-
-
 # --- Final-output tools ----------------------------------------------------
 #
 # These are how agents COMMIT their final work. Replaces structured-
