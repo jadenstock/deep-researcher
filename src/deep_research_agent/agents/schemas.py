@@ -157,7 +157,7 @@ def compose_report_markdown(
     empty report.md on disk.
     """
     from ..schemas.enums import NoteType
-    from ..schemas.note import SourceNoteMetadata, SynthesisMetadata
+    from ..schemas.note import QuestionMetadata, SourceNoteMetadata
 
     parts: list[str] = ["# Research report", "", f"**Query:** {query}", ""]
 
@@ -204,27 +204,36 @@ def compose_report_markdown(
                     parts.append(f"- {lim}")
                 parts.append("")
         elif memory is not None:
-            # No report at all - reconstruct from the note graph.
-            syntheses = memory.list_by_type(NoteType.SYNTHESIS)
-            if syntheses:
-                parts.append("## Partial report (reconstructed from sub-agent notes)")
+            # No report at all - reconstruct from answered QUESTION notes.
+            from ..schemas.note import QuestionMetadata
+
+            answered = [
+                n
+                for n in memory.list_by_type(NoteType.QUESTION)
+                if isinstance(n.metadata, QuestionMetadata) and n.metadata.status == "SYNTHESIZED"
+            ]
+            if answered:
+                parts.append("## Partial report (reconstructed from answered questions)")
                 parts.append("")
                 parts.append(
                     "_The top-level researcher did not produce a final "
-                    "structured report. The sub-question syntheses below "
+                    "structured report. The sub-question answers below "
                     "were recovered from the note graph._"
                 )
                 parts.append("")
-                for n in syntheses:
-                    parts.append(f"### {n.title}")
+                for n in answered:
+                    meta = n.metadata
+                    assert isinstance(meta, QuestionMetadata)
+                    parts.append(f"### {n.description or n.title}")
                     parts.append("")
-                    if n.description:
-                        parts.append(f"**Bottom line:** {n.description}")
+                    if meta.bottom_line:
+                        parts.append(f"**Bottom line:** {meta.bottom_line}")
                         parts.append("")
-                    parts.append(n.content)
-                    parts.append("")
+                    if meta.synthesis_markdown:
+                        parts.append(meta.synthesis_markdown)
+                        parts.append("")
             else:
-                parts.append("_No syntheses produced before the run ended._")
+                parts.append("_No answered questions in memory._")
                 parts.append("")
 
     # Sources appendix - always available from memory.
@@ -244,7 +253,4 @@ def compose_report_markdown(
                     parts.append(f"  - {meta.summary}")
             parts.append("")
 
-    # Silence unused-import warning; SynthesisMetadata kept for
-    # potential future per-synthesis metadata in the report.
-    _ = SynthesisMetadata
     return "\n".join(parts)
