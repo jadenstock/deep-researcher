@@ -152,6 +152,12 @@ def build_researcher(deps: Deps) -> Agent[Deps, str]:
         deps_type=Deps,
         output_type=str,
         system_prompt=RESEARCHER_SYSTEM,
+        # pydantic-ai defaults tool_retries to 1, which is brutally low:
+        # a single malformed tool call (e.g. model forgetting `synthesis`
+        # on answer_question's 7-arg commit) kills the whole run. Bumping
+        # gives the model several chances to see the validation error
+        # and self-correct before the run aborts.
+        tool_retries=5,
     )
     agent.tool(get_research_state)
     agent.tool(load_note)
