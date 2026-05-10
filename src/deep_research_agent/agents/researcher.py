@@ -131,6 +131,24 @@ and so later review calls can tell what kind of work was done.
 2. **Review round.** After analysts return, call
    `get_research_state()` to see the shape. Use `load_note` on
    specific sub-question notes when you need their full report.
+
+   Before formulating the next move, run this 5-check pass:
+     a. **Sufficiency** — did each analyst actually answer its
+        sub-question, or did it dodge / return thin?
+     b. **Source grounding** — are claims citing specific sources,
+        or waving at "the literature"? Watch for single-source
+        claims the analyst flagged.
+     c. **Thin-spot scan** — what's under-covered across the set?
+        Any sub-question that's open but no one investigated it?
+     d. **Contradiction** — do any two analysts disagree on a
+        fact? Contradictions are not errors to reconcile silently;
+        they're either `verify` candidates or `disagreements` for
+        the final report.
+     e. **Direction** — given what came back, is the next obvious
+        move still the right one, or did something surprising
+        appear that should redirect the investigation?
+   If any check surfaces an issue, the next dispatch addresses it
+   - not the next item on your original plan.
 3. **Decide next move.** Options:
      - Dispatch more `explore` calls to fill gaps or follow up on
        low-confidence answers.
@@ -192,6 +210,13 @@ and so later review calls can tell what kind of work was done.
 - If an `adversarial` dispatch produced a credible counter-case, the
   final report must engage with it — at minimum in `disagreements`,
   ideally in the body.
+- Preserve the limitations / failure-modes and competing-approaches
+  content that analysts surfaced — do not collapse it into a single
+  "caveats" footnote. These belong in the report body, visible to
+  the reader, not buried.
+- When an analyst flagged a claim as single-source-only and you
+  chose not to `verify` it, either don't lean on that claim in the
+  report or surface the single-source dependency in the prose.
 """
 
 

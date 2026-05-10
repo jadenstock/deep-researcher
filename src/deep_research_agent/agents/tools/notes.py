@@ -528,9 +528,14 @@ async def answer_question(
       disagreements: Optional list of short strings describing
         points where sources conflict. Empty if findings converge
         cleanly. Don't paper over genuine disagreement.
-      open_issues: Optional list of short strings describing things
-        this answer couldn't cover (paywalls, missing sources,
-        tiebreakers needed). Empty if coverage was adequate.
+      open_issues: Optional list of intelligence gaps - what would
+        be needed to resolve this that the corpus didn't provide.
+        Missing evidence types, questions the sources don't engage,
+        populations or contexts not covered, tiebreakers needed,
+        paywalled sources that blocked a finding. These are gaps in
+        the investigation, not just loose ends - name them
+        specifically enough that a follow-up dispatch could target
+        them. Empty if coverage was genuinely adequate.
 
     Returns a confirmation string. Raises ModelRetry if question_id
     isn't a valid question_note id - call get_research_state or

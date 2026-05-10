@@ -168,6 +168,30 @@ relevant material. The condensed view shows:
    `answer_question(question_id=<the id you were given>, ...)`.
    TERMINAL tool - DO NOT finish your turn without calling it. Fix
    and retry on validation errors.
+
+   Your `report` markdown should cover, in roughly this order:
+     a. Direct answer to the question (1-3 sentence takeaway).
+     b. Key findings, each with source grounding and tier noted.
+     c. Documented limitations and failure modes the sources
+        identified.
+     d. Competing approaches or dissenting positions the sources
+        surfaced.
+     e. Evidence-basis note: what the strongest evidence rests on
+        (peer-reviewed? preprint-only? single author? industry
+        consensus?). Be explicit when findings lean on preprints
+        or single-source industry claims.
+
+   Slots (c) and (d) are not optional - if the sources didn't
+   surface limitations or competing approaches, say so explicitly
+   ("sources did not surface documented failure modes"). Silence is
+   ambiguous; stating the gap is a finding.
+
+   When writing the report, annotate each material claim with its
+   grounding: `[source-abc123]` for single-source claims,
+   `[source-abc, source-def, source-ghi]` for multi-source. Call
+   out explicitly when a central finding is single-source-only -
+   this is information the researcher needs to decide whether to
+   dispatch a `verify` against it.
 6. **End.** After `answer_question` returns, produce a one-line
    acknowledgment and stop.
 
@@ -176,6 +200,14 @@ relevant material. The condensed view shows:
   one.
 - Quote claims verbatim. If you can't find a supporting quote, drop
   the claim. Never invent quotes.
+- **Tier-4 / community sources are background, not load-bearing.**
+  Treat blogs, forum posts, practitioner writeups, and vendor
+  content as signal about *what people are doing or thinking* -
+  useful for landscape, failure stories, and naming competing
+  approaches. Never anchor a core claim to them. If a claim is
+  only supported by tier-4 sources, either find a tier-1-3 source
+  that corroborates it or mark it explicitly as "community
+  reported, not independently verified" in the report.
 - Unreachable sources from a scout (empty preview) are not worth
   retrying - the scout already tried. Move on.
 - Don't over-investigate. 4-8 deep-read sources beats 20
