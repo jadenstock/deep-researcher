@@ -20,6 +20,7 @@ from pydantic_ai import Agent
 
 from ..agent_factory import make_model
 from ..schemas.enums import RoleClass, TaskTier
+from ._debug import log_run_node
 from ._usage import record_run_usage
 from .deps import Deps
 from .events import reset_current_agent_id, set_current_agent_id
@@ -124,8 +125,8 @@ async def landscape_run(deps: Deps, query: str) -> str:
             # shared tracker.
             async with agent.iter(f"Scout the landscape for this query: {query}", deps=deps) as run:
                 try:
-                    async for _ in run:
-                        pass
+                    async for node in run:
+                        log_run_node(agent_id, node)
                 finally:
                     await record_run_usage(
                         deps,

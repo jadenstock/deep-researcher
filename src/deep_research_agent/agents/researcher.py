@@ -30,6 +30,7 @@ from ..agent_factory import make_model
 from ..schemas.enums import NoteType, QuestionClassification, RoleClass, TaskTier
 from ..schemas.ids import NoteID
 from ..schemas.note import Note, QuestionMetadata, SourceNoteMetadata
+from ._debug import log_run_node
 from ._usage import record_run_usage
 from .analyst import AnalystMode, analyst_run
 from .deps import Deps
@@ -353,8 +354,8 @@ async def research_run(deps: Deps, query: str) -> ResearcherReport:
             # `run.usage()` when a deep tool call raises.
             async with agent.iter(opening, deps=deps) as run:
                 try:
-                    async for _ in run:
-                        pass
+                    async for node in run:
+                        log_run_node(agent_id, node)
                 finally:
                     await record_run_usage(
                         deps,

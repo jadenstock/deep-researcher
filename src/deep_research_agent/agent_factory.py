@@ -10,8 +10,15 @@ from __future__ import annotations
 
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.settings import ModelSettings
 
 from .config import LocalConfig, RoutingConfig
+
+# Router (LiteLLM -> Anthropic) applies a low default cap when clients omit
+# `max_tokens`, which truncated answer_question tool-call args mid-report and
+# ran the agent through its retry budget. Set a ceiling large enough for a
+# full final report with thinking headroom.
+_DEFAULT_MAX_TOKENS = 16384
 
 
 def make_model(model_id: str, local: LocalConfig) -> OpenAIChatModel:
@@ -25,4 +32,8 @@ def make_model(model_id: str, local: LocalConfig) -> OpenAIChatModel:
         base_url=local.llm.api_base_url,
         api_key=local.llm.api_key,
     )
-    return OpenAIChatModel(RoutingConfig.router_name(model_id), provider=provider)
+    return OpenAIChatModel(
+        RoutingConfig.router_name(model_id),
+        provider=provider,
+        settings=ModelSettings(max_tokens=_DEFAULT_MAX_TOKENS),
+    )
