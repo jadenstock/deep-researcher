@@ -1,66 +1,73 @@
 # deep-research-agent
 
-Evidence-grounded deep research agent. Takes a natural-language query, runs a
-four-phase pipeline (landscape survey → decomposition → deep research →
-completion & report), and produces an Analytic Pyramid-structured report with
-claim-level traceability to quoted sources.
+An agentic deep-research system. A top-level **researcher** agent is handed a
+natural-language query, runs a **landscape** scouting pass to map the terrain,
+then iteratively dispatches **analyst** sub-agents (which in turn dispatch
+**scouts**) against focused sub-questions. Every finding traces back to a
+verbatim quote on a typed source note.
 
-The core data structure is a typed, versioned **note graph** — every claim,
-source, question, synthesis, decision, and hypothesis is a typed node with
-typed links. Agents communicate only through it. Rendering the graph to any
-particular format (markdown bundle, viewer, diagram) is a separate concern
-addressed by the `export/` layer, not part of the core architecture.
+The whole system is built on [pydantic-ai](https://ai.pydantic.dev/). Each
+agent is a real tool-using loop — no hand-coded orchestration state machine.
+Agents talk to each other only through a shared, async-safe **note graph**.
 
-Implements the v4 technical design. Architecture and decision record are
-design-tracked locally (not in this repo).
+## What this gets you
 
-## Status
-
-Pre-implementation. Scaffolding + core data models only.
+- **Evidence-grounded output.** Every material claim in the final report
+  traces to a source note; every claim on a source note carries a verbatim
+  quote. No unsupported assertions.
+- **Cross-family verification.** The researcher can dispatch `verify` or
+  `adversarial` analysts on load-bearing claims. Those run on a *different*
+  model family than the original `explore` analyst (routing is structural,
+  not prompt discipline).
+- **Live observability.** `dra serve` runs the same pipeline under a FastAPI
+  app with a WebSocket-streamed UI: agents-running panel, note graph,
+  per-agent tool-call ticker, token usage, final report.
+- **Replayable artifacts.** Each run dumps `report.md`, `report.json`,
+  `notes.json`, `token_usage.json`, and `run.log` into `runs/<run_id>/`.
 
 ## Setup
 
 ```bash
 uv sync
-cp config/local.toml.example config/local.toml   # fill in api_base_url, api_key
-uv run dra --help
+cp config/local.toml.example config/local.toml   # fill in api_base_url, api_key, retrieval keys
 ```
 
-All LLM traffic goes through a single OpenAI-compatible endpoint
-(typically a LiteLLM router) configured in `config/local.toml`. The
-routing config in `config/routing_*.yaml` selects which model identifier
-to send per `(role, tier)`; the router resolves it to the upstream
-family (Claude, GPT, Haiku, etc.).
+All LLM traffic goes through one OpenAI-compatible endpoint (a LiteLLM
+router, typically). Which model answers each `(role, tier)` pair is decided
+by a **routing config** — see `config/routing_diverse.yaml` for the default
+policy (Claude for generative, GPT for judgment, Haiku for cheap
+deterministic).
 
-## Package layout
+## Usage
 
-```
-src/deep_research_agent/
-  schemas/       Pydantic models for Task, Note, SourceNote, etc.
-  scheduler/     Task graph + note graph + deterministic dispatch loop
-  executor/      Agent executor + role-to-model routing
-  retrieval/     Serper + Semantic Scholar + arXiv + Unpaywall + fetch/extract
-  tiering/       Reject list + LLM tier classifier + peer-review flag
-  patterns/      single_researcher / maker_checker / multi_perspective /
-                 debate / ach — each a sub-task DAG emitter
-  phases/        Landscape survey, decomposition, completion, report writer
-  replanner/     Bounded replanner with mutation budget and cadence
-  tools/         Agent tool functions (load_note, fetch_and_extract, …)
-  export/        Note-graph serialization (output format TBD; not load-bearing)
-  confidence.py  Tier-weighted confidence formula + language ladder
-  config.py      Routing config loader
-  cli.py         Entry point
-
-config/          Per-run routing policies (for ablation matrix)
-runs/            Per-run outputs + serialized note graph (gitignored)
-```
-
-## Commands
+Headless — prints run status, writes artifacts under `runs/<run_id>/`:
 
 ```bash
-# Run a research session
-uv run dra research "your query here" --routing config/routing_diverse.yaml
+uv run dra research "your query here"
+uv run dra research "..." --routing config/routing_diverse.yaml
+```
 
-# Replay a run against the cached tool results (no network)
-uv run dra replay <run_id>
+Live UI — FastAPI + WebSocket on `http://127.0.0.1:8000`:
+
+```bash
+uv run dra serve
+uv run dra serve --host 0.0.0.0 --port 8080
+```
+
+## Where to go next
+
+- **[docs/architecture.md](docs/architecture.md)** — how the agent actually
+  works. Agent hierarchy, the note graph, dispatch modes, budgets, model
+  routing, event flow.
+- **[docs/codebase-map.md](docs/codebase-map.md)** — what lives where in
+  `src/deep_research_agent/` at module granularity.
+
+## Repo layout
+
+```
+src/deep_research_agent/   # all code
+config/                    # routing policies (yaml) + local.toml (gitignored)
+runs/                      # per-run artifacts (gitignored)
+design/                    # phase-0 research + phase-1 design notes (historical)
+docs/                      # current architecture + codebase map
 ```
