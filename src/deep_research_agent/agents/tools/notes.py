@@ -1,0 +1,410 @@
+"""Note-graph tools - create / update / load notes.
+
+Notes are the agents' persistent memory. Source notes hold the URL,
+extracted claims, tier classification, and any summary the agent
+wants to carry forward; question notes hold the question statement;
+synthesis notes hold the agent's answer.
+
+For the prototype we expose a minimal surface: source note create +
+update, generic note load, and listing. More specialized tools can
+layer on top once we see what the agents actually reach for.
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import UTC, datetime
+
+from pydantic import BaseModel, Field
+from pydantic_ai import RunContext
+
+from ...schemas.enums import ClaimType, NoteType, SourceState, Tier, VerificationStatus
+from ...schemas.ids import NoteID
+from ...schemas.note import Link, Note, QuestionMetadata, SourceNoteMetadata, SynthesisMetadata
+from ...schemas.source import ClaimItem
+from ..deps import Deps
+from ..events import current_agent_id, instrumented
+from ..memory import new_note_id
+from ..schemas import QuestionSynthesis, ResearcherReport
+
+logger = logging.getLogger(__name__)
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+# --- Tool input payloads ----------------------------------------------------
+#
+# pydantic-ai passes tool arguments through the LLM - the more explicit
+# and small the payload shape, the less the model flails. Dedicated
+# input models (with field docstrings) let us document tool semantics
+# in one place.
+
+
+class ClaimInput(BaseModel):
+    """A claim extracted from a source, with the supporting quote."""
+
+    text: str = Field(..., description="Paraphrased statement of the claim.")
+    quote: str = Field(
+        ...,
+        min_length=1,
+        description="Verbatim excerpt from the source that supports the claim.",
+    )
+    page_or_section: str | None = Field(
+        None,
+        description="Section heading or page reference, if known.",
+    )
+
+
+# --- Tools ------------------------------------------------------------------
+
+
+@instrumented
+async def create_source_note(
+    ctx: RunContext[Deps],
+    url: str,
+    title: str,
+    snippet: str = "",
+) -> NoteID:
+    """Record a source you've found but not yet read fully.
+
+    Returns the NoteID of the new source note. Use this as soon as a
+    search hit looks worth examining - it reserves a handle you can
+    update later with content, tier, and claims. Does not fetch the
+    URL; call `fetch_url` separately when you want the content.
+    """
+    source_id = new_note_id("source")
+    note = Note(
+        id=source_id,
+        type=NoteType.SOURCE,
+        title=title or url,
+        description=snippet[:280],
+        content="",
+        metadata=SourceNoteMetadata(
+            url=url,
+            title=title or "Untitled",
+            state=SourceState.SCOUTED,
+            summary=snippet or None,
+        ),
+        last_modified_at=_now(),
+        created_at=_now(),
+    )
+    await ctx.deps.memory.create(note)
+    return source_id
+
+
+@instrumented
+async def update_source_after_reading(
+    ctx: RunContext[Deps],
+    source_id: NoteID,
+    tier: int,
+    tier_rationale: str,
+    peer_reviewed: bool,
+    summary: str,
+    relevance_note: str,
+    claims: list[ClaimInput] | None = None,
+) -> str:
+    """Record what you learned after reading a source.
+
+    Update a source note with:
+      - tier: 1 (peer-reviewed top-venue research) → 5 (low-quality / reject).
+      - tier_rationale: one sentence explaining the tier.
+      - peer_reviewed: True if the source went through peer review.
+      - summary: 2-4 sentences of the source's main argument or findings.
+      - relevance_note: why this source matters for the question at hand.
+      - claims: list of extracted claims (each with a verbatim quote). Can be empty if
+        the source was unhelpful.
+
+    Returns a one-line confirmation string. Failure (source not found
+    in memory) raises - the agent should not have called this for a
+    non-existent source.
+    """
+    try:
+        tier_enum = Tier(tier)
+    except ValueError as exc:
+        raise ValueError(f"tier must be 1..5, got {tier}") from exc
+
+    existing = ctx.deps.memory.get(source_id)
+    if existing is None:
+        raise KeyError(f"source note {source_id} not in memory")
+    if existing.type != NoteType.SOURCE:
+        raise ValueError(f"note {source_id} is {existing.type.value}, not a source_note")
+
+    claim_items: list[ClaimItem] = []
+    for i, c in enumerate(claims or []):
+        claim_items.append(
+            ClaimItem(
+                id=f"{source_id}-c{i}",
+                text=c.text,
+                quote=c.quote,
+                page_or_section=c.page_or_section,
+                extractor_confidence=0.8,
+                verification_status=VerificationStatus.UNVERIFIED,
+                claim_type=ClaimType.EXTERNAL,
+            )
+        )
+
+    existing_meta = existing.metadata
+    assert isinstance(existing_meta, SourceNoteMetadata)
+    new_meta = existing_meta.model_copy(
+        update={
+            "state": SourceState.ANALYZED,
+            "tier": tier_enum,
+            "tier_rationale": tier_rationale,
+            "peer_reviewed": peer_reviewed,
+            "summary": summary,
+            "claims": claim_items,
+        }
+    )
+    await ctx.deps.memory.update(
+        source_id,
+        description=summary[:280] or existing.description,
+        content=relevance_note,
+        metadata=new_meta,
+    )
+    return f"source {source_id} tier={tier} peer_reviewed={peer_reviewed} claims={len(claim_items)}"
+
+
+@instrumented
+async def load_note(ctx: RunContext[Deps], note_id: NoteID) -> dict[str, object]:
+    """Load any note by ID - returns its full contents as a dict.
+
+    Use this to re-read a source note (with its extracted claims + summary)
+    when composing a synthesis, or to inspect a question note created
+    by another agent.
+    """
+    note = ctx.deps.memory.get(note_id)
+    if note is None:
+        return {"error": f"note {note_id} not found"}
+    return note.model_dump(mode="json")
+
+
+@instrumented
+async def list_source_notes(
+    ctx: RunContext[Deps], only_analyzed: bool = False
+) -> list[dict[str, object]]:
+    """List source notes in memory with their key metadata.
+
+    Returns one dict per source with id / url / title / state / tier /
+    summary (when set). Use to audit what's been gathered so far, or
+    to pick sources to cite in a synthesis.
+    """
+    sources = ctx.deps.memory.list_by_type(NoteType.SOURCE)
+    out: list[dict[str, object]] = []
+    for n in sources:
+        meta = n.metadata
+        if not isinstance(meta, SourceNoteMetadata):
+            continue
+        if only_analyzed and meta.state != SourceState.ANALYZED:
+            continue
+        out.append(
+            {
+                "id": n.id,
+                "url": meta.url,
+                "title": meta.title,
+                "state": meta.state.value,
+                "tier": meta.tier.value if meta.tier is not None else None,
+                "peer_reviewed": meta.peer_reviewed,
+                "summary": meta.summary,
+                "n_claims": len(meta.claims or []),
+            }
+        )
+    return out
+
+
+@instrumented
+async def create_question_note(
+    ctx: RunContext[Deps],
+    question: str,
+    classification: str = "synthesis",
+) -> NoteID:
+    """Record a sub-question you plan to investigate.
+
+    classification is one of: 'lookup', 'synthesis', 'contested', 'sparse'.
+    Returns the question NoteID. Typically called from the top-level
+    researcher to register its decomposition before spawning sub-agents.
+    """
+    from ...schemas.enums import QuestionClassification
+
+    try:
+        cls = QuestionClassification(classification)
+    except ValueError as exc:
+        raise ValueError(
+            "classification must be one of: lookup, synthesis, contested, sparse"
+        ) from exc
+
+    q_id = new_note_id("question")
+    note = Note(
+        id=q_id,
+        type=NoteType.QUESTION,
+        title=question[:120],
+        description=question,
+        content="",
+        metadata=QuestionMetadata(classification=cls),
+        last_modified_at=_now(),
+        created_at=_now(),
+    )
+    await ctx.deps.memory.create(note)
+    return q_id
+
+
+# --- Final-output tools ----------------------------------------------------
+#
+# These are how agents COMMIT their final work. Replaces structured-
+# output validation on the agent. Moving this to a tool means:
+#
+# 1. Pydantic validates tool args -> invalid args surface as a
+#    ModelRetry with a descriptive error that the model sees as a
+#    tool-call failure and naturally retries within the same turn.
+# 2. The tool can create a durable synthesis_note on success, so the
+#    work survives a later crash in the conversation.
+# 3. Tool-call events fire in the UI - the user sees the write
+#    attempt land (or fail + retry) in the agent card.
+#
+# Each tool stashes its structured payload in `deps.outputs[agent_id]`
+# so the wrapping `*_run` function can read the committed data
+# without relying on the agent's stringy final message.
+
+
+@instrumented
+async def write_question_synthesis(
+    ctx: RunContext[Deps],
+    question: str,
+    bottom_line: str,
+    synthesis: str,
+    confidence: str,
+    sources_cited: list[NoteID] | None = None,
+    disagreements: list[str] | None = None,
+    open_issues: list[str] | None = None,
+) -> str:
+    """Commit your final synthesis for this question.
+
+    MUST be called exactly once as your last tool call before ending
+    your turn. Every field is required (except the three lists which
+    default to empty). If you haven't gathered enough evidence to
+    answer the question, still call this - set confidence='low' and
+    describe what you couldn't find in `open_issues`.
+
+    Args:
+      question: the question you were assigned.
+      bottom_line: one or two sentences answering the question directly.
+      synthesis: multi-paragraph markdown write-up. Cite source notes
+        inline with [source-abc123] syntax.
+      confidence: one of 'high' | 'medium' | 'low'.
+      sources_cited: NoteIDs of source notes whose claims feed this
+        synthesis.
+      disagreements: points where sources conflict, or empty.
+      open_issues: things you couldn't answer and why, or empty.
+
+    Returns a confirmation string containing the NoteID of the
+    synthesis note that was created.
+    """
+    confidence_lc = confidence.strip().lower()
+    if confidence_lc not in {"high", "medium", "low"}:
+        # Raising ValueError propagates to pydantic-ai as a tool
+        # error; the model sees the message and retries. This is the
+        # intended mechanism instead of silently accepting garbage.
+        raise ValueError(f"confidence must be 'high', 'medium', or 'low'; got {confidence!r}")
+
+    qs = QuestionSynthesis(
+        question=question,
+        bottom_line=bottom_line,
+        synthesis=synthesis,
+        confidence=confidence_lc,
+        sources_cited=sources_cited or [],
+        disagreements=disagreements or [],
+        open_issues=open_issues or [],
+    )
+
+    # Stash for the wrapping investigate_question_run to read back.
+    agent_id = current_agent_id() or "anonymous"
+    ctx.deps.outputs[agent_id] = qs
+
+    # Create a synthesis_note so the work is durable + visible in the
+    # UI's note graph immediately.
+    note_id = new_note_id("qsynth")
+    note = Note(
+        id=note_id,
+        type=NoteType.SYNTHESIS,
+        title=f"Synthesis: {question[:100]}",
+        description=bottom_line[:280],
+        content=synthesis,
+        links=[Link(target_id=src, edge_type="cites") for src in qs.sources_cited],
+        metadata=SynthesisMetadata(pattern=f"investigator:{agent_id}"),
+        last_modified_at=_now(),
+        created_at=_now(),
+    )
+    await ctx.deps.memory.create(note)
+    return (
+        f"committed synthesis note {note_id} "
+        f"({qs.confidence} confidence, {len(qs.sources_cited)} sources cited)"
+    )
+
+
+@instrumented
+async def write_research_report(
+    ctx: RunContext[Deps],
+    bottom_line: str,
+    report_markdown: str,
+    cross_cutting_synthesis: str = "",
+    limitations: list[str] | None = None,
+) -> str:
+    """Commit your final research report.
+
+    MUST be called exactly once as your last tool call before ending
+    your turn. After calling, end with a one-line confirmation.
+
+    Args:
+      bottom_line: 2-4 sentence executive answer to the overall query.
+      report_markdown: full markdown report. Synthesize across the
+        sub-question investigations; cite source notes inline with
+        [source-abc123] syntax. This is the single most important
+        field - don't leave it empty.
+      cross_cutting_synthesis: optional 1-3 paragraphs on themes that
+        emerge ACROSS sub-questions (not a restatement of each).
+      limitations: what the report couldn't cover or where confidence
+        is shaky.
+
+    Returns a confirmation string containing the NoteID of the report
+    synthesis note.
+    """
+    if not report_markdown.strip():
+        raise ValueError(
+            "report_markdown must be non-empty - this field is the actual "
+            "report. Synthesize across the sub-question investigations."
+        )
+
+    # Stash the structured payload for the research_run wrapper. We
+    # don't know the query here - the runner adds it. Using a dummy
+    # string keeps ResearcherReport constructable without coupling
+    # to run_session state.
+    report = ResearcherReport(
+        query="",  # filled in by research_run from its own scope
+        bottom_line=bottom_line,
+        cross_cutting_synthesis=cross_cutting_synthesis,
+        report_markdown=report_markdown,
+        limitations=limitations or [],
+        # questions_investigated is populated by research_run from
+        # the sub-agent outputs it already has in memory.
+    )
+    agent_id = current_agent_id() or "anonymous"
+    ctx.deps.outputs[agent_id] = report
+
+    # Durable synthesis_note for the UI's report tab + on-disk artifact.
+    note_id = new_note_id("report")
+    note = Note(
+        id=note_id,
+        type=NoteType.SYNTHESIS,
+        title="Research report",
+        description=bottom_line[:280],
+        content=report_markdown,
+        metadata=SynthesisMetadata(pattern="researcher"),
+        last_modified_at=_now(),
+        created_at=_now(),
+    )
+    await ctx.deps.memory.create(note)
+    # Stash the note_id under a stable key so run_session can find it
+    # without scanning the note graph for the right type + pattern.
+    ctx.deps.outputs["__report_note_id__"] = note_id
+    return f"committed research report as {note_id}"

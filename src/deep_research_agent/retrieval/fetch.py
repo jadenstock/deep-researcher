@@ -27,7 +27,7 @@ DEFAULT_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
-# Single shared MarkItDown instance — its constructor scans for converters,
+# Single shared MarkItDown instance - its constructor scans for converters,
 # which is ~40ms, not something we want per-fetch.
 _MARKITDOWN = MarkItDown()
 
@@ -52,7 +52,7 @@ def _is_pdf(url: str, content_type: str | None) -> bool:
 
 def _truncate_pdf_pages(raw: bytes, max_pages: int) -> bytes:
     """Return PDF bytes truncated to at most `max_pages`. Falls back to
-    the original bytes if pypdf can't parse (encrypted, damaged, etc.) —
+    the original bytes if pypdf can't parse (encrypted, damaged, etc.) -
     MarkItDown will then try and fail on its own terms.
     """
     try:
@@ -87,7 +87,7 @@ def _markitdown_convert_sync(raw: bytes) -> tuple[str | None, str | None]:
 
 async def _pdf_to_markdown(raw: bytes, url: str) -> tuple[str | None, str | None]:
     """Convert PDF bytes to (markdown, title). Returns (None, None) on
-    any failure — oversized, unparseable, or slow PDFs degrade to "no
+    any failure - oversized, unparseable, or slow PDFs degrade to "no
     body" rather than blowing up the fetch.
 
     Runs MarkItDown off the event loop with a hard timeout so a single
@@ -131,7 +131,7 @@ async def fetch_and_extract(url: str, timeout: float = 20.0) -> FetchResult | No
     Returns None on connection-level failure. Returns a FetchResult with
     markdown=None on non-2xx responses or when the extractor yields
     nothing (e.g., paywall, JS-only page). Callers should tolerate None
-    markdown — some candidates will always fail to extract.
+    markdown - some candidates will always fail to extract.
     """
     t_start = time.monotonic()
     try:

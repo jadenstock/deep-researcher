@@ -208,6 +208,45 @@
   .agent-card .foot .io { color: var(--muted); }
   .agent-card .foot .io b { color: var(--text); font-weight: 500; }
   .agent-card .foot .elapsed { font-variant-numeric: tabular-nums; }
+  .agent-card .tool-activity {
+    margin-top: 6px;
+    border-top: 1px dashed rgba(255,255,255,0.08);
+    padding-top: 6px;
+    display: flex;
+    flex-direction: column-reverse; /* newest on top */
+    gap: 2px;
+    max-height: 90px;
+    overflow-y: auto;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 10px;
+    line-height: 1.35;
+  }
+  .agent-card .tool-activity:empty { display: none; }
+  .agent-card .tool-row {
+    display: grid;
+    grid-template-columns: 6px auto 1fr auto;
+    gap: 6px;
+    align-items: baseline;
+    color: var(--muted);
+  }
+  .agent-card .tool-row .dot-tc {
+    width: 5px; height: 5px; border-radius: 50%;
+    background: var(--warn); align-self: center;
+    animation: pulse 1s infinite;
+  }
+  .agent-card .tool-row.ok .dot-tc { background: var(--ok); animation: none; }
+  .agent-card .tool-row.error .dot-tc { background: var(--err); animation: none; }
+  .agent-card .tool-row .tc-name {
+    color: var(--accent); font-weight: 500;
+  }
+  .agent-card .tool-row .tc-summary {
+    color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .agent-card .tool-row .tc-ms {
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
   .agent-card .expanded-body {
     display: none;
     margin-top: 8px; padding-top: 8px;
@@ -676,6 +715,8 @@
       task_done: "✓",
       note_created: "+",
       note_replaced: "~",
+      tool_call_start: "→",
+      tool_call_end: "✓",
       run_started: "…",
       run_done: "✓",
       run_failed: "✗",
@@ -868,18 +909,71 @@
     elapsed.textContent = "00:00";
     foot.append(io, elapsed);
 
+    const toolActivity = document.createElement("div");
+    toolActivity.className = "tool-activity";
+
     const body = document.createElement("div");
     body.className = "expanded-body";
 
-    card.append(head, goal, foot, body);
+    card.append(head, goal, foot, toolActivity, body);
 
     card.addEventListener("click", () => toggleAgentExpanded(data.id));
     runningAgentsEl.prepend(card); // newest on top
 
     const startedAtMs =
       data.started_at ? new Date(data.started_at).getTime() : Date.now();
-    runningAgents.set(data.id, { data, el: card, elapsedEl: elapsed, startedAtMs });
+    runningAgents.set(data.id, {
+      data,
+      el: card,
+      elapsedEl: elapsed,
+      toolActivityEl: toolActivity,
+      toolRows: new Map(), // tool_call_id -> row element
+      startedAtMs,
+    });
     updateRunningAgentsTitle();
+  }
+
+  function onToolCallStart(data) {
+    const entry = runningAgents.get(data.agent_id);
+    if (!entry) return; // parent agent already faded; ignore
+    const row = document.createElement("div");
+    row.className = "tool-row pending";
+    row.dataset.toolCallId = data.tool_call_id;
+    const dot = document.createElement("span");
+    dot.className = "dot-tc";
+    const name = document.createElement("span");
+    name.className = "tc-name";
+    name.textContent = data.tool;
+    const summary = document.createElement("span");
+    summary.className = "tc-summary";
+    summary.textContent = data.summary || "";
+    const ms = document.createElement("span");
+    ms.className = "tc-ms";
+    ms.textContent = "...";
+    row.append(dot, name, summary, ms);
+    // column-reverse means DOM order is oldest-last; append to keep that.
+    entry.toolActivityEl.append(row);
+    entry.toolRows.set(data.tool_call_id, row);
+    // Cap rows so a long-running agent's activity doesn't grow unbounded.
+    while (entry.toolActivityEl.children.length > 30) {
+      const stale = entry.toolActivityEl.firstChild;
+      entry.toolActivityEl.removeChild(stale);
+    }
+  }
+
+  function onToolCallEnd(data) {
+    const entry = runningAgents.get(data.agent_id);
+    if (!entry) return;
+    const row = entry.toolRows.get(data.tool_call_id);
+    if (!row) return;
+    row.classList.remove("pending");
+    row.classList.add(data.status === "ok" ? "ok" : "error");
+    const summaryEl = row.querySelector(".tc-summary");
+    if (summaryEl && data.summary) {
+      summaryEl.textContent = `${summaryEl.textContent} → ${data.summary}`;
+    }
+    const msEl = row.querySelector(".tc-ms");
+    if (msEl) msEl.textContent = `${data.duration_ms}ms`;
   }
 
   function finishAgentCard(taskId, status) {
@@ -1091,6 +1185,12 @@
       case "note_replaced":
         logRow(kind, `${data.type} · ${truncate(data.title, 60)} (v${data.version})`, at);
         addOrUpdateNode(data);
+        break;
+      case "tool_call_start":
+        onToolCallStart(data);
+        break;
+      case "tool_call_end":
+        onToolCallEnd(data);
         break;
       case "run_done":
         logRow(kind, `run complete${data.report_note_id ? ` — report ${data.report_note_id}` : ""}`, at);

@@ -1,6 +1,6 @@
 """Per-run token-usage bookkeeping.
 
-A run touches many models — tier classifier, landscape surveyor,
+A run touches many models - tier classifier, landscape surveyor,
 decomposer, analyzers, synthesizers, verifiers, judge, validator,
 report writer. Each goes through pydantic_ai which reports a
 `RunUsage` on every `agent.run()`. We aggregate those counts per
@@ -100,7 +100,7 @@ class TokenUsageTracker:
 
     def snapshot(self) -> dict[str, ModelTotals]:
         """Return a shallow copy of per-model totals. Safe to read
-        without the lock — we only swap references, never mutate in
+        without the lock - we only swap references, never mutate in
         place after snapshot."""
         return dict(self._totals)
 

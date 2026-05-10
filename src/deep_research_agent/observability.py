@@ -1,7 +1,7 @@
 """Logfire instrumentation.
 
 Call `setup_logfire(local)` once at startup. No-op if no token is
-configured — the rest of the system runs without Logfire, traces just
+configured - the rest of the system runs without Logfire, traces just
 go nowhere.
 
 When Logfire rejects the token server-side (401), the OpenTelemetry OTLP
@@ -26,7 +26,7 @@ _CONFIGURED = False
 def _silence_otel_and_logfire_noise() -> None:
     """Mute OTEL exporter retry errors + logfire's per-export UserWarnings.
 
-    Called whether or not setup succeeds — if the token is bad, both
+    Called whether or not setup succeeds - if the token is bad, both
     channels will produce noise and there's nothing the caller can do
     beyond regenerating the token.
     """
@@ -48,7 +48,7 @@ def setup_logfire(local: LocalConfig, service_name: str = "deep-research-agent")
     """Configure Logfire + instrument PydanticAI and httpx.
 
     Returns True when instrumentation was set up, False when skipped.
-    Safe to call multiple times — subsequent calls are no-ops.
+    Safe to call multiple times - subsequent calls are no-ops.
     """
     global _CONFIGURED
     if _CONFIGURED:

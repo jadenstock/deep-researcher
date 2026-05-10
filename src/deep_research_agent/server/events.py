@@ -1,9 +1,22 @@
 """Event types + per-run event bus.
 
-Events are the UI's view of scheduler state. Each run owns a RunSession
-with a bounded history (for late WebSocket connectors) and a set of
-subscriber queues. The scheduler's callbacks push events onto the
-session; the WebSocket handler pulls them off per-subscriber queue.
+Events are the UI's view of what an agent run is doing. The wire
+protocol (kinds + payload shapes) matches what the live UI
+(`server/static/index.html`) expects:
+
+    run_started   -> { run_id, query }
+    task_started  -> AgentSummary (id, type, goal, status, tier, role,
+                                    model_id, started_at, parent_id?,
+                                    reads_notes=[], writes_notes=[])
+    task_done     -> { id, type, status, verdict }
+    note_created  -> NoteSummary
+    note_replaced -> NoteSummary
+    run_done      -> { report_note_id }
+    run_failed    -> { error }
+
+Keeping the "task_*" kind names means the existing UI (which
+originally tracked scheduler tasks) renders our agent invocations
+without frontend changes - each agent is a "task" in UI terms.
 """
 
 from __future__ import annotations
@@ -15,24 +28,19 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from ..config import RoutingConfig
-from ..schemas import Note, Task
+from ..schemas.note import Note
 
 logger = logging.getLogger(__name__)
 
 
-# --- Event models -----------------------------------------------------------
+# --- Wire payloads ----------------------------------------------------------
 
 
 class NoteSummary(BaseModel):
-    """Lightweight note projection — full content fetched via /api/note/..."""
+    """Lightweight note projection - full content fetched via /api/note/..."""
 
     id: str
     type: str
-    # Sub-type indicator for the UI. Currently populated from
-    # DecisionMetadata.category (e.g. "aims_scoping", "verification",
-    # "final_report") so the frontend can distinguish decision flavors
-    # without a full schema walk.
     subtype: str | None = None
     title: str
     description: str
@@ -57,13 +65,12 @@ class NoteSummary(BaseModel):
         )
 
 
-class TaskSummary(BaseModel):
-    """Projection of a Task onto the wire for the running-agents UI.
+class AgentSummary(BaseModel):
+    """Projection of an agent invocation onto the wire.
 
-    Fields beyond the basic identity are what lets the UI render a card
-    with enough context to answer "what is this agent doing?" without
-    a secondary fetch: the notes it reads + writes, the pattern, tier,
-    role, and which model it's routed to.
+    Shape matches the UI's `addAgentCard` expectations. `reads_notes`
+    and `writes_notes` stay empty for agents (we don't pre-declare
+    them) - the UI falls back to `[]`.
     """
 
     id: str
@@ -76,38 +83,11 @@ class TaskSummary(BaseModel):
     pattern: str | None = None
     tier: str | None = None
     role: str | None = None
-    # Resolved at event-emit time via routing.model_id_for(role, tier).
-    # For VERIFY_CLAIM the executor may additionally apply the ADR 0008
-    # cross-family invariant and select a different model; this field
-    # reflects the default-family resolution, close enough for the UI
-    # indicator. The run.log captures the actual model used.
     model_id: str | None = None
     started_at: datetime | None = None
 
-    @classmethod
-    def from_task(cls, task: Task, routing: RoutingConfig | None = None) -> TaskSummary:
-        model_id: str | None = None
-        if routing is not None:
-            try:
-                model_id = routing.model_id_for(task.role, task.tier)
-            except Exception:
-                # Routing miss (e.g. role/tier combo not in config) is
-                # not fatal — the UI just doesn't get a model label.
-                model_id = None
-        return cls(
-            id=task.id,
-            type=task.type.value,
-            goal=task.goal,
-            status=task.status.value,
-            parent_id=task.parent_id,
-            reads_notes=list(task.reads_notes),
-            writes_notes=list(task.writes_notes),
-            pattern=task.pattern.value if task.pattern is not None else None,
-            tier=task.tier.value,
-            role=task.role.value,
-            model_id=model_id,
-            started_at=datetime.now(UTC),
-        )
+
+# --- Event envelope ---------------------------------------------------------
 
 
 class Event(BaseModel):
@@ -117,6 +97,8 @@ class Event(BaseModel):
         "task_done",
         "note_created",
         "note_replaced",
+        "tool_call_start",
+        "tool_call_end",
         "run_done",
         "run_failed",
     ]
@@ -128,81 +110,98 @@ def event_run_started(run_id: str, query: str) -> Event:
     return Event(kind="run_started", data={"run_id": run_id, "query": query})
 
 
-def event_task_started(task: Task, routing: RoutingConfig | None = None) -> Event:
-    return Event(
-        kind="task_started",
-        data=TaskSummary.from_task(task, routing).model_dump(mode="json"),
+def event_agent_started(
+    *,
+    agent_id: str,
+    agent_type: str,
+    goal: str,
+    tier: str | None,
+    role: str | None,
+    model_id: str | None,
+    parent_id: str | None = None,
+) -> Event:
+    summary = AgentSummary(
+        id=agent_id,
+        type=agent_type,
+        goal=goal,
+        status="RUNNING",
+        parent_id=parent_id,
+        tier=tier,
+        role=role,
+        model_id=model_id,
+        started_at=datetime.now(UTC),
     )
+    return Event(kind="task_started", data=summary.model_dump(mode="json"))
 
 
-def event_task_done(task: Task, verdict: str) -> Event:
+def event_agent_done(
+    *,
+    agent_id: str,
+    agent_type: str,
+    status: str,
+    verdict: str,
+) -> Event:
     return Event(
         kind="task_done",
         data={
-            "id": task.id,
-            "type": task.type.value,
-            "status": task.status.value,
+            "id": agent_id,
+            "type": agent_type,
+            "status": status,
             "verdict": verdict,
         },
     )
 
 
 def event_note_created(note: Note) -> Event:
-    return Event(kind="note_created", data=NoteSummary.from_note(note).model_dump())
+    return Event(
+        kind="note_created",
+        data=NoteSummary.from_note(note).model_dump(),
+    )
 
 
 def event_note_replaced(note: Note) -> Event:
-    return Event(kind="note_replaced", data=NoteSummary.from_note(note).model_dump())
-
-
-def event_replan_started(cycle_num: int, routing: RoutingConfig | None = None) -> tuple[Event, str]:
-    """Synthetic task_started event for a replanner cycle.
-
-    The replanner runs between scheduler ticks and doesn't go through
-    the normal task dispatch path, so `on_task_start` never fires for
-    it. But it's a live agent spinning on a judgment model for seconds
-    at a time — the user wants to see it in the Running Agents panel.
-    We emit a task_started event with a synthetic id; the caller pairs
-    it with event_replan_done via the returned id string.
-
-    Returns (Event, synthetic_task_id) so the caller can hand the id
-    back to event_replan_done later.
-    """
-    from ..schemas.enums import RoleClass, TaskTier
-
-    synth_id = f"replan_cycle_{cycle_num:02d}"
-    model_id: str | None = None
-    if routing is not None:
-        try:
-            model_id = routing.model_id_for(RoleClass.JUDGMENT, TaskTier.MID)
-        except Exception:
-            model_id = None
-    summary = TaskSummary(
-        id=synth_id,
-        type="REPLAN",
-        goal=("Re-assess graph state; spawn/abandon/escalate sub-questions as evidence warrants."),
-        status="RUNNING",
-        tier="MID",
-        role="judgment",
-        model_id=model_id,
-        started_at=datetime.now(UTC),
-    )
-    return Event(kind="task_started", data=summary.model_dump(mode="json")), synth_id
-
-
-def event_replan_done(synth_id: str, verdict: str, failed: bool = False) -> Event:
-    """Companion to event_replan_started — closes the synthetic card.
-
-    status is DONE on success, ABANDONED on replanner failure so the UI
-    flashes red rather than green before fading.
-    """
     return Event(
-        kind="task_done",
+        kind="note_replaced",
+        data=NoteSummary.from_note(note).model_dump(),
+    )
+
+
+def event_tool_call_start(
+    *,
+    agent_id: str,
+    tool_call_id: str,
+    tool: str,
+    summary: str,
+) -> Event:
+    return Event(
+        kind="tool_call_start",
         data={
-            "id": synth_id,
-            "type": "REPLAN",
-            "status": "ABANDONED" if failed else "DONE",
-            "verdict": verdict,
+            "agent_id": agent_id,
+            "tool_call_id": tool_call_id,
+            "tool": tool,
+            "summary": summary,
+        },
+    )
+
+
+def event_tool_call_end(
+    *,
+    agent_id: str,
+    tool_call_id: str,
+    tool: str,
+    status: str,
+    summary: str,
+    duration_ms: int,
+) -> Event:
+    return Event(
+        kind="tool_call_end",
+        data={
+            "agent_id": agent_id,
+            "tool_call_id": tool_call_id,
+            "tool": tool,
+            "status": status,
+            "summary": summary,
+            "duration_ms": duration_ms,
         },
     )
 
@@ -221,10 +220,10 @@ def event_run_failed(error: str) -> Event:
 class RunSession:
     """Owns the event history + subscribers for one run.
 
-    History is bounded to avoid memory creep on long sessions; late
-    WebSocket connectors get a replay from the tail. Pub/sub uses
-    unbounded queues on the assumption subscribers drain promptly —
-    they're WebSocket handlers.
+    History is bounded so long sessions don't leak memory; late
+    WebSocket connectors replay from the tail. Pub/sub uses unbounded
+    queues on the assumption subscribers drain promptly - they're
+    WebSocket handlers.
     """
 
     HISTORY_CAP = 5_000
@@ -236,21 +235,32 @@ class RunSession:
         self.finished = False
         self.history: list[Event] = []
         self.subscribers: set[asyncio.Queue[Event]] = set()
-        # Notes captured as they're created/replaced so /api/note can return
-        # the full object without reaching into scheduler internals.
+        # Captured as notes flow by so /api/note can answer without
+        # reaching into agent memory from another coroutine.
         self.notes: dict[str, Note] = {}
-        # Holds the asyncio.Task running the session so it isn't GC'd mid-run.
+        # Holds the asyncio.Task running the session so it isn't GC'd.
         self.task: asyncio.Task[None] | None = None
 
     def publish(self, event: Event) -> None:
         self.history.append(event)
         if len(self.history) > self.HISTORY_CAP:
             self.history = self.history[-self.HISTORY_CAP :]
+        n_subs = len(self.subscribers)
         for q in self.subscribers:
             try:
                 q.put_nowait(event)
             except asyncio.QueueFull:  # unbounded queue; defensive only
                 logger.warning("subscriber queue full run_id=%s", self.run_id)
+        # Visible at INFO so the user can diagnose a silent UI: if the
+        # server log shows kind=task_started subs=0, the WS isn't
+        # connected yet; kind=... subs>0 means events are being pushed.
+        logger.info(
+            "publish run_id=%s kind=%s subs=%d hist=%d",
+            self.run_id,
+            event.kind,
+            n_subs,
+            len(self.history),
+        )
 
     def subscribe(self) -> asyncio.Queue[Event]:
         q: asyncio.Queue[Event] = asyncio.Queue()

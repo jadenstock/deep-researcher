@@ -133,7 +133,7 @@ class VerificationConfig(BaseModel):
     # If true, new sources surfaced during VERIFY_CLAIM are only added
     # to the corpus if at least one question is still OPEN.
     skip_seeding_after_synthesis: bool = True
-    # Skip verification of claims tagged novel_to_source — a paper's own
+    # Skip verification of claims tagged novel_to_source - a paper's own
     # proposed benchmark / method / experimental result can't be
     # corroborated by independent sources because independent sources
     # don't exist. These claims always collapse to INCONCLUSIVE; verifying
@@ -155,7 +155,7 @@ class HygieneConfig(BaseModel):
     off_topic_relevance_penalty: bool = True
     # When the final report is written, emit a decision_note counting
     # SCOUTED sources that were never promoted (dead weight in the
-    # corpus). Doesn't delete them — notes are immutable — just records
+    # corpus). Doesn't delete them - notes are immutable - just records
     # the count for the audit trail.
     record_pruned_scouted: bool = True
 
@@ -209,19 +209,19 @@ class LLMEndpoint(BaseModel):
 
 
 class RetrievalKeys(BaseModel):
-    # Web search — any one of these can back the web_search tool; v0 uses
+    # Web search - any one of these can back the web_search tool; v0 uses
     # whichever is set, preferring brave > tavily > serper if multiple.
     brave_api_key: str | None = None
     tavily_api_key: str | None = None
     serper_api_key: str | None = None
-    # Academic — optional; unauthenticated S2 works at lower rate limits.
+    # Academic - optional; unauthenticated S2 works at lower rate limits.
     semantic_scholar_api_key: str | None = None
     # Unpaywall requires a contact email in every request. Unpaywall is
     # public and unauthenticated; the email is just an identifier. If
     # unset, the Unpaywall rescue step is skipped (DOIs stay as landing URLs).
     unpaywall_email: str | None = None
     # Min interval (seconds) between Brave Search calls. Free tier enforces
-    # 1 req/s with a strict sliding window — 1.05s cuts it too close in
+    # 1 req/s with a strict sliding window - 1.05s cuts it too close in
     # practice, 1.5s is safe. Paid plans can drop to ~0.05 (20 req/s) or
     # ~0.02 (50 req/s).
     brave_min_interval_s: float = 1.5

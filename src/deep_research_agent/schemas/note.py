@@ -69,7 +69,7 @@ class SynthesisMetadata(BaseModel):
     linchpin_evidence: list[SourceID] = Field(default_factory=list)
     # Triangulation: how many distinct sources carried claims that
     # feed this synthesis. A cheap proxy for independent corroboration
-    # — the validator reads this alongside the synthesis text when
+    # - the validator reads this alongside the synthesis text when
     # auditing gate 6 (triangulation adequacy).
     triangulation_score: int = 0
     # Distinct tiers the contributing sources span (1..5). Wider
