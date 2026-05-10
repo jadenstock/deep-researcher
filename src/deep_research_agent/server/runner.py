@@ -199,13 +199,13 @@ def _find_answered_root_question_id(memory: NoteMemory) -> NoteID | None:
 async def _materialize_fallback_report_note(
     publisher: SessionPublisher,
     report_markdown: str,
-    bottom_line: str,
+    description: str,
 ) -> NoteID:
     """Compat shim: create a SYNTHESIS note holding a fallback report.
 
     Used only when the researcher ended without calling
     `answer_question` on the root question (so the root note has no
-    synthesis content to surface) or when the run crashed. The UI's
+    report content to surface) or when the run crashed. The UI's
     report tab fetches whatever note id we emit in `run_done`, so we
     still need *some* note to point at. A SYNTHESIS note is fine here
     as a fallback sink; the happy-path report lives on the root
@@ -216,7 +216,7 @@ async def _materialize_fallback_report_note(
         id=note_id,
         type=NoteType.SYNTHESIS,
         title="Research report (fallback)",
-        description=bottom_line[:280],
+        description=description[:280],
         content=report_markdown,
         metadata=SynthesisMetadata(pattern="researcher"),
         last_modified_at=_now(),
@@ -306,7 +306,7 @@ async def run_session(
             report_note_id = await _materialize_fallback_report_note(
                 publisher=publisher,
                 report_markdown=fallback_md,
-                bottom_line=report.bottom_line,
+                description=f"Fallback report for: {session.query}",
             )
 
         _dump_artifacts(
@@ -357,7 +357,7 @@ async def run_session(
             partial_note_id = await _materialize_fallback_report_note(
                 publisher=publisher,
                 report_markdown=partial_md,
-                bottom_line=(f"Partial report - run failed: {type(exc).__name__}"),
+                description=f"Partial report - run failed: {type(exc).__name__}",
             )
             logger.info(
                 "partial report materialized run_id=%s note=%s",

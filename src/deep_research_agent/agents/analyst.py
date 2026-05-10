@@ -171,10 +171,7 @@ async def analyst_run(
             )
             qs = QuestionSynthesis(
                 question=question,
-                bottom_line=(
-                    "(no synthesis produced - analyst ended without calling answer_question)"
-                ),
-                synthesis="",
+                report=("_(no report produced - analyst ended without calling answer_question)_"),
                 confidence="low",
                 open_issues=[
                     "Analyst did not call answer_question before ending its turn.",

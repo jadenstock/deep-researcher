@@ -302,7 +302,7 @@ async def get_research_state(ctx: RunContext[Deps]) -> dict[str, object]:
     Returns:
       {
         "root_question": {...} | None,
-        "questions": [{id, question, status, confidence, bottom_line,
+        "questions": [{id, question, status, confidence,
                        parent_id, n_sources_cited}, ...],
         "sources_by_tier": {"unclassified": N, "1": N, "2": N, ...},
         "sources_by_state": {"SCOUTED": N, "FETCHED": N, "ANALYZED": N},
@@ -327,7 +327,6 @@ async def get_research_state(ctx: RunContext[Deps]) -> dict[str, object]:
             "question": n.description or n.title,
             "status": meta.status,
             "confidence": meta.confidence,
-            "bottom_line": meta.bottom_line,
             "parent_id": meta.parent_question_id,
             "n_sources_cited": len(meta.sources_cited),
         }
@@ -431,24 +430,19 @@ async def create_question_note(
 async def answer_question(
     ctx: RunContext[Deps],
     question_id: NoteID,
-    bottom_line: str,
-    synthesis: str,
+    report: str,
     confidence: str,
     sources_cited: list[NoteID] | None = None,
     disagreements: list[str] | None = None,
     open_issues: list[str] | None = None,
 ) -> str:
-    """Commit your answer to a pre-created question note.
+    """Commit your final markdown report to a pre-created question note.
 
     This is the TERMINAL tool for both the analyst (answering its
     assigned sub-question) and the researcher (answering the root
-    question, which produces the final report). Updates the QUESTION
-    note's metadata in place (status -> SYNTHESIZED) so a question's
-    question + answer live on one note.
-
-    You MUST supply all five required fields. A call with only
-    question_id + confidence will be rejected - bottom_line and
-    synthesis are the actual answer and carry the work.
+    question, which produces the overall final report). Updates the
+    QUESTION note's metadata in place (status -> SYNTHESIZED) so a
+    question's question + answer live on one note.
 
     Args:
       question_id: NoteID of the QUESTION note you're answering. For
@@ -456,24 +450,20 @@ async def answer_question(
         researcher: the root question id from get_research_state's
         `root_question.id`. This note MUST already exist - the
         caller creates it before dispatch.
-      bottom_line: REQUIRED. One or two plain-English sentences that
-        directly answer the question. This is what a reader will see
-        at a glance; don't hedge or wander. For the root question,
-        this is the 2-4 sentence executive summary of the whole
-        investigation.
-      synthesis: REQUIRED. The full markdown write-up. For analysts,
-        multiple paragraphs synthesizing evidence from the sources
-        you read - cite source notes inline using [source-abc123]
-        syntax. For the researcher, this is the entire final report
-        synthesizing across sub-questions; cite source notes inline
-        the same way and reference sub-question bottom lines. Do not
-        leave this empty - it's the actual report content.
+      report: REQUIRED. The full, self-contained markdown report
+        answering the question. This is the ONLY place your answer
+        lives - there is no separate summary / bottom-line field, so
+        include everything here: a brief opening takeaway (1-3
+        sentences) followed by the full write-up with headings,
+        reasoning, and citations. Cite source notes inline using
+        [source-abc123] syntax. Must not be empty and must not be a
+        placeholder - this IS the report a human will read.
       confidence: REQUIRED. One of 'high' / 'medium' / 'low'
         (case-insensitive). Reflects source quality and convergence
         of the evidence.
       sources_cited: Optional list of source NoteIDs whose claims
         support this answer. Can be empty if truly nothing relevant
-        was found, but every substantive claim in `synthesis` should
+        was found, but every substantive claim in `report` should
         trace to a cited source.
       disagreements: Optional list of short strings describing
         points where sources conflict. Empty if findings converge
@@ -489,6 +479,12 @@ async def answer_question(
     confidence_lc = confidence.strip().lower()
     if confidence_lc not in {"high", "medium", "low"}:
         raise ModelRetry(f"confidence must be 'high', 'medium', or 'low'; got {confidence!r}")
+
+    if not report.strip():
+        raise ModelRetry(
+            "`report` is empty - this is the only field carrying your answer. "
+            "Provide the full markdown write-up (takeaway + reasoning + citations)."
+        )
 
     existing = ctx.deps.memory.get(question_id)
     if existing is None:
@@ -510,8 +506,7 @@ async def answer_question(
     new_meta = existing_meta.model_copy(
         update={
             "status": "SYNTHESIZED",
-            "bottom_line": bottom_line,
-            "synthesis_markdown": synthesis,
+            "report_markdown": report,
             "confidence": confidence_lc,
             "sources_cited": list(sources_cited or []),
             "disagreements": list(disagreements or []),
@@ -521,8 +516,8 @@ async def answer_question(
     )
     await ctx.deps.memory.update(
         question_id,
-        description=bottom_line[:280] or existing.description,
-        content=synthesis,
+        description=existing.description,
+        content=report,
         links=[Link(target_id=src, edge_type="cites") for src in (sources_cited or [])],
         metadata=new_meta,
     )
@@ -532,8 +527,7 @@ async def answer_question(
 
     qs = QuestionSynthesis(
         question=existing.description or existing.title,
-        bottom_line=bottom_line,
-        synthesis=synthesis,
+        report=report,
         confidence=confidence_lc,
         sources_cited=list(sources_cited or []),
         disagreements=list(disagreements or []),

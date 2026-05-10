@@ -69,8 +69,8 @@ do targeted search for their own questions as needed.
   analyst's answer). Can be called multiple times per turn in
   parallel. Counts against your dispatch budget.
 - `get_research_state()`: compact snapshot of all questions (with
-  their status/confidence/bottom_line) + source corpus shape + your
-  remaining dispatch budget. Call between rounds to decide next moves.
+  their status/confidence) + source corpus shape + your remaining
+  dispatch budget. Call between rounds to decide next moves.
 - `load_note(note_id)`: load a specific note - usually a QUESTION
   note to re-read its synthesis. Do NOT load SOURCE notes; they're
   too noisy for you.
@@ -83,7 +83,8 @@ do targeted search for their own questions as needed.
    parallel. Each should be a focused, independently-answerable
    sub-question.
 2. **Review round.** After analysts return, call
-   `get_research_state()` to see the shape. Read the bottom_lines.
+   `get_research_state()` to see the shape. Use `load_note` on
+   specific sub-question notes when you need their full report.
 3. **Decide next move.** Options (choose based on what's weak):
      - Dispatch more `investigate_question` calls to fill gaps,
        follow up on low-confidence answers, or probe open_issues.
@@ -94,13 +95,14 @@ do targeted search for their own questions as needed.
    dispatch budget runs out.
 4. **Commit.** Call
    `answer_question(question_id=<root_id from get_research_state>,
-                    bottom_line=..., synthesis=..., confidence=...,
+                    report=..., confidence=...,
                     sources_cited=[...], disagreements=[...],
                     open_issues=[...])`.
-   - bottom_line: 2-4 sentence executive answer.
-   - synthesis: the full markdown report. Cite source notes inline
-     as [source-abc123]. Cite sub-question syntheses by pulling in
-     their bottom lines or quoting them.
+   - report: the full markdown report. Self-contained - open with a
+     brief takeaway (1-3 sentences) then the full write-up with
+     headings, reasoning, and citations. Cite source notes inline
+     as [source-abc123]. Weave sub-question findings into the body;
+     do not just concatenate them.
    - confidence: high/medium/low across the investigation as a whole.
    - sources_cited: NoteIDs of source notes the report leans on.
    - disagreements/open_issues: honest about friction.
@@ -291,8 +293,8 @@ async def research_run(deps: Deps, query: str) -> ResearcherReport:
 def _build_report_from_root(deps: Deps, root_id: NoteID, query: str) -> ResearcherReport:
     """Assemble the final ResearcherReport from the root QUESTION note.
 
-    If the root note was answered, use its synthesis. Otherwise build a
-    minimal fallback from whatever sub-question answers exist.
+    If the root note was answered, use its report_markdown. Otherwise
+    build a minimal fallback from whatever sub-question answers exist.
     """
     root = deps.memory.get(root_id)
     sub_syntheses: list[QuestionSynthesis] = []
@@ -305,8 +307,7 @@ def _build_report_from_root(deps: Deps, root_id: NoteID, query: str) -> Research
         sub_syntheses.append(
             QuestionSynthesis(
                 question=n.description or n.title,
-                bottom_line=meta.bottom_line or "",
-                synthesis=meta.synthesis_markdown or "",
+                report=meta.report_markdown or "",
                 confidence=meta.confidence or "low",
                 sources_cited=list(meta.sources_cited),
                 disagreements=list(meta.disagreements),
@@ -322,9 +323,7 @@ def _build_report_from_root(deps: Deps, root_id: NoteID, query: str) -> Research
         meta = root.metadata
         return ResearcherReport(
             query=query,
-            bottom_line=meta.bottom_line or "",
-            cross_cutting_synthesis="",
-            report_markdown=meta.synthesis_markdown or "",
+            report_markdown=meta.report_markdown or "",
             questions_investigated=sub_syntheses,
             limitations=list(meta.open_issues),
         )
@@ -332,11 +331,10 @@ def _build_report_from_root(deps: Deps, root_id: NoteID, query: str) -> Research
     logger.warning("researcher ended without answering root question %s", root_id)
     return ResearcherReport(
         query=query,
-        bottom_line=(
-            "(no top-level report committed - researcher ended without calling "
-            "answer_question on the root question)"
+        report_markdown=(
+            "_(no top-level report committed - researcher ended without "
+            "calling answer_question on the root question)_"
         ),
-        report_markdown="",
         questions_investigated=sub_syntheses,
         limitations=["Top-level researcher did not commit a final report."],
     )

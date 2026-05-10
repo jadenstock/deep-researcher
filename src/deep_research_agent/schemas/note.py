@@ -68,8 +68,7 @@ class QuestionMetadata(BaseModel):
     # Populated when an analyst answers the question via answer_question.
     # Kept here (on the question note) rather than on a separate synthesis
     # note so a question's lifecycle and answer live in one place.
-    bottom_line: str | None = None
-    synthesis_markdown: str | None = None
+    report_markdown: str | None = None
     confidence: Literal["high", "medium", "low"] | None = None
     sources_cited: list[NoteID] = Field(default_factory=list)
     disagreements: list[str] = Field(default_factory=list)

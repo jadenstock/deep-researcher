@@ -55,20 +55,17 @@ class QuestionSynthesis(BaseModel):
     """Final output of the `investigate_question` sub-agent."""
 
     question: str
-    bottom_line: str = Field(
-        ...,
-        description="One- or two-sentence plain-English answer to the question.",
-    )
-    synthesis: str = Field(
+    report: str = Field(
         ...,
         description=(
-            "Full markdown write-up. Multi-paragraph; cite source notes "
-            "inline by their NoteID in brackets, e.g. [source-abc123]."
+            "Full markdown write-up answering the question. "
+            "Multi-paragraph; cite source notes inline by their NoteID "
+            "in brackets, e.g. [source-abc123]."
         ),
     )
     sources_cited: list[NoteID] = Field(
         default_factory=list,
-        description="Source notes whose claims feed this synthesis.",
+        description="Source notes whose claims feed this report.",
     )
     disagreements: list[str] = Field(
         default_factory=list,
@@ -91,42 +88,16 @@ class QuestionSynthesis(BaseModel):
 
 
 class ResearcherReport(BaseModel):
-    """Final output of the top-level `researcher` agent.
-
-    `report_markdown` is optional because it's a long-form field that
-    models sometimes omit on the final structured output. When missing,
-    callers compose a fallback from `bottom_line` +
-    `cross_cutting_synthesis` + the per-question syntheses - the
-    research itself isn't lost, only the narrative layering.
-    """
+    """Final output of the top-level `researcher` agent."""
 
     query: str
-    bottom_line: str = Field(
-        ...,
-        description="2-4 sentence executive answer to the overall query.",
-    )
-    cross_cutting_synthesis: str = Field(
-        default="",
-        description=(
-            "Short synthesis (1-3 paragraphs) of themes that emerge "
-            "ACROSS the sub-questions - NOT a restatement of each. "
-            "Leave empty only if the sub-questions are truly independent."
-        ),
-    )
     report_markdown: str = Field(
-        default="",
-        description=(
-            "Optional: a full markdown report you've composed. If you "
-            "leave this empty, we'll compose the final report from "
-            "bottom_line + cross_cutting_synthesis + the per-question "
-            "syntheses automatically. Prefer filling this in ONLY when "
-            "you want a specific structure beyond the default; "
-            "otherwise save the tokens and leave it empty."
-        ),
+        ...,
+        description="The full markdown report answering the overall query.",
     )
     questions_investigated: list[QuestionSynthesis] = Field(
         default_factory=list,
-        description="Per-question syntheses the report is composed from.",
+        description="Per-question reports that fed into the final report.",
     )
     limitations: list[str] = Field(
         default_factory=list,
@@ -145,16 +116,12 @@ def compose_report_markdown(
 ) -> str:
     """Build a human-readable markdown report.
 
-    If `report` is present and its `report_markdown` is non-empty, use
-    it verbatim. Otherwise synthesize one from the structured parts:
-    bottom_line + cross_cutting_synthesis + per-question syntheses +
-    limitations, plus a sources appendix.
+    Happy path: `report.report_markdown` is used verbatim, followed by
+    a sources appendix from memory.
 
-    If `report` is None (researcher crashed before producing output),
-    fall back to the note graph: pull every synthesis_note as a
-    per-question section, every source_note as the sources appendix.
-    Result is always *some* markdown - runs should never produce an
-    empty report.md on disk.
+    Crash path: `report` is None. Reconstruct a partial report from
+    answered QUESTION notes in memory so the run still produces some
+    markdown on disk.
     """
     from ..schemas.enums import NoteType
     from ..schemas.note import QuestionMetadata, SourceNoteMetadata
@@ -164,77 +131,38 @@ def compose_report_markdown(
     if report is not None and report.report_markdown.strip():
         parts.append(report.report_markdown)
         parts.append("")
-    else:
-        if report is not None:
-            parts.append("## Bottom line")
+        if report.limitations:
+            parts.append("## Limitations")
             parts.append("")
-            parts.append(report.bottom_line)
+            for lim in report.limitations:
+                parts.append(f"- {lim}")
             parts.append("")
-            if report.cross_cutting_synthesis.strip():
-                parts.append("## Cross-cutting synthesis")
+    elif memory is not None:
+        answered = [
+            n
+            for n in memory.list_by_type(NoteType.QUESTION)
+            if isinstance(n.metadata, QuestionMetadata) and n.metadata.status == "SYNTHESIZED"
+        ]
+        if answered:
+            parts.append("## Partial report (reconstructed from answered questions)")
+            parts.append("")
+            parts.append(
+                "_The top-level researcher did not commit a final report. "
+                "The sub-question answers below were recovered from the "
+                "note graph._"
+            )
+            parts.append("")
+            for n in answered:
+                meta = n.metadata
+                assert isinstance(meta, QuestionMetadata)
+                parts.append(f"### {n.description or n.title}")
                 parts.append("")
-                parts.append(report.cross_cutting_synthesis)
-                parts.append("")
-            if report.questions_investigated:
-                parts.append("## Sub-question syntheses")
-                parts.append("")
-                for qs in report.questions_investigated:
-                    parts.append(f"### {qs.question}")
+                if meta.report_markdown:
+                    parts.append(meta.report_markdown)
                     parts.append("")
-                    parts.append(f"**Bottom line:** {qs.bottom_line}")
-                    parts.append("")
-                    parts.append(f"**Confidence:** {qs.confidence}")
-                    parts.append("")
-                    parts.append(qs.synthesis)
-                    parts.append("")
-                    if qs.disagreements:
-                        parts.append("**Disagreements:**")
-                        for d in qs.disagreements:
-                            parts.append(f"- {d}")
-                        parts.append("")
-                    if qs.open_issues:
-                        parts.append("**Open issues:**")
-                        for o in qs.open_issues:
-                            parts.append(f"- {o}")
-                        parts.append("")
-            if report.limitations:
-                parts.append("## Limitations")
-                parts.append("")
-                for lim in report.limitations:
-                    parts.append(f"- {lim}")
-                parts.append("")
-        elif memory is not None:
-            # No report at all - reconstruct from answered QUESTION notes.
-            from ..schemas.note import QuestionMetadata
-
-            answered = [
-                n
-                for n in memory.list_by_type(NoteType.QUESTION)
-                if isinstance(n.metadata, QuestionMetadata) and n.metadata.status == "SYNTHESIZED"
-            ]
-            if answered:
-                parts.append("## Partial report (reconstructed from answered questions)")
-                parts.append("")
-                parts.append(
-                    "_The top-level researcher did not produce a final "
-                    "structured report. The sub-question answers below "
-                    "were recovered from the note graph._"
-                )
-                parts.append("")
-                for n in answered:
-                    meta = n.metadata
-                    assert isinstance(meta, QuestionMetadata)
-                    parts.append(f"### {n.description or n.title}")
-                    parts.append("")
-                    if meta.bottom_line:
-                        parts.append(f"**Bottom line:** {meta.bottom_line}")
-                        parts.append("")
-                    if meta.synthesis_markdown:
-                        parts.append(meta.synthesis_markdown)
-                        parts.append("")
-            else:
-                parts.append("_No answered questions in memory._")
-                parts.append("")
+        else:
+            parts.append("_No answered questions in memory._")
+            parts.append("")
 
     # Sources appendix - always available from memory.
     if memory is not None:
