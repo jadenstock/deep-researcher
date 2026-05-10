@@ -11,3 +11,7 @@ Call site: `from deep_research_agent.agents.researcher import researcher`.
 """
 
 from __future__ import annotations
+
+from .landscape import build_landscape_agent, landscape_run
+
+__all__ = ["build_landscape_agent", "landscape_run"]
