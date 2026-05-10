@@ -27,11 +27,22 @@ logger = logging.getLogger(__name__)
 async def search_web(ctx: RunContext[Deps], query: str, count: int = 8) -> list[SearchResult]:
     """Run a web search (Brave) for the given query.
 
-    Returns up to `count` hits. If no web-search provider is configured,
-    returns an empty list - use the academic tools instead.
+    Use this for: current events, tutorials, industry posts, official
+    docs, company announcements - anything not primarily in
+    peer-reviewed literature. Safe to call multiple times in one turn
+    with different query formulations; pydantic-ai dispatches them
+    concurrently.
 
-    Use this for: current events, tutorials, industry posts, docs,
-    anything not primarily in peer-reviewed literature.
+    Args:
+      query: Natural-language search query. Think of it like a good
+        Google query - keywords matter more than full sentences.
+      count: Number of hits to return. Default 8; keep it small
+        (5-10) per call since you'll often want to run several
+        varied queries in parallel rather than one huge one.
+
+    Returns a list of SearchResult with title / url / snippet /
+    source. If no web-search provider is configured (no Brave key),
+    returns an empty list - fall back to search_academic.
     """
     if ctx.deps.brave is None:
         logger.info("search_web called but no brave_api_key - returning []")
@@ -56,11 +67,20 @@ async def search_web(ctx: RunContext[Deps], query: str, count: int = 8) -> list[
 async def search_academic(ctx: RunContext[Deps], query: str, limit: int = 6) -> list[SearchResult]:
     """Run an academic search across Semantic Scholar + arXiv in parallel.
 
-    Returns up to ~`limit` hits per provider (deduped on URL). Hits
-    carry authors / venue / year / citation_count / doi when available.
-
     Use this for: anything where peer-reviewed literature, preprints,
-    or benchmarks matter (methods, empirical claims, state of the art).
+    or benchmarks matter - methods, empirical claims, state-of-the-art,
+    citation trails. Results carry authors / venue / year /
+    citation_count when available, which helps tier classification.
+
+    Args:
+      query: Natural-language search query. Academic search engines
+        do best with specific technical terms, author names, paper
+        titles, or concept keywords.
+      limit: Max hits PER PROVIDER (not total). Default 6. Final
+        list is deduped by URL, so expect up to ~2x this many hits.
+
+    Returns a list of SearchResult with title / url / snippet /
+    source / authors / venue / year / citation_count.
     """
     s2, ax = await asyncio.gather(
         ctx.deps.semantic_scholar.search(query, limit=limit),

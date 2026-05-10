@@ -29,13 +29,22 @@ MAX_MARKDOWN_CHARS = 60_000
 async def fetch_url(ctx: RunContext[Deps], url: str) -> FetchedContent:
     """Fetch `url` and return its main content as markdown.
 
-    HTML pages go through trafilatura; PDFs through MarkItDown (capped
-    at 15MB / 20 pages). On failure returns a FetchedContent with
-    `markdown=None` and `reason` set - the agent should treat that as
-    "source unreachable" and move on.
+    HTML pages go through trafilatura (main-article extraction);
+    PDFs through MarkItDown (capped at 15MB / 20 pages). Safe to call
+    in parallel on many URLs - pydantic-ai dispatches concurrently.
 
-    Content over MAX_MARKDOWN_CHARS is truncated; `truncated=True`
-    signals that the tail was dropped.
+    Args:
+      url: Absolute URL to fetch. Typically the `url` field of a
+        SearchResult or the `url` of a source note you created
+        earlier. Redirects are followed.
+
+    Returns FetchedContent with:
+      - url / final_url / status_code: request/response metadata.
+      - markdown: extracted main content, or None on failure.
+      - truncated: True if content was cut for length; rare.
+      - reason: populated when markdown is None (e.g. "paywall",
+        "404", "pdf extraction failed"). Treat as "source
+        unreachable" and move to the next candidate.
     """
     del ctx  # ctx required by the @instrumented wrapper, not the impl
     result = await fetch_and_extract(url)

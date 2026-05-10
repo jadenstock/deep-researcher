@@ -77,13 +77,23 @@ async def create_source_note(
     """Record a source you've found but not yet read fully.
 
     If a source with the same URL already exists in memory, returns
-    the existing NoteID (dedup). Otherwise creates a new SCOUTED
-    source note. Does not fetch - call `fetch_url` separately.
+    the existing NoteID (URL dedup). Otherwise creates a new SCOUTED
+    source note. Does not fetch content - call fetch_url separately
+    when you want to actually read it.
 
     Args:
-      topics: optional topic hints (1-3 short labels). Useful at scout
-        time to cluster sources in the corpus view; analysts can
-        ignore or overwrite.
+      url: Full URL of the source. Dedup is URL-keyed with trivial
+        normalization (lowercased scheme/host, trailing slash
+        stripped), so calling this twice on the same link is safe.
+      title: Human-readable title. Pass whatever the search result
+        gave you; defaults to the URL if empty.
+      snippet: Short excerpt or abstract from the search result (a
+        sentence or two). Becomes the source note's summary until
+        an analyst reads the full content.
+      topics: Optional 1-3 short topic labels (e.g. ['benchmarks',
+        'evaluation-methodology']). Used by the landscape agent to
+        cluster sources and by the researcher to see corpus shape
+        at a glance. Can be empty.
     """
     existing = ctx.deps.memory.find_source_by_url(url)
     if existing is not None:
@@ -133,19 +143,41 @@ async def update_source_after_reading(
 ) -> str:
     """Record what you learned after reading a source.
 
-    Update a source note with:
-      - tier: 1 (peer-reviewed top-venue research) → 5 (low-quality / reject).
-      - tier_rationale: one sentence explaining the tier.
-      - peer_reviewed: True if the source went through peer review.
-      - summary: 2-4 sentences of the source's main argument or findings.
-      - relevance_note: why this source matters for the question at hand.
-      - claims: list of extracted claims (each with a verbatim quote). Can be empty if
-        the source was unhelpful.
+    Call this after fetch_url returns content for a source and you've
+    read enough of it to classify its quality and extract key claims.
+    Promotes the source from SCOUTED to ANALYZED.
 
-    Returns a one-line confirmation string. If the source_id is not in
-    memory or has the wrong type, a ModelRetry is raised so the model
-    sees the error as a tool failure it can recover from (e.g. by
-    calling list_source_notes to find valid ids).
+    Args:
+      source_id: NoteID of the source note you're updating. Must be an
+        existing source_note id (from create_source_note or
+        list_source_notes).
+      tier: Integer 1..5 rating source quality. 1 = peer-reviewed
+        research in strong venues. 2 = arXiv preprint or well-cited
+        technical report. 3 = reputable industry post, official docs,
+        respected newsletter. 4 = community writeup, unreviewed blog.
+        5 = low-quality, promotional, or off-topic (you can still
+        record these but they shouldn't carry much weight).
+      tier_rationale: One sentence explaining why you assigned this
+        tier (e.g. "peer-reviewed NeurIPS paper with 200+ citations").
+      peer_reviewed: True iff this source went through formal peer
+        review. arXiv preprints are NOT peer-reviewed; conference
+        papers typically are.
+      summary: 2-4 sentences summarizing the source's main argument
+        or findings in your own words. Goes onto the source note's
+        human-readable blurb.
+      relevance_note: One sentence on why this source matters for the
+        question you're investigating. Helps a future reader
+        (including the top-level researcher) see at a glance why this
+        source was kept.
+      claims: List of 3-6 key claims extracted from the source. Each
+        claim MUST include a verbatim quote from the source text.
+        Never paraphrase a quote - if you can't find a supporting
+        quote, drop the claim. Pass an empty list if the source
+        turned out to be unhelpful.
+
+    Returns a one-line confirmation string. If source_id isn't a
+    source_note in memory, raises ModelRetry so you can call
+    list_source_notes and try again with a valid id.
     """
     try:
         tier_enum = Tier(tier)
@@ -207,9 +239,15 @@ async def update_source_after_reading(
 async def load_note(ctx: RunContext[Deps], note_id: NoteID) -> dict[str, object]:
     """Load any note by ID - returns its full contents as a dict.
 
-    Use this to re-read a source note (with its extracted claims + summary)
-    when composing a synthesis, or to inspect a question note created
-    by another agent.
+    Use this to re-read a source note (with its extracted claims +
+    summary) when composing a synthesis, or to inspect a question
+    note created by another agent. Returns {"error": ...} if the
+    note isn't in memory - check the id and try again.
+
+    Args:
+      note_id: NoteID to load. Any note type (source / question /
+        landscape / etc.) - the returned dict includes the note's
+        type-specific metadata.
     """
     note = ctx.deps.memory.get(note_id)
     if note is None:
@@ -223,9 +261,16 @@ async def list_source_notes(
 ) -> list[dict[str, object]]:
     """List source notes in memory with their key metadata.
 
-    Returns one dict per source with id / url / title / state / tier /
-    summary (when set). Use to audit what's been gathered so far, or
-    to pick sources to cite in a synthesis.
+    Returns one dict per source with id / url / title / state /
+    tier / peer_reviewed / summary / n_claims. Use this to audit
+    what's been gathered so far, to pick sources to cite in a
+    synthesis, or to inherit the landscape agent's scouted sources
+    before running your own searches.
+
+    Args:
+      only_analyzed: If True, only return sources that have already
+        been read (state == ANALYZED). Default False - returns all
+        sources including SCOUTED ones that haven't been read yet.
     """
     sources = ctx.deps.memory.list_by_type(NoteType.SOURCE)
     out: list[dict[str, object]] = []
@@ -324,9 +369,20 @@ async def create_question_note(
 ) -> NoteID:
     """Record a sub-question you plan to investigate.
 
-    classification is one of: 'lookup', 'synthesis', 'contested', 'sparse'.
-    Returns the question NoteID. Typically called from the top-level
-    researcher to register its decomposition before spawning sub-agents.
+    Typically called from the top-level researcher to register a
+    sub-question before dispatching an analyst on it. Returns the
+    new question NoteID.
+
+    Args:
+      question: The question text. A good sub-question is focused,
+        independently answerable with a few sources, and doesn't
+        overlap with sibling sub-questions.
+      classification: One of 'lookup' / 'synthesis' / 'contested' /
+        'sparse'. 'lookup' = a factual question with a clear answer;
+        'synthesis' = integrative question across multiple sources;
+        'contested' = question where sources are known to disagree;
+        'sparse' = question with limited source coverage. Default is
+        'synthesis'.
     """
     from ...schemas.enums import QuestionClassification
 
@@ -384,12 +440,51 @@ async def answer_question(
 ) -> str:
     """Commit your answer to a pre-created question note.
 
-    Updates the QUESTION note's metadata in place (status ->
-    SYNTHESIZED) rather than creating a new synthesis note. Called by
-    the analyst at the end of its turn, and by the researcher to
-    commit the final report (answer to the root question).
+    This is the TERMINAL tool for both the analyst (answering its
+    assigned sub-question) and the researcher (answering the root
+    question, which produces the final report). Updates the QUESTION
+    note's metadata in place (status -> SYNTHESIZED) so a question's
+    question + answer live on one note.
 
-    Raises if `question_id` is not a QUESTION note in memory.
+    You MUST supply all five required fields. A call with only
+    question_id + confidence will be rejected - bottom_line and
+    synthesis are the actual answer and carry the work.
+
+    Args:
+      question_id: NoteID of the QUESTION note you're answering. For
+        analysts: the id passed in your opening message. For the
+        researcher: the root question id from get_research_state's
+        `root_question.id`. This note MUST already exist - the
+        caller creates it before dispatch.
+      bottom_line: REQUIRED. One or two plain-English sentences that
+        directly answer the question. This is what a reader will see
+        at a glance; don't hedge or wander. For the root question,
+        this is the 2-4 sentence executive summary of the whole
+        investigation.
+      synthesis: REQUIRED. The full markdown write-up. For analysts,
+        multiple paragraphs synthesizing evidence from the sources
+        you read - cite source notes inline using [source-abc123]
+        syntax. For the researcher, this is the entire final report
+        synthesizing across sub-questions; cite source notes inline
+        the same way and reference sub-question bottom lines. Do not
+        leave this empty - it's the actual report content.
+      confidence: REQUIRED. One of 'high' / 'medium' / 'low'
+        (case-insensitive). Reflects source quality and convergence
+        of the evidence.
+      sources_cited: Optional list of source NoteIDs whose claims
+        support this answer. Can be empty if truly nothing relevant
+        was found, but every substantive claim in `synthesis` should
+        trace to a cited source.
+      disagreements: Optional list of short strings describing
+        points where sources conflict. Empty if findings converge
+        cleanly. Don't paper over genuine disagreement.
+      open_issues: Optional list of short strings describing things
+        this answer couldn't cover (paywalls, missing sources,
+        tiebreakers needed). Empty if coverage was adequate.
+
+    Returns a confirmation string. Raises ModelRetry if question_id
+    isn't a valid question_note id - call get_research_state or
+    pass the id from your opening message and try again.
     """
     confidence_lc = confidence.strip().lower()
     if confidence_lc not in {"high", "medium", "low"}:
@@ -458,20 +553,26 @@ async def write_landscape_brief(
 ) -> str:
     """Commit your landscape brief for the researcher to read.
 
-    MUST be called exactly once as your last tool call before ending
-    your turn. The brief is free-form markdown - include whatever is
-    useful for a downstream researcher deciding how to decompose the
-    query:
-      - apparent sub-areas or themes
-      - obvious gaps / under-covered angles
-      - terminology the field uses
-      - source clusters (e.g. which venues, which kinds of outlets)
-      - contested points you noticed in the snippets
-    Do NOT paraphrase full source content - the researcher will read
-    the source list separately. Keep the brief tight (~300-600 words).
+    TERMINAL tool for the landscape agent - call exactly once as the
+    last tool call before ending your turn. Creates a LANDSCAPE note
+    that the downstream researcher reads to decide how to decompose
+    the query.
 
-    Creates a LANDSCAPE note in memory and stashes the brief for the
-    wrapping landscape_run to return to its caller.
+    Args:
+      brief_markdown: REQUIRED, non-empty. Free-form markdown summary
+        of the terrain you scouted (~300-600 words). Include whatever
+        is genuinely useful for a researcher deciding how to
+        decompose the query, choosing freely among:
+          - apparent sub-areas or themes the corpus splits into
+          - obvious gaps / under-covered angles
+          - terminology the field uses (so the researcher can ask
+            sharper sub-questions)
+          - source clusters (which venues, which kinds of outlets)
+          - contested points you noticed in the snippets
+        Do NOT paraphrase full source content - the researcher sees
+        the source list separately and doesn't need a summary of
+        each one. Cite sources inline with [source-abc123] when you
+        call out specific examples.
     """
 
     if not brief_markdown.strip():
