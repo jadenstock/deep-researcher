@@ -43,7 +43,7 @@ _S2_FIELDS = "title,abstract,authors,venue,year,citationCount,openAccessPdf,exte
 # Retry policy for 429s. Matches the Brave pattern: Retry-After honored,
 # exponential backoff floor, capped total wait so a genuinely exhausted
 # plan doesn't stall the run. S2 is additive so a final failure still
-# returns [] rather than raising — academic hits aren't load-bearing.
+# returns [] rather than raising - academic hits aren't load-bearing.
 _S2_MAX_429_RETRIES = 3
 _S2_MAX_429_TOTAL_WAIT_S = 20.0
 _S2_DEFAULT_429_BACKOFF_S = 2.0
@@ -68,7 +68,7 @@ class SemanticScholarClient:
 
         Retries on 429s up to _S2_MAX_429_RETRIES times, honoring
         Retry-After when present. Returns [] on any terminal API
-        error — academic search is additive; a failure should not
+        error - academic search is additive; a failure should not
         break the run.
         """
         headers = {"Accept": "application/json"}
@@ -98,7 +98,7 @@ class SemanticScholarClient:
                 wait = max(retry_after or 0.0, backoff)
                 if total_wait + wait > _S2_MAX_429_TOTAL_WAIT_S:
                     logger.warning(
-                        "s2_429_wait_cap query=%r total_wait=%.1f cap=%.1f — giving up",
+                        "s2_429_wait_cap query=%r total_wait=%.1f cap=%.1f - giving up",
                         query[:120],
                         total_wait + wait,
                         _S2_MAX_429_TOTAL_WAIT_S,

@@ -1,38 +1,55 @@
-"""Command-line entry point."""
+"""Command-line entry point.
+
+Two subcommands:
+
+    dra research "your query"    # run a single research session to the terminal
+    dra serve                     # start the live UI (FastAPI + WebSocket)
+
+The `serve` path is the main way to watch a run unfold - the UI
+renders an "Agents Running" panel, a live note graph, an activity
+log, and the final report. The `research` subcommand is the headless
+equivalent: same agent pipeline, writes `runs/<id>/report.md`.
+"""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import sys
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
 from rich.console import Console
 
-from .config import load_local_config, load_pipeline_config, load_routing_config
-from .executor import AgentExecutor, register_handlers
-from .export import export_run
+from .agents.deps import build_deps
+from .agents.researcher import research_run
+from .agents.schemas import ResearcherReport, compose_report_markdown
+from .config import load_local_config, load_routing_config
 from .observability import setup_logfire
 from .retrieval.brave import set_brave_min_interval
-from .scheduler import NoteGraph, Scheduler, TaskGraph, TaskResult, new_run_id, new_task_id
-from .schemas import Task
-from .schemas.enums import RoleClass, TaskTier, TaskType
-from .token_usage import TokenUsageTracker
 
 logger = logging.getLogger(__name__)
 console = Console(stderr=True)
 
 
+def _new_run_id() -> str:
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+    return f"{stamp}-{uuid.uuid4().hex[:8]}"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="dra",
-        description="Deep research agent — four-phase pipeline with mutable task graph.",
+        description=(
+            "Deep research agent: a top-level researcher agent over the web + academic literature."
+        ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_research = sub.add_parser("research", help="Run a research session on a query")
+    p_research = sub.add_parser("research", help="Run one research session to the terminal")
     p_research.add_argument("query", help="Natural-language research query")
     p_research.add_argument(
         "--routing",
@@ -43,14 +60,6 @@ def main(argv: list[str] | None = None) -> int:
         "--local-config",
         default="config/local.toml",
         help="Path to the local TOML (endpoints + keys)",
-    )
-    p_research.add_argument(
-        "--pipeline",
-        default="config/pipeline.yaml",
-        help=(
-            "Path to the pipeline config YAML (thresholds, caps, hygiene "
-            "toggles). Missing file falls back to built-in defaults."
-        ),
     )
     p_research.add_argument(
         "--runs-dir",
@@ -64,10 +73,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Log at INFO level to stderr",
     )
 
-    p_replay = sub.add_parser("replay", help="Replay a cached run (not yet implemented)")
-    p_replay.add_argument("run_id")
-
-    p_serve = sub.add_parser("serve", help="Run the live UI server (FastAPI + WebSocket)")
+    p_serve = sub.add_parser("serve", help="Start the live UI server")
     p_serve.add_argument(
         "--routing",
         default="config/routing_diverse.yaml",
@@ -79,17 +85,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Path to the local TOML (endpoints + keys)",
     )
     p_serve.add_argument(
-        "--pipeline",
-        default="config/pipeline.yaml",
-        help="Path to the pipeline config YAML",
-    )
-    p_serve.add_argument(
         "--runs-dir",
         default="runs",
         help="Directory to write per-run output into",
     )
-    p_serve.add_argument("--host", default="127.0.0.1", help="Bind host (default: localhost)")
-    p_serve.add_argument("--port", default=8000, type=int, help="Bind port (default: 8000)")
+    p_serve.add_argument("--host", default="127.0.0.1", help="Bind host")
+    p_serve.add_argument("--port", default=8000, type=int, help="Bind port")
 
     args = parser.parse_args(argv)
 
@@ -99,18 +100,11 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         stream=sys.stderr,
     )
-    # Silence third-party libraries that log at DEBUG with extreme verbosity.
-    # pdfminer logs every PDF object parse (GB-scale per long PDF); pypdf and
-    # httpcore/httpx are noisy at DEBUG on every request. We keep WARNING so
-    # real errors still surface.
     for noisy in ("pdfminer", "pypdf", "httpcore", "httpx", "urllib3", "trafilatura"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
     if args.command == "research":
         return asyncio.run(_run_research(args))
-    if args.command == "replay":
-        console.print(f"[yellow]replay not yet implemented (run_id={args.run_id})[/]")
-        return 1
     if args.command == "serve":
         return _run_serve(args)
     return 1
@@ -124,10 +118,9 @@ def _run_serve(args: argparse.Namespace) -> int:
     app = create_app(
         routing_path=args.routing,
         local_path=args.local_config,
-        pipeline_path=args.pipeline,
         runs_dir=args.runs_dir,
     )
-    console.print(f"[bold cyan]dra serve[/] — live UI at [bold]http://{args.host}:{args.port}[/]")
+    console.print(f"[bold cyan]dra serve[/] - live UI at [bold]http://{args.host}:{args.port}[/]")
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     return 0
 
@@ -135,12 +128,12 @@ def _run_serve(args: argparse.Namespace) -> int:
 async def _run_research(args: argparse.Namespace) -> int:
     local = load_local_config(args.local_config)
     routing = load_routing_config(args.routing)
-    pipeline = load_pipeline_config(args.pipeline)
     setup_logfire(local)
     set_brave_min_interval(local.retrieval.brave_min_interval_s)
 
-    run_id = new_run_id()
+    run_id = _new_run_id()
     run_dir = Path(args.runs_dir) / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
 
     console.print(
         f"[bold cyan]dra[/] run=[bold]{run_id}[/] "
@@ -148,91 +141,66 @@ async def _run_research(args: argparse.Namespace) -> int:
         f"query=[italic]{args.query!r}[/]"
     )
 
-    tracker = TokenUsageTracker()
-    ex = AgentExecutor(routing=routing, local=local, pipeline=pipeline, tracker=tracker)
-    register_handlers(ex)
+    deps = build_deps(local, routing)
 
-    tg = TaskGraph()
-    ng = NoteGraph()
-    root_task = Task(
-        id=new_task_id(),
-        goal=args.query,
-        type=TaskType.LANDSCAPE_SURVEY,
-        role=RoleClass.GENERATIVE,
-        tier=TaskTier.HIGH,
-        success_criteria="produce a research report answering the query",
-        created_at=datetime.now(UTC),
-    )
-    tg.add(root_task)
-
-    with console.status("[cyan]starting...", spinner="dots") as status:
-
-        def _on_start(task: Task) -> None:
-            status.update(f"[cyan]running [bold]{task.type.value}[/] [dim]id={task.id[-6:]}[/]...")
-
-        def _on_done(task: Task, result: TaskResult) -> None:
-            verdict = result.verdict or f"wrote {len(task.writes_notes)} note(s)"
-            console.print(
-                f"  [dim]✓[/] [bold green]{task.type.value}[/] [dim]{task.id[-6:]}[/] — {verdict}"
-            )
-            status.update("[cyan]working...")
-
-        async def _replanner(task_graph: TaskGraph, note_graph: NoteGraph):
-            from .replanner import run_replanner
-
-            return await run_replanner(
-                task_graph, note_graph, routing, local, root_task.id, tracker=tracker
-            )
-
-        sched = Scheduler(
-            tg,
-            ng,
-            ex,
-            on_task_start=_on_start,
-            on_task_done=_on_done,
-            replanner=_replanner,
-            replan_cadence=pipeline.replanner.cadence,
-            replan_budget=pipeline.replanner.budget,
-            replan_min_progress_tasks=pipeline.replanner.min_progress_tasks,
-            replan_skip_if_no_new_synthesis=pipeline.replanner.skip_if_no_new_synthesis,
-        )
-        run_failed = False
+    report: ResearcherReport | None = None
+    failed = False
+    with console.status("[cyan]researcher agent running...", spinner="dots"):
         try:
-            await sched.run()
+            report = await research_run(deps, args.query)
         except Exception:
             logger.exception("research run failed")
-            console.print("[red]run failed — see log for details[/]")
-            run_failed = True
+            failed = True
 
-        # Always export what we have (even on failure) so partial runs
-        # are autopsy-able. Token usage is always written, summary is
-        # always logged — costs are real whether the run finished or not.
-        status.update("[cyan]exporting note graph...")
-        try:
-            report_path = export_run(run_dir, ng, tg)
-        except Exception:
-            logger.exception("export failed")
-            report_path = None
-        try:
-            run_dir.mkdir(parents=True, exist_ok=True)
-            tracker.save_json(run_dir / "token_usage.json")
-        except Exception:
-            logger.exception("token_usage save failed")
-        logger.info(tracker.format_table())
-        if run_failed:
-            return 1
+    # Always dump what we have - notes accumulated up to the failure point
+    # are usually the most useful artifact for debugging.
+    try:
+        _dump_run(run_dir, args.query, deps, report)
+    except Exception:
+        logger.exception("dump failed")
+
+    if failed or report is None:
+        console.print("[red]run failed - see log for details[/]")
+        console.print(f"  partial notes: [dim]{run_dir}/notes.json[/]")
+        return 1
 
     console.print()
-    console.print("[green]✓[/] run complete")
-    console.print(f"  tasks completed: [bold]{len(tg)}[/]")
-    console.print(f"  notes in graph:  [bold]{len(ng)}[/]")
-    if report_path:
-        console.print(f"  report:          [bold cyan]{report_path}[/]")
-    else:
-        console.print("  [yellow]no report emitted[/]")
-    console.print(f"  notes directory: [dim]{run_dir}/notes/[/]")
-    console.print(f"  tasks snapshot:  [dim]{run_dir}/tasks.json[/]")
-    return 0 if report_path else 1
+    console.print("[green]OK[/] research run complete")
+    console.print(f"  notes in memory: [bold]{len(deps.memory)}[/]")
+    console.print(f"  questions investigated: [bold]{len(report.questions_investigated)}[/]")
+    console.print(f"  report:          [bold cyan]{run_dir / 'report.md'}[/]")
+    console.print(f"  notes json:      [dim]{run_dir / 'notes.json'}[/]")
+    console.print(f"  full report:     [dim]{run_dir / 'report.json'}[/]")
+    return 0
+
+
+def _dump_run(
+    run_dir: Path,
+    query: str,
+    deps,
+    report: ResearcherReport | None,
+) -> None:
+    """Write per-run artifacts to disk. Three files side by side:
+    - `report.md` for humans (always written, even on partial runs)
+    - `report.json` for post-hoc inspection of the typed payload
+    - `notes.json` for the full note graph (sources + questions + claims)
+
+    Report composition delegates to `compose_report_markdown`, which
+    handles happy-path (use ResearcherReport) and crash-path
+    (reconstruct from synthesis/source notes) uniformly.
+    """
+    notes_out = [n.model_dump(mode="json") for n in deps.memory.all()]
+    (run_dir / "notes.json").write_text(json.dumps(notes_out, indent=2, default=str))
+
+    if report is not None:
+        (run_dir / "report.json").write_text(
+            json.dumps(report.model_dump(mode="json"), indent=2, default=str)
+        )
+
+    # Always write report.md - even on failure there's usually
+    # something useful from the sub-agents that finished.
+    md = compose_report_markdown(query=query, report=report, memory=deps.memory)
+    (run_dir / "report.md").write_text(md)
 
 
 if __name__ == "__main__":

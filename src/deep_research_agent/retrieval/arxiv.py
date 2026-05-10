@@ -26,11 +26,11 @@ _ARXIV_ID_RE = re.compile(r"arxiv\.org/abs/([^/\s?#]+)", re.IGNORECASE)
 
 def _arxiv_html_url(abs_url: str) -> str | None:
     """Map an arXiv abs URL to its HTML rendering. Returns None if the
-    URL doesn't parse — callers should fall back to the abs URL.
+    URL doesn't parse - callers should fall back to the abs URL.
 
     arXiv serves native HTML at arxiv.org/html/{id} for papers with
     LaTeX source (~70-80% of recent submissions). For papers without
-    HTML, the URL 302s back to the abstract — the fetcher handles
+    HTML, the URL 302s back to the abstract - the fetcher handles
     that path fine.
     """
     m = _ARXIV_ID_RE.search(abs_url)

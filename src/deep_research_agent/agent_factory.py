@@ -3,7 +3,7 @@
 Turn a routing-config model_id plus the local LLM endpoint into a
 PydanticAI model object. All families route through the same
 OpenAI-compatible endpoint (LiteLLM router); the model_id is sent
-as-is — the router resolves it to the upstream provider.
+as-is - the router resolves it to the upstream provider.
 """
 
 from __future__ import annotations

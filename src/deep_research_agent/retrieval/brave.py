@@ -20,7 +20,7 @@ BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
 
 # Serialize across all BraveClient instances so concurrent QUESTION_SYNTHESIZE
 # dispatches don't stampede into 429s. Interval is configurable via
-# LocalConfig.retrieval.brave_min_interval_s — set by BraveClient on init.
+# LocalConfig.retrieval.brave_min_interval_s - set by BraveClient on init.
 _BRAVE_LOCK = asyncio.Lock()
 _BRAVE_LAST_CALL_AT = 0.0
 _BRAVE_MIN_INTERVAL_S = 1.5
@@ -36,7 +36,7 @@ async def _brave_throttle() -> None:
     """Acquire the shared Brave throttle slot.
 
     Logs the queue wait whenever a caller blocked on the throttle (not
-    the sleep itself — that's enforced pacing, not the bug). A long
+    the sleep itself - that's enforced pacing, not the bug). A long
     wait means many QS tasks are queued behind a single Brave budget.
     """
     global _BRAVE_LAST_CALL_AT
@@ -71,7 +71,7 @@ class SearchHit(BaseModel):
     title: str
     url: str
     snippet: str = ""
-    source: str = "brave"  # provider name — brave / semantic_scholar / arxiv
+    source: str = "brave"  # provider name - brave / semantic_scholar / arxiv
     authors: list[str] = []
     venue: str | None = None
     year: int | None = None
@@ -84,7 +84,7 @@ class BraveSearchError(RuntimeError):
     """Brave API returned a non-2xx response."""
 
 
-# 429 retry policy. Brave's Free tier is 1 QPS — the in-process
+# 429 retry policy. Brave's Free tier is 1 QPS - the in-process
 # throttle (1.5s default) handles steady-state pacing, but concurrent
 # QS dispatches plus any in-flight lag will still occasionally trip
 # a 429. Retrying a handful of times with Retry-After clears those
@@ -117,7 +117,7 @@ class BraveClient:
 
         Retries up to MAX_429_RETRIES times on 429, honoring Retry-After
         when present. Other 4xx/5xx responses raise BraveSearchError
-        immediately — retrying a 403 won't help, and retrying a 500 is
+        immediately - retrying a 403 won't help, and retrying a 500 is
         debatable but not worth the complexity for v0.
         """
         headers = {
@@ -143,7 +143,7 @@ class BraveClient:
                 wait = max(retry_after or 0.0, backoff)
                 if total_wait + wait > MAX_429_TOTAL_WAIT_S:
                     logger.warning(
-                        "brave_429_wait_cap query=%r total_wait=%.1f cap=%.1f — giving up",
+                        "brave_429_wait_cap query=%r total_wait=%.1f cap=%.1f - giving up",
                         query[:160],
                         total_wait + wait,
                         MAX_429_TOTAL_WAIT_S,

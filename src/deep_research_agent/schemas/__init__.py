@@ -1,24 +1,19 @@
-"""Pydantic data models for the task graph and note graph.
+"""Pydantic data models for the note graph.
 
-Every non-trivial type the system operates on lives here. These schemas are
-the type-level specification of the TDD §4 data model; the rest of the code
-reads and writes them.
+The note graph is the agents' persistent memory across a run. Notes
+have a type (source / question / synthesis / hypothesis / ...) and a
+discriminated metadata payload specific to that type.
 """
 
 from .enums import (
     ClaimType,
-    DependencyType,
     Methodology,
     NoteType,
-    OrchestrationPattern,
     QuestionClassification,
-    QuestionRound,
     Reproducibility,
     RoleClass,
     SourceState,
-    TaskStatus,
     TaskTier,
-    TaskType,
     Tier,
     VerificationStatus,
 )
@@ -38,50 +33,40 @@ from .note import (
     ThemeItem,
 )
 from .source import ClaimItem, EvalItem, SourceMetadata, StructuredContent
-from .task import DepEdge, DepScope, Task
 
 __all__ = [
-    # enums
-    "ClaimType",
-    "DependencyType",
-    "Methodology",
-    "NoteType",
-    "OrchestrationPattern",
-    "QuestionClassification",
-    "QuestionRound",
-    "Reproducibility",
-    "RoleClass",
-    "SourceState",
-    "TaskStatus",
-    "TaskTier",
-    "TaskType",
-    "Tier",
-    "VerificationStatus",
-    # ids
-    "NoteID",
-    "RunID",
-    "SourceID",
-    "TaskID",
-    # task
-    "DepEdge",
-    "DepScope",
-    "Task",
     # source
     "ClaimItem",
-    "EvalItem",
-    "SourceMetadata",
-    "StructuredContent",
+    # enums
+    "ClaimType",
     # note
     "DecisionMetadata",
+    "EvalItem",
     "HypothesisMetadata",
     "LandscapeMetadata",
     "Link",
+    "Methodology",
     "Note",
+    # ids
+    "NoteID",
     "NoteMetadata",
+    "NoteType",
     "OpenQuestionMetadata",
     "PositionItem",
+    "QuestionClassification",
     "QuestionMetadata",
+    "Reproducibility",
+    "RoleClass",
+    "RunID",
+    "SourceID",
+    "SourceMetadata",
     "SourceNoteMetadata",
+    "SourceState",
+    "StructuredContent",
     "SynthesisMetadata",
+    "TaskID",
+    "TaskTier",
     "ThemeItem",
+    "Tier",
+    "VerificationStatus",
 ]

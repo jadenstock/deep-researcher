@@ -43,7 +43,7 @@ class ClaimItem(BaseModel):
     """A verbatim-quoted claim extracted from a source.
 
     A single claim is extracted in service of one or more questions
-    (via `for_questions`) — the same source may yield different claims
+    (via `for_questions`) - the same source may yield different claims
     when analyzed against different question lenses. The synthesizer
     filters claims by question_id before composing its digest.
     """
@@ -56,9 +56,9 @@ class ClaimItem(BaseModel):
     verification_status: VerificationStatus = VerificationStatus.UNVERIFIED
     # Family of the model that extracted this claim (e.g. "anthropic", "openai").
     # Populated by the analyzer and consumed by the executor's ADR 0008
-    # cross-family invariant — VERIFY_CLAIM must route to a different family.
+    # cross-family invariant - VERIFY_CLAIM must route to a different family.
     analyzed_by_family: str | None = None
-    # Framing the analyzer used for this extraction — "neutral" under the
+    # Framing the analyzer used for this extraction - "neutral" under the
     # default single_researcher pattern, or one of the multi_perspective
     # framings (e.g. "skeptic", "advocate").
     perspective: str = "neutral"
@@ -68,7 +68,7 @@ class ClaimItem(BaseModel):
     # LLMs the source evaluates this claim on (verbatim from the source).
     models_tested: list[str] = Field(default_factory=list)
     # Taxonomy used to triage verification (see ClaimType). EXTERNAL is the
-    # safe default — claims of unknown type shouldn't silently be excluded
+    # safe default - claims of unknown type shouldn't silently be excluded
     # from verify; the analyzer stamps the real type when it can.
     claim_type: ClaimType = ClaimType.EXTERNAL
     # Question(s) this claim was extracted in service of. One claim often
@@ -107,7 +107,7 @@ class SourceMetadata(BaseModel):
     # tagged for its question.
     state: SourceState = SourceState.SCOUTED
     # tier/confidence/peer_reviewed are None/defaults until the source is
-    # FETCHED — the tier classifier runs during FETCH_AND_EXTRACT.
+    # FETCHED - the tier classifier runs during FETCH_AND_EXTRACT.
     tier: Tier | None = None
     tier_rationale: str = ""
     classifier_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -127,7 +127,7 @@ class SourceMetadata(BaseModel):
     relevance: dict[str, float] = Field(default_factory=dict)
     analyzed_for: list[str] = Field(default_factory=list)
     discovered_by: str | None = None
-    # Strategy label from retrieval/scout.py — "direct", "contrarian",
+    # Strategy label from retrieval/scout.py - "direct", "contrarian",
     # "technical", "time_bounded", "venue", "landscape_seed", "verify_seed",
     # etc. Useful for post-hoc coverage analysis.
     scout_strategy: str | None = None

@@ -1,54 +1,48 @@
-"""Runs one research session and publishes events to a RunSession.
+"""Runs one agent research session and publishes events to a RunSession.
 
-This is the server-side analogue of cli._run_research: same Scheduler,
-same AgentExecutor, same register_handlers — the only difference is
-that callbacks publish Events onto a session instead of printing to
-the terminal.
+Server-side analogue of cli._run: same top-level `research_run`, same
+Deps, same note memory - the difference is that an `EventPublisher`
+implementation (`SessionPublisher`) writes agent + note events onto a
+`RunSession`, and the final report is materialized as a synthesis
+note so the UI's /api/note/{run_id}/{note_id} endpoint can fetch it.
 """
 
 from __future__ import annotations
 
 import contextvars
+import json
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
-from ..config import LocalConfig, PipelineConfig, RoutingConfig
-from ..executor import AgentExecutor, register_handlers
-from ..export import export_run
-from ..replanner import run_replanner
-from ..scheduler import (
-    NoteGraph,
-    NoteMutation,
-    Scheduler,
-    TaskGraph,
-    TaskResult,
-    new_task_id,
-)
-from ..schemas import Task
-from ..schemas.enums import NoteType, RoleClass, TaskTier, TaskType
-from ..token_usage import TokenUsageTracker
+from ..agents.deps import build_deps
+from ..agents.events import EventPublisher
+from ..agents.memory import NoteMemory, new_note_id
+from ..agents.researcher import research_run
+from ..agents.schemas import ResearcherReport, compose_report_markdown
+from ..config import LocalConfig, RoutingConfig
+from ..schemas.enums import NoteType
+from ..schemas.ids import NoteID
+from ..schemas.note import Note, SynthesisMetadata
 from .events import (
     RunSession,
+    event_agent_done,
+    event_agent_started,
     event_note_created,
     event_note_replaced,
-    event_replan_done,
-    event_replan_started,
     event_run_done,
     event_run_failed,
     event_run_started,
-    event_task_done,
-    event_task_started,
+    event_tool_call_end,
+    event_tool_call_start,
 )
 
 logger = logging.getLogger(__name__)
 
+
 # Per-run log file plumbing. Each run gets its own run.log in its
-# run_dir, colocated with notes/, tasks.json, token_usage.json. We use
-# a contextvar set at run_session entry and a filter keyed off it so
-# concurrent runs don't cross-contaminate: every log record emitted
-# from the same asyncio task chain carries that run's id, and each
-# run's FileHandler only admits records matching its own id.
+# run_dir. contextvar + filter keeps concurrent runs from cross-
+# contaminating each other's logs.
 _RUN_ID_CTX: contextvars.ContextVar[str | None] = contextvars.ContextVar("dra_run_id", default=None)
 
 _RUN_LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -65,26 +59,13 @@ class _RunIdFilter(logging.Filter):
         return _RUN_ID_CTX.get() == self._run_id
 
 
-# Third-party libraries that log at DEBUG with extreme verbosity —
-# pdfminer emits one line per PDF object parse (GB-scale per long PDF),
-# pypdf is similar, and httpcore/httpx log every request internal. Pin
-# them at WARNING globally; real errors still surface. Applied once at
-# module import so every run in this process benefits.
+# Silence noisy third-party libraries once per process; their DEBUG
+# streams drown real errors.
 for _noisy in ("pdfminer", "pypdf", "httpcore", "httpx", "urllib3", "trafilatura"):
     logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 
 def _attach_run_log_handler(run_dir: Path, run_id: str) -> logging.FileHandler:
-    """Attach a FileHandler writing to run_dir/run.log for this run.
-
-    Pinned at DEBUG unconditionally — the per-run log is a diagnostic
-    artifact you look at only when something's wrong, so capturing
-    every DEBUG line is the right default. Console verbosity is
-    controlled separately by DRA_LOG_LEVEL (app.py:_configure_logging).
-    Third-party noisy loggers (pdfminer, pypdf, httpcore, httpx) are
-    pinned to WARNING at module import, so their DEBUG lines don't
-    reach this handler regardless of its level.
-    """
     run_dir.mkdir(parents=True, exist_ok=True)
     fh = logging.FileHandler(run_dir / "run.log", mode="w", encoding="utf-8")
     fh.setFormatter(logging.Formatter(_RUN_LOG_FORMAT))
@@ -94,149 +75,282 @@ def _attach_run_log_handler(run_dir: Path, run_id: str) -> logging.FileHandler:
     return fh
 
 
+class SessionPublisher(EventPublisher):
+    """EventPublisher that forwards agent + note events onto a RunSession.
+
+    Implements the Deps.events protocol used by researcher.py,
+    question_investigator.py, and NoteMemory. Keeps a back-reference
+    to the session so the WebSocket handler can replay + stream every
+    event for this run.
+    """
+
+    def __init__(self, session: RunSession) -> None:
+        self._session = session
+
+    def on_agent_start(
+        self,
+        *,
+        agent_id: str,
+        agent_type: str,
+        goal: str,
+        tier: str,
+        role: str,
+        model_id: str | None,
+    ) -> None:
+        self._session.publish(
+            event_agent_started(
+                agent_id=agent_id,
+                agent_type=agent_type,
+                goal=goal,
+                tier=tier,
+                role=role,
+                model_id=model_id,
+            )
+        )
+
+    def on_agent_done(
+        self,
+        *,
+        agent_id: str,
+        agent_type: str,
+        status: str,
+        verdict: str,
+    ) -> None:
+        self._session.publish(
+            event_agent_done(
+                agent_id=agent_id,
+                agent_type=agent_type,
+                status=status,
+                verdict=verdict,
+            )
+        )
+
+    def on_note_created(self, note: Note) -> None:
+        self._session.notes[note.id] = note
+        self._session.publish(event_note_created(note))
+
+    def on_note_replaced(self, note: Note) -> None:
+        self._session.notes[note.id] = note
+        self._session.publish(event_note_replaced(note))
+
+    def on_tool_start(
+        self,
+        *,
+        agent_id: str,
+        tool_call_id: str,
+        tool: str,
+        summary: str,
+    ) -> None:
+        self._session.publish(
+            event_tool_call_start(
+                agent_id=agent_id,
+                tool_call_id=tool_call_id,
+                tool=tool,
+                summary=summary,
+            )
+        )
+
+    def on_tool_end(
+        self,
+        *,
+        agent_id: str,
+        tool_call_id: str,
+        tool: str,
+        status: str,
+        summary: str,
+        duration_ms: int,
+    ) -> None:
+        self._session.publish(
+            event_tool_call_end(
+                agent_id=agent_id,
+                tool_call_id=tool_call_id,
+                tool=tool,
+                status=status,
+                summary=summary,
+                duration_ms=duration_ms,
+            )
+        )
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+async def _materialize_report_note(
+    session: RunSession,
+    publisher: SessionPublisher,
+    report_markdown: str,
+    bottom_line: str,
+    query: str,
+) -> NoteID:
+    """Create a synthesis_note containing the final report and publish
+    it so the UI's note tab + report viewer both see it."""
+    note_id = new_note_id("report")
+    note = Note(
+        id=note_id,
+        type=NoteType.SYNTHESIS,
+        title="Research report",
+        description=bottom_line[:280],
+        content=report_markdown,
+        metadata=SynthesisMetadata(pattern="researcher"),
+        last_modified_at=_now(),
+        created_at=_now(),
+    )
+    # Publish directly - we're not going through NoteMemory because
+    # the report lives conceptually outside agent memory (it's the
+    # output, not working state). Routing it through the session keeps
+    # the UI contract uniform.
+    publisher.on_note_created(note)
+    del query  # reserved for future metadata
+    return note_id
+
+
+def _build_report_markdown(
+    query: str,
+    report: ResearcherReport | None,
+    memory: NoteMemory,
+) -> str:
+    """Compose the final report markdown.
+
+    Happy path: ResearcherReport present; compose_report_markdown
+    uses its fields (and report_markdown verbatim if the model filled
+    it in).
+
+    Crash path: report is None. compose_report_markdown falls back to
+    the synthesis_notes in memory (each sub-agent persists its
+    QuestionSynthesis as one) plus the source_notes appendix.
+    """
+    return compose_report_markdown(query=query, report=report, memory=memory)
+
+
+def _dump_artifacts(
+    run_dir: Path,
+    query: str,
+    notes: dict[str, Note],
+    report_markdown: str | None,
+    report_json: dict | None,
+) -> None:
+    """Persist per-run artifacts: report.md, report.json, notes.json."""
+    run_dir.mkdir(parents=True, exist_ok=True)
+    notes_out = [n.model_dump(mode="json") for n in notes.values()]
+    (run_dir / "notes.json").write_text(json.dumps(notes_out, indent=2, default=str))
+    if report_json is not None:
+        (run_dir / "report.json").write_text(json.dumps(report_json, indent=2, default=str))
+    if report_markdown is not None:
+        md = f"# Research report\n\n**Query:** {query}\n\n{report_markdown}\n"
+        (run_dir / "report.md").write_text(md)
+
+
 async def run_session(
     session: RunSession,
     routing: RoutingConfig,
     local: LocalConfig,
-    pipeline: PipelineConfig,
     runs_dir: Path,
 ) -> None:
-    """Execute one research run and stream events onto `session`.
+    """Execute one agent research run and stream events onto `session`.
 
     Any exception inside the run is caught and surfaced as a
-    `run_failed` event rather than propagated — the WebSocket clients
+    `run_failed` event rather than propagated - the WebSocket clients
     need to see the failure.
     """
     session.publish(event_run_started(session.run_id, session.query))
     run_dir = runs_dir / session.run_id
     _RUN_ID_CTX.set(session.run_id)
     run_log_handler = _attach_run_log_handler(run_dir, session.run_id)
-    tracker = TokenUsageTracker()
-    # Initialize graphs outside the try so the failure-path export can
-    # read them even if setup itself raised.
-    tg = TaskGraph()
-    ng = NoteGraph()
+
+    publisher = SessionPublisher(session)
+    deps = build_deps(local, routing, events=publisher)
 
     try:
-        ex = AgentExecutor(routing=routing, local=local, pipeline=pipeline, tracker=tracker)
-        register_handlers(ex)
-        root_task = Task(
-            id=new_task_id(),
-            goal=session.query,
-            type=TaskType.LANDSCAPE_SURVEY,
-            role=RoleClass.GENERATIVE,
-            tier=TaskTier.HIGH,
-            success_criteria="produce a research report answering the query",
-            created_at=datetime.now(UTC),
-        )
-        tg.add(root_task)
+        report = await research_run(deps, session.query)
+        # Happy path: the researcher called write_research_report,
+        # which created the synthesis_note and stashed its ID under
+        # `__report_note_id__`. Use that directly.
+        report_note_id = deps.outputs.get("__report_note_id__")
+        if not isinstance(report_note_id, str):
+            # Agent ended without committing - fall back to composing
+            # a report from the minimal ResearcherReport that
+            # research_run fabricated.
+            logger.warning(
+                "run_id=%s: write_research_report never fired; "
+                "materializing composed report from available notes",
+                session.run_id,
+            )
+            fallback_md = _build_report_markdown(session.query, report, deps.memory)
+            report_note_id = await _materialize_report_note(
+                session=session,
+                publisher=publisher,
+                report_markdown=fallback_md,
+                bottom_line=report.bottom_line,
+                query=session.query,
+            )
 
-        def _on_task_start(task: Task) -> None:
-            # Pass routing so the event carries the resolved model_id for
-            # the UI to display on the agent card.
-            session.publish(event_task_started(task, routing))
-
-        def _on_task_done(task: Task, result: TaskResult) -> None:
-            verdict = result.verdict or f"wrote {len(task.writes_notes)} note(s)"
-            session.publish(event_task_done(task, verdict))
-
-        def _on_note_mutation(mut: NoteMutation, task: Task | None) -> None:
-            session.notes[mut.note.id] = mut.note
-            if mut.kind == "create":
-                session.publish(event_note_created(mut.note))
-            else:
-                session.publish(event_note_replaced(mut.note))
-
-        replan_counter = {"n": 0}
-
-        async def _replanner(task_graph: TaskGraph, note_graph: NoteGraph):
-            # Emit synthetic task_started/task_done around each replan
-            # cycle so the UI's Running Agents panel shows a card for
-            # the replanner (which doesn't go through the normal task
-            # dispatch path). The synth_id is ours to own — no entry
-            # is added to the real task_graph.
-            replan_counter["n"] += 1
-            start_evt, synth_id = event_replan_started(replan_counter["n"], routing)
-            session.publish(start_evt)
-            try:
-                result = await run_replanner(
-                    task_graph,
-                    note_graph,
-                    routing,
-                    local,
-                    root_task.id,
-                    tracker=tracker,
-                )
-            except Exception as exc:
-                session.publish(
-                    event_replan_done(synth_id, f"replan failed: {type(exc).__name__}", failed=True)
-                )
-                raise
-            # Pull a short verdict from the decision_note returned
-            # alongside the mutations — gives the history row actual
-            # content instead of a bare "done".
-            _mutations, decision_note = result
-            verdict = (decision_note.description or "replan cycle complete")[:140]
-            session.publish(event_replan_done(synth_id, verdict))
-            return result
-
-        sched = Scheduler(
-            tg,
-            ng,
-            ex,
-            on_task_start=_on_task_start,
-            on_task_done=_on_task_done,
-            on_note_mutation=_on_note_mutation,
-            replanner=_replanner,
-            replan_cadence=pipeline.replanner.cadence,
-            replan_budget=pipeline.replanner.budget,
-            replan_min_progress_tasks=pipeline.replanner.min_progress_tasks,
-            replan_skip_if_no_new_synthesis=pipeline.replanner.skip_if_no_new_synthesis,
-        )
-        await sched.run()
-
-        report_path = export_run(run_dir, ng, tg)
-        report_note_id = next(
-            (
-                n.id
-                for n in ng.all()
-                if n.type == NoteType.DECISION and n.metadata.category == "final_report"
+        _dump_artifacts(
+            run_dir=run_dir,
+            query=session.query,
+            notes={n.id: n for n in deps.memory.all()},
+            report_markdown=(
+                report.report_markdown or _build_report_markdown(session.query, report, deps.memory)
             ),
-            None,
+            report_json=report.model_dump(mode="json"),
         )
         session.publish(event_run_done(report_note_id))
+        # Count sub-question syntheses (written by investigators) vs
+        # the top-level report synthesis for an accurate log line.
+        sub_syntheses = [
+            n
+            for n in deps.memory.list_by_type(NoteType.SYNTHESIS)
+            if isinstance(n.metadata, SynthesisMetadata)
+            and n.metadata.pattern.startswith("investigator:")
+        ]
         logger.info(
-            "run complete run_id=%s report=%s notes=%d tasks=%d",
+            "run complete run_id=%s notes=%d questions=%d",
             session.run_id,
-            report_path,
-            len(ng),
-            len(tg),
+            len(deps.memory),
+            len(sub_syntheses),
         )
     except Exception as exc:
         logger.exception("run failed run_id=%s", session.run_id)
-        # Export whatever state we have so a failed run is still
-        # autopsy-able from disk (notes + tasks snapshot). Without
-        # this, a stall/kill leaves nothing behind and the only
-        # forensics come from the live log stream.
+        # Dump whatever partial state we have so a failed run is
+        # autopsy-able from disk. Every sub-agent persists its
+        # QuestionSynthesis as a synthesis_note before returning, so
+        # even when the top-level researcher crashes on its output we
+        # can still compose a partial report from the note graph.
         try:
-            run_dir.mkdir(parents=True, exist_ok=True)
-            export_run(run_dir, ng, tg)
+            partial_md = _build_report_markdown(session.query, None, deps.memory)
+            _dump_artifacts(
+                run_dir=run_dir,
+                query=session.query,
+                notes={n.id: n for n in deps.memory.all()},
+                report_markdown=partial_md,
+                report_json=None,
+            )
+            # Materialize a synthesis_note for the partial report so
+            # the UI's report tab can still render something.
+            partial_note_id = await _materialize_report_note(
+                session=session,
+                publisher=publisher,
+                report_markdown=partial_md,
+                bottom_line=(f"Partial report - run failed: {type(exc).__name__}"),
+                query=session.query,
+            )
+            logger.info(
+                "partial report materialized run_id=%s note=%s",
+                session.run_id,
+                partial_note_id,
+            )
         except Exception:
-            logger.exception("partial export failed run_id=%s", session.run_id)
+            logger.exception("partial dump failed run_id=%s", session.run_id)
         session.publish(event_run_failed(f"{type(exc).__name__}: {exc}"))
     finally:
-        # Token usage + summary are always recorded — costs don't care
-        # whether the run finished, and we want visibility into where
-        # the tokens went on stalls.
+        # Token usage snapshot - costs don't care whether the run
+        # finished. Stored as JSON next to the run artifacts.
         try:
             run_dir.mkdir(parents=True, exist_ok=True)
-            tracker.save_json(run_dir / "token_usage.json")
+            deps.tracker.save_json(run_dir / "token_usage.json")
         except Exception:
             logger.exception("token_usage save failed run_id=%s", session.run_id)
-        logger.info("run_id=%s %s", session.run_id, tracker.format_table())
-        # Detach the per-run file handler so it's not left hanging on
-        # the root logger (memory leak across many runs) and so the
-        # file descriptor closes.
+        logger.info("run_id=%s %s", session.run_id, deps.tracker.format_table())
         try:
             logging.getLogger().removeHandler(run_log_handler)
             run_log_handler.close()
