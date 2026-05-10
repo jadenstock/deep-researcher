@@ -3,8 +3,11 @@
 Server-side analogue of cli._run: same top-level `research_run`, same
 Deps, same note memory - the difference is that an `EventPublisher`
 implementation (`SessionPublisher`) writes agent + note events onto a
-`RunSession`, and the final report is materialized as a synthesis
-note so the UI's /api/note/{run_id}/{note_id} endpoint can fetch it.
+`RunSession`. The final report lives on the root QUESTION note (the
+one created by `research_run` for the user's query, transitioned to
+status=SYNTHESIZED once the researcher calls `answer_question` on
+it). The UI's /api/note/{run_id}/{note_id} endpoint fetches that
+QUESTION note's content as the report.
 """
 
 from __future__ import annotations
@@ -23,7 +26,7 @@ from ..agents.schemas import ResearcherReport, compose_report_markdown
 from ..config import LocalConfig, RoutingConfig
 from ..schemas.enums import NoteType
 from ..schemas.ids import NoteID
-from ..schemas.note import Note, SynthesisMetadata
+from ..schemas.note import Note, QuestionMetadata, SynthesisMetadata
 from .events import (
     RunSession,
     event_agent_done,
@@ -176,20 +179,43 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-async def _materialize_report_note(
-    session: RunSession,
+def _find_answered_root_question_id(memory: NoteMemory) -> NoteID | None:
+    """Return the id of the root QUESTION note if it was answered.
+
+    The root is the QUESTION note with no parent. "Answered" means
+    status=SYNTHESIZED (the researcher called `answer_question` on it).
+    After Phase E this note IS the final report - its `content` holds
+    the synthesis markdown.
+    """
+    for n in memory.list_by_type(NoteType.QUESTION):
+        meta = n.metadata
+        if not isinstance(meta, QuestionMetadata):
+            continue
+        if meta.parent_question_id is None and meta.status == "SYNTHESIZED":
+            return n.id
+    return None
+
+
+async def _materialize_fallback_report_note(
     publisher: SessionPublisher,
     report_markdown: str,
     bottom_line: str,
-    query: str,
 ) -> NoteID:
-    """Create a synthesis_note containing the final report and publish
-    it so the UI's note tab + report viewer both see it."""
+    """Compat shim: create a SYNTHESIS note holding a fallback report.
+
+    Used only when the researcher ended without calling
+    `answer_question` on the root question (so the root note has no
+    synthesis content to surface) or when the run crashed. The UI's
+    report tab fetches whatever note id we emit in `run_done`, so we
+    still need *some* note to point at. A SYNTHESIS note is fine here
+    as a fallback sink; the happy-path report lives on the root
+    QUESTION note.
+    """
     note_id = new_note_id("report")
     note = Note(
         id=note_id,
         type=NoteType.SYNTHESIS,
-        title="Research report",
+        title="Research report (fallback)",
         description=bottom_line[:280],
         content=report_markdown,
         metadata=SynthesisMetadata(pattern="researcher"),
@@ -197,11 +223,9 @@ async def _materialize_report_note(
         created_at=_now(),
     )
     # Publish directly - we're not going through NoteMemory because
-    # the report lives conceptually outside agent memory (it's the
-    # output, not working state). Routing it through the session keeps
-    # the UI contract uniform.
+    # this is a fallback artifact, not agent working state. Routing it
+    # through the session keeps the UI contract uniform.
     publisher.on_note_created(note)
-    del query  # reserved for future metadata
     return note_id
 
 
@@ -217,8 +241,8 @@ def _build_report_markdown(
     it in).
 
     Crash path: report is None. compose_report_markdown falls back to
-    the synthesis_notes in memory (each sub-agent persists its
-    QuestionSynthesis as one) plus the source_notes appendix.
+    answered QUESTION notes (each analyst commits its synthesis onto
+    the QUESTION note it was assigned) plus the source_notes appendix.
     """
     return compose_report_markdown(query=query, report=report, memory=memory)
 
@@ -263,26 +287,26 @@ async def run_session(
 
     try:
         report = await research_run(deps, session.query)
-        # Happy path: the researcher called write_research_report,
-        # which created the synthesis_note and stashed its ID under
-        # `__report_note_id__`. Use that directly.
-        report_note_id = deps.outputs.get("__report_note_id__")
-        if not isinstance(report_note_id, str):
-            # Agent ended without committing - fall back to composing
-            # a report from the minimal ResearcherReport that
-            # research_run fabricated.
+        # Happy path: the researcher called `answer_question` on the
+        # root question note, which transitioned it to SYNTHESIZED and
+        # wrote the final synthesis into its `content`. The root
+        # QUESTION note IS the report note - surface its id to the UI.
+        report_note_id: NoteID | None = _find_answered_root_question_id(deps.memory)
+        if report_note_id is None:
+            # Agent ended without committing to the root question -
+            # fall back to composing a report from whatever state
+            # research_run was able to assemble, and materialize it as
+            # a SYNTHESIS note so the UI still has something to load.
             logger.warning(
-                "run_id=%s: write_research_report never fired; "
+                "run_id=%s: root question never answered; "
                 "materializing composed report from available notes",
                 session.run_id,
             )
             fallback_md = _build_report_markdown(session.query, report, deps.memory)
-            report_note_id = await _materialize_report_note(
-                session=session,
+            report_note_id = await _materialize_fallback_report_note(
                 publisher=publisher,
                 report_markdown=fallback_md,
                 bottom_line=report.bottom_line,
-                query=session.query,
             )
 
         _dump_artifacts(
@@ -295,27 +319,28 @@ async def run_session(
             report_json=report.model_dump(mode="json"),
         )
         session.publish(event_run_done(report_note_id))
-        # Count sub-question syntheses (written by investigators) vs
-        # the top-level report synthesis for an accurate log line.
-        sub_syntheses = [
+        # Count answered sub-question notes for an accurate log line.
+        answered_subs = [
             n
-            for n in deps.memory.list_by_type(NoteType.SYNTHESIS)
-            if isinstance(n.metadata, SynthesisMetadata)
-            and n.metadata.pattern.startswith("investigator:")
+            for n in deps.memory.list_by_type(NoteType.QUESTION)
+            if isinstance(n.metadata, QuestionMetadata)
+            and n.metadata.status == "SYNTHESIZED"
+            and n.metadata.parent_question_id is not None
         ]
         logger.info(
             "run complete run_id=%s notes=%d questions=%d",
             session.run_id,
             len(deps.memory),
-            len(sub_syntheses),
+            len(answered_subs),
         )
     except Exception as exc:
         logger.exception("run failed run_id=%s", session.run_id)
         # Dump whatever partial state we have so a failed run is
-        # autopsy-able from disk. Every sub-agent persists its
-        # QuestionSynthesis as a synthesis_note before returning, so
-        # even when the top-level researcher crashes on its output we
-        # can still compose a partial report from the note graph.
+        # autopsy-able from disk. Each analyst commits its synthesis
+        # onto its assigned QUESTION note (status=SYNTHESIZED), so
+        # even when the top-level researcher crashes before answering
+        # the root we can still compose a partial report from the
+        # answered sub-question notes.
         try:
             partial_md = _build_report_markdown(session.query, None, deps.memory)
             _dump_artifacts(
@@ -325,14 +350,14 @@ async def run_session(
                 report_markdown=partial_md,
                 report_json=None,
             )
-            # Materialize a synthesis_note for the partial report so
-            # the UI's report tab can still render something.
-            partial_note_id = await _materialize_report_note(
-                session=session,
+            # Materialize a fallback SYNTHESIS note for the partial
+            # report so the UI's report tab can still render something
+            # (compat shim - the happy-path report lives on the root
+            # QUESTION note).
+            partial_note_id = await _materialize_fallback_report_note(
                 publisher=publisher,
                 report_markdown=partial_md,
                 bottom_line=(f"Partial report - run failed: {type(exc).__name__}"),
-                query=session.query,
             )
             logger.info(
                 "partial report materialized run_id=%s note=%s",
