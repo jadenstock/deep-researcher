@@ -26,13 +26,12 @@ from ...schemas.note import (
     Note,
     QuestionMetadata,
     SourceNoteMetadata,
-    SynthesisMetadata,
 )
 from ...schemas.source import ClaimItem
 from ..deps import Deps
 from ..events import current_agent_id, instrumented
 from ..memory import new_note_id
-from ..schemas import QuestionSynthesis, ResearcherReport
+from ..schemas import QuestionSynthesis
 
 logger = logging.getLogger(__name__)
 
@@ -361,81 +360,6 @@ async def create_question_note(
 
 
 @instrumented
-async def write_question_synthesis(
-    ctx: RunContext[Deps],
-    question: str,
-    bottom_line: str,
-    synthesis: str,
-    confidence: str,
-    sources_cited: list[NoteID] | None = None,
-    disagreements: list[str] | None = None,
-    open_issues: list[str] | None = None,
-) -> str:
-    """Commit your final synthesis for this question.
-
-    MUST be called exactly once as your last tool call before ending
-    your turn. Every field is required (except the three lists which
-    default to empty). If you haven't gathered enough evidence to
-    answer the question, still call this - set confidence='low' and
-    describe what you couldn't find in `open_issues`.
-
-    Args:
-      question: the question you were assigned.
-      bottom_line: one or two sentences answering the question directly.
-      synthesis: multi-paragraph markdown write-up. Cite source notes
-        inline with [source-abc123] syntax.
-      confidence: one of 'high' | 'medium' | 'low'.
-      sources_cited: NoteIDs of source notes whose claims feed this
-        synthesis.
-      disagreements: points where sources conflict, or empty.
-      open_issues: things you couldn't answer and why, or empty.
-
-    Returns a confirmation string containing the NoteID of the
-    synthesis note that was created.
-    """
-    confidence_lc = confidence.strip().lower()
-    if confidence_lc not in {"high", "medium", "low"}:
-        # Raising ValueError propagates to pydantic-ai as a tool
-        # error; the model sees the message and retries. This is the
-        # intended mechanism instead of silently accepting garbage.
-        raise ValueError(f"confidence must be 'high', 'medium', or 'low'; got {confidence!r}")
-
-    qs = QuestionSynthesis(
-        question=question,
-        bottom_line=bottom_line,
-        synthesis=synthesis,
-        confidence=confidence_lc,
-        sources_cited=sources_cited or [],
-        disagreements=disagreements or [],
-        open_issues=open_issues or [],
-    )
-
-    # Stash for the wrapping investigate_question_run to read back.
-    agent_id = current_agent_id() or "anonymous"
-    ctx.deps.outputs[agent_id] = qs
-
-    # Create a synthesis_note so the work is durable + visible in the
-    # UI's note graph immediately.
-    note_id = new_note_id("qsynth")
-    note = Note(
-        id=note_id,
-        type=NoteType.SYNTHESIS,
-        title=f"Synthesis: {question[:100]}",
-        description=bottom_line[:280],
-        content=synthesis,
-        links=[Link(target_id=src, edge_type="cites") for src in qs.sources_cited],
-        metadata=SynthesisMetadata(pattern=f"investigator:{agent_id}"),
-        last_modified_at=_now(),
-        created_at=_now(),
-    )
-    await ctx.deps.memory.create(note)
-    return (
-        f"committed synthesis note {note_id} "
-        f"({qs.confidence} confidence, {len(qs.sources_cited)} sources cited)"
-    )
-
-
-@instrumented
 async def answer_question(
     ctx: RunContext[Deps],
     question_id: NoteID,
@@ -490,7 +414,6 @@ async def answer_question(
 
     # Stash so the wrapping *_run function can read the structured
     # payload without reconstructing from the note.
-    from ..schemas import QuestionSynthesis
 
     qs = QuestionSynthesis(
         question=existing.description or existing.title,
@@ -506,74 +429,6 @@ async def answer_question(
         f"answered question {question_id} "
         f"({confidence_lc} confidence, {len(qs.sources_cited)} sources cited)"
     )
-
-
-@instrumented
-async def write_research_report(
-    ctx: RunContext[Deps],
-    bottom_line: str,
-    report_markdown: str,
-    cross_cutting_synthesis: str = "",
-    limitations: list[str] | None = None,
-) -> str:
-    """Commit your final research report.
-
-    MUST be called exactly once as your last tool call before ending
-    your turn. After calling, end with a one-line confirmation.
-
-    Args:
-      bottom_line: 2-4 sentence executive answer to the overall query.
-      report_markdown: full markdown report. Synthesize across the
-        sub-question investigations; cite source notes inline with
-        [source-abc123] syntax. This is the single most important
-        field - don't leave it empty.
-      cross_cutting_synthesis: optional 1-3 paragraphs on themes that
-        emerge ACROSS sub-questions (not a restatement of each).
-      limitations: what the report couldn't cover or where confidence
-        is shaky.
-
-    Returns a confirmation string containing the NoteID of the report
-    synthesis note.
-    """
-    if not report_markdown.strip():
-        raise ValueError(
-            "report_markdown must be non-empty - this field is the actual "
-            "report. Synthesize across the sub-question investigations."
-        )
-
-    # Stash the structured payload for the research_run wrapper. We
-    # don't know the query here - the runner adds it. Using a dummy
-    # string keeps ResearcherReport constructable without coupling
-    # to run_session state.
-    report = ResearcherReport(
-        query="",  # filled in by research_run from its own scope
-        bottom_line=bottom_line,
-        cross_cutting_synthesis=cross_cutting_synthesis,
-        report_markdown=report_markdown,
-        limitations=limitations or [],
-        # questions_investigated is populated by research_run from
-        # the sub-agent outputs it already has in memory.
-    )
-    agent_id = current_agent_id() or "anonymous"
-    ctx.deps.outputs[agent_id] = report
-
-    # Durable synthesis_note for the UI's report tab + on-disk artifact.
-    note_id = new_note_id("report")
-    note = Note(
-        id=note_id,
-        type=NoteType.SYNTHESIS,
-        title="Research report",
-        description=bottom_line[:280],
-        content=report_markdown,
-        metadata=SynthesisMetadata(pattern="researcher"),
-        last_modified_at=_now(),
-        created_at=_now(),
-    )
-    await ctx.deps.memory.create(note)
-    # Stash the note_id under a stable key so run_session can find it
-    # without scanning the note graph for the right type + pattern.
-    ctx.deps.outputs["__report_note_id__"] = note_id
-    return f"committed research report as {note_id}"
 
 
 @instrumented
