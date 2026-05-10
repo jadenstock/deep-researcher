@@ -138,7 +138,6 @@ def build_researcher(deps: Deps) -> Agent[Deps, str]:
         from datetime import UTC, datetime
 
         from ..schemas.enums import NoteType, QuestionClassification
-        from ..schemas.ids import NoteID
         from ..schemas.note import Note, QuestionMetadata
         from .memory import new_note_id
 
@@ -153,7 +152,7 @@ def build_researcher(deps: Deps) -> Agent[Deps, str]:
             metadata=QuestionMetadata(
                 classification=QuestionClassification.SYNTHESIS,
                 status="IN_PROGRESS",
-                parent_question_id=root_id if isinstance(root_id, NoteID) else None,
+                parent_question_id=root_id if isinstance(root_id, str) else None,
             ),
             last_modified_at=datetime.now(UTC),
             created_at=datetime.now(UTC),
