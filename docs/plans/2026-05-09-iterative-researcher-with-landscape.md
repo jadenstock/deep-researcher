@@ -867,12 +867,14 @@ In `src/deep_research_agent/agents/researcher.py`, modify the `investigate_quest
         """
         from ..schemas.enums import NoteType, QuestionClassification
         from ..schemas.ids import NoteID
+        from ..schemas.ids import NoteID
         from ..schemas.note import Note, QuestionMetadata
         from datetime import UTC, datetime
         from .memory import new_note_id
 
         q_id = new_note_id("question")
         root_id = ctx.deps.outputs.get("__root_question_id__")
+        parent_id = NoteID(root_id) if isinstance(root_id, str) else None
         note = Note(
             id=q_id,
             type=NoteType.QUESTION,
@@ -882,7 +884,7 @@ In `src/deep_research_agent/agents/researcher.py`, modify the `investigate_quest
             metadata=QuestionMetadata(
                 classification=QuestionClassification.SYNTHESIS,
                 status="IN_PROGRESS",
-                parent_question_id=root_id if isinstance(root_id, str) else None,
+                parent_question_id=parent_id,
             ),
             last_modified_at=datetime.now(UTC),
             created_at=datetime.now(UTC),
@@ -891,7 +893,7 @@ In `src/deep_research_agent/agents/researcher.py`, modify the `investigate_quest
         return await analyst_run(ctx.deps, q_id, question)
 ```
 
-Note: `NoteID` is a `NewType` over `str`, so it isn't a class and `isinstance(x, NoteID)` raises at runtime. Use `isinstance(root_id, str)` to guard — any string value stashed under `__root_question_id__` is a NoteID by construction.
+Note: `NoteID` is a `NewType` over `str`, so it isn't a class and `isinstance(x, NoteID)` raises at runtime. Guard with `isinstance(root_id, str)` and then cast via `NoteID(root_id)` so `parent_question_id` (typed `NoteID | None`) accepts the value.
 
 And at the top of `researcher.py`, update the import:
 
@@ -1203,6 +1205,7 @@ def build_researcher(deps: Deps) -> Agent[Deps, str]:
             ctx.deps.outputs["__analyst_budget__"] = budget - 1
 
         root_id = ctx.deps.outputs.get("__root_question_id__")
+        parent_id = NoteID(root_id) if isinstance(root_id, str) else None
         q_id = new_note_id("question")
         note = Note(
             id=q_id,
@@ -1213,7 +1216,7 @@ def build_researcher(deps: Deps) -> Agent[Deps, str]:
             metadata=QuestionMetadata(
                 classification=QuestionClassification.SYNTHESIS,
                 status="IN_PROGRESS",
-                parent_question_id=root_id if isinstance(root_id, str) else None,
+                parent_question_id=parent_id,
             ),
             last_modified_at=datetime.now(UTC),
             created_at=datetime.now(UTC),
