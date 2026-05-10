@@ -12,6 +12,8 @@ which questions get their own ANALYZE_SOURCE spawned against this source.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from pydantic import BaseModel, Field
 
 from .enums import (
@@ -87,6 +89,22 @@ class EvalItem(BaseModel):
     agent_skepticism: str
 
 
+class ReadingEntry(BaseModel):
+    """One analyst's reading of a source, append-only on the source note.
+
+    Two analysts investigating different sub-questions can both read the
+    same URL and each append their own ReadingEntry. Neither overwrites
+    the other; the source note accumulates a stack of per-perspective
+    extractions keyed by `for_question_id` + `by_agent_id`.
+    """
+
+    by_agent_id: str
+    for_question_id: str  # NoteID of the question this reading was done for
+    read_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    claims: list[ClaimItem] = Field(default_factory=list)
+    relevance_note: str = ""
+
+
 class SourceMetadata(BaseModel):
     """Metadata payload on a source_note.
 
@@ -126,7 +144,12 @@ class SourceMetadata(BaseModel):
         ),
     )
     landscape_contribution: str | None = None  # survey-only; one-line "what this adds"
-    claims: list[ClaimItem] = Field(default_factory=list)  # populated on analyzer upgrade
+    # Per-reading extractions - append-only. Each analyst that reads this
+    # source for a sub-question appends a ReadingEntry with its own claims
+    # and relevance_note. Sibling analysts on related questions don't
+    # overwrite each other; the stack tells the full story of what's been
+    # mined from this source and for whom.
+    readings: list[ReadingEntry] = Field(default_factory=list)
     evaluation: EvalItem | None = None  # populated on analyzer upgrade
     # Shared-corpus fields. `relevance` maps question_id → 0..1 score from
     # the batch relevance scorer and determines which questions get their

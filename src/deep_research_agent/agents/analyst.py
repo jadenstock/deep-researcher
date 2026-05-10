@@ -31,15 +31,18 @@ from ._usage import record_run_usage
 from .deps import Deps
 from .events import reset_current_agent_id, set_current_agent_id
 from .schemas import QuestionSynthesis
-from .tools.fetch import fetch_url
 from .tools.notes import (
     answer_question,
-    create_source_note,
     list_source_notes,
     load_note,
     update_source_after_reading,
 )
-from .tools.search import search_academic, search_web
+from .tools.scout_tool import scout
+
+# Hard cap on scout sub-agent dispatches per analyst run. Prompt
+# encourages fewer; this is the backstop so a misbehaving analyst
+# can't runaway-spawn scouts.
+DEFAULT_SCOUT_BUDGET = 4
 
 logger = logging.getLogger(__name__)
 
@@ -99,33 +102,62 @@ You are a research analyst investigating one specific question.
 
 ## Your job
 Produce a rigorous, evidence-grounded answer to the question you're
-given. You have tools to search the web, fetch URLs, and record
-findings as source notes in shared memory. Commit your final answer
-by UPDATING the question note you were assigned - do not create a
-new note for the answer.
+given. You dispatch scout sub-agents for retrieval grunt work, then
+deep-read the sources they surface and extract claims for your
+question. Commit your final answer by UPDATING the question note you
+were assigned - do not create a new note.
+
+## You do NOT do retrieval directly
+Search, fetch, paywall-handling, and first-pass triage are the
+scout's job. You call `scout(request=...)` with a natural-language
+angle and get back a pre-digested sourcelist. You never call
+`search_web` or `fetch_url` - those are inside the scout. This keeps
+your context full of signal, not SERP debris.
 
 ## Shared corpus
-Before running fresh searches, call `list_source_notes()`. A
-landscape scouting agent may have already scouted many sources for
-this topic. Prefer picking up those SCOUTED sources over duplicating
-the search work. You can still run your own searches if the existing
-corpus doesn't cover your angle.
+Before dispatching scouts, call `list_source_notes()`. The landscape
+agent and prior analyst/scout dispatches may have already pulled in
+relevant material. The condensed view shows:
+  - `state`: SCOUTED (not fetched yet) / FETCHED (content on
+    note.content, ready for deep-read) / ANALYZED (at least one
+    reading exists)
+  - `has_content`: True if cleaned page text is already on
+    note.content - you can `load_note(id)` without dispatching a
+    scout
+  - `n_readings` + `analyzed_for_questions`: prior readings and the
+    question_ids they were done for. If YOUR question_id isn't in
+    `analyzed_for_questions`, the source hasn't been mined for your
+    angle and you should deep-read it yourself (your reading appends
+    to the stack; it doesn't overwrite others).
+  - `topics`, `tier`, `peer_reviewed`, `summary`: source-intrinsic
+    metadata from landscape or prior scouts.
 
 ## How to work
-1. **Inventory.** Call `list_source_notes()`. If there are already
-   promising SCOUTED sources relevant to your question, start with
-   fetching those.
-2. **Targeted search if needed.** If the existing corpus is thin on
-   your specific angle, run `search_web` / `search_academic` in
-   parallel. Use `create_source_note(url, title, snippet)` on
-   promising hits - this dedups by URL automatically, so calling it
-   on a URL landscape already scouted just returns the existing id.
-3. **Fetch and read.** Call `fetch_url(url)` on the sources you want
-   to read. Fetch in parallel - one turn can issue many fetches.
-   Some URLs will fail (404, paywall, PDF errors); move on.
-4. **Record findings.** After reading a source, call
-   `update_source_after_reading(source_id, tier=..., claims=[...], ...)`
-   with 3-6 claims per useful source. Every claim needs a verbatim quote.
+1. **Inventory.** Call `list_source_notes()`. Identify sources worth
+   deep-reading for YOUR angle (has_content=True and either not yet
+   analyzed or analyzed for unrelated questions).
+2. **Dispatch scouts as needed.** If the existing corpus is thin on
+   your angle, call `scout(request=...)` - optionally multiple times
+   in parallel with distinct angles. Scout budget is 4 per run;
+   spend them where they move the needle, not for breadth's sake.
+   Scouts return ScoutResult with a sourcelist (tier_guess,
+   relevance_guess, preview) and a coverage_note. They create the
+   source notes and fetch content into `note.content` for you.
+3. **Deep-read.** For each source you want to read fully, call
+   `load_note(source_id)`. The `content` field holds the cleaned
+   page text. Some sources from the scout may be unreachable (empty
+   preview) - skip those, they'll have empty content.
+4. **Record findings.** After reading, call
+   `update_source_after_reading(source_id,
+                                 for_question_id=<your question_id>,
+                                 tier=..., tier_rationale=...,
+                                 peer_reviewed=..., summary=...,
+                                 relevance_note=..., claims=[...])`.
+   This APPENDS a reading entry tagged with your agent_id and
+   for_question_id; it does NOT overwrite prior readings by other
+   analysts. Your claims + relevance_note live on your reading
+   entry. 3-6 claims per useful source; every claim needs a
+   verbatim quote from the content you just read.
      - tier 1 = peer-reviewed research, strong venues
      - tier 2 = arXiv / well-cited tech reports
      - tier 3 = reputable industry posts, official docs
@@ -133,18 +165,24 @@ corpus doesn't cover your angle.
      - tier 5 = low-quality, promotional, off-topic
 5. **Commit your answer.** Call
    `answer_question(question_id=<the id you were given>, ...)`.
-   This tool is your commit step - DO NOT finish your turn without
-   calling it. If it returns a validation error, fix the field and
-   call again.
+   TERMINAL tool - DO NOT finish your turn without calling it. Fix
+   and retry on validation errors.
 6. **End.** After `answer_question` returns, produce a one-line
-   acknowledgment ("Answered question ...") and stop.
+   acknowledgment and stop.
 
 ## Discipline
-- Prefer multiple, diverse sources over one authoritative-looking one.
+- Prefer multiple, diverse sources over one authoritative-looking
+  one.
 - Quote claims verbatim. If you can't find a supporting quote, drop
-  the claim - don't invent one.
-- If a source is paywalled or fails to fetch, note it and move on.
-- Don't over-investigate. 4-8 analyzed sources beats 20 half-read ones.
+  the claim. Never invent quotes.
+- Unreachable sources from a scout (empty preview) are not worth
+  retrying - the scout already tried. Move on.
+- Don't over-investigate. 4-8 deep-read sources beats 20
+  half-skimmed ones.
+- If `list_source_notes` shows a source already has `has_content` +
+  a reading for an unrelated question, prefer `load_note` on it
+  over dispatching another scout - the scout would just re-scout
+  what you already have.
 """
 
 
@@ -170,13 +208,10 @@ def build_analyst(deps: Deps, mode: AnalystMode, model_id: str) -> Agent[Deps, s
         system_prompt=system_prompt,
         tool_retries=5,
     )
-    agent.tool(search_web)
-    agent.tool(search_academic)
-    agent.tool(fetch_url)
-    agent.tool(create_source_note)
-    agent.tool(update_source_after_reading)
-    agent.tool(load_note)
+    agent.tool(scout)
     agent.tool(list_source_notes)
+    agent.tool(load_note)
+    agent.tool(update_source_after_reading)
     agent.tool(answer_question)
     return agent
 
@@ -221,6 +256,10 @@ async def analyst_run(
         model_id,
         question[:140],
     )
+    # Per-analyst-run scout dispatch budget. Scouts don't count against
+    # the researcher's analyst budget - independent resource.
+    deps.outputs["__scout_budget__"] = DEFAULT_SCOUT_BUDGET
+
     token = set_current_agent_id(agent_id)
     try:
         try:
@@ -230,6 +269,7 @@ async def analyst_run(
                 (
                     f"Your assigned question_id is {question_id}.\n"
                     f"Question: {question}\n"
+                    f"You have {DEFAULT_SCOUT_BUDGET} scout dispatches available.\n"
                     "When you commit your answer, pass question_id="
                     f"{question_id} to answer_question."
                 ),
@@ -291,3 +331,4 @@ async def analyst_run(
     finally:
         reset_current_agent_id(token)
         deps.outputs.pop(agent_id, None)
+        deps.outputs.pop("__scout_budget__", None)

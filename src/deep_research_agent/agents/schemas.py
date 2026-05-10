@@ -87,6 +87,49 @@ class QuestionSynthesis(BaseModel):
     )
 
 
+class ScoutedSource(BaseModel):
+    """One entry in a scout's returned sourcelist.
+
+    The scout creates a SCOUTED source note for the URL and may have
+    called `scout_fetch` on it (in which case `preview` is non-empty and
+    the source note's `content` holds the cleaned page text for the
+    analyst to load via `load_note`). `tier_guess` / `relevance_guess`
+    are first-pass judgments - the analyst re-rates on deep-read.
+    """
+
+    source_id: NoteID
+    url: str
+    title: str
+    tier_guess: int | None = Field(
+        None, description="Scout's first-pass tier (1..5), or None if not yet assessed."
+    )
+    relevance_guess: str = Field(
+        "medium",
+        description="Scout's relevance rating for the request: 'high' | 'medium' | 'low'.",
+    )
+    preview: str = Field(
+        "",
+        description=(
+            "2-3 sentence excerpt from the scout's skim of the source content. "
+            "Empty if the scout could not fetch (paywall, 404, etc.)."
+        ),
+    )
+
+
+class ScoutResult(BaseModel):
+    """Final output of a scout sub-agent dispatch."""
+
+    sources: list[ScoutedSource] = Field(default_factory=list)
+    coverage_note: str = Field(
+        "",
+        description=(
+            "One-paragraph summary of what the scout searched, what it found, "
+            "and where the coverage is thin or strong. Tells the analyst "
+            "whether another scout dispatch on a different angle is warranted."
+        ),
+    )
+
+
 class ResearcherReport(BaseModel):
     """Final output of the top-level `researcher` agent."""
 

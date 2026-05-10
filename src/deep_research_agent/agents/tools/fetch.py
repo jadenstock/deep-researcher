@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import logging
 
-from pydantic_ai import RunContext
+from pydantic_ai import ModelRetry, RunContext
 
 from ...retrieval.fetch import fetch_and_extract
+from ...schemas.enums import NoteType, SourceState
+from ...schemas.ids import NoteID
+from ...schemas.note import SourceNoteMetadata
 from ..deps import Deps
 from ..events import instrumented
 from ..schemas import FetchedContent
@@ -74,3 +77,82 @@ async def fetch_url(ctx: RunContext[Deps], url: str) -> FetchedContent:
         truncated=truncated,
         reason=reason,
     )
+
+
+# Preview sent back to the scout from scout_fetch. Short enough to keep
+# scout context compact; the full cleaned text lives on note.content for
+# the analyst to retrieve via load_note.
+SCOUT_PREVIEW_CHARS = 600
+
+
+@instrumented
+async def scout_fetch(ctx: RunContext[Deps], source_id: NoteID) -> str:
+    """Fetch a source's URL, store cleaned content on the note, return a preview.
+
+    Writes the extracted markdown into `note.content` so downstream
+    analysts can deep-read via `load_note(source_id)` without
+    re-fetching. Promotes the source from SCOUTED to FETCHED. Returns
+    a 2-3 sentence preview excerpt so you (the scout) can tier-guess
+    and relevance-guess without carrying the whole page in your
+    context.
+
+    Args:
+      source_id: NoteID of a source_note you created via
+        create_source_note. The URL to fetch is read off the note.
+
+    Returns the preview excerpt string. On fetch failure returns a
+    short "unreachable: <reason>" message and leaves `note.content`
+    empty - don't deep-read a failed source.
+    """
+    existing = ctx.deps.memory.get(source_id)
+    if existing is None:
+        raise ModelRetry(
+            f"source_id {source_id!r} not in memory. "
+            "Call create_source_note first, then scout_fetch on the returned id."
+        )
+    if existing.type != NoteType.SOURCE:
+        raise ModelRetry(f"note {source_id!r} is a {existing.type.value}, not a source_note.")
+    meta = existing.metadata
+    assert isinstance(meta, SourceNoteMetadata)
+
+    result = await fetch_and_extract(meta.url)
+    if result is None or not result.markdown:
+        reason = "connection_failed"
+        if result is not None:
+            if result.status_code >= 400:
+                reason = f"http_{result.status_code}"
+            else:
+                reason = "no_main_content"
+        logger.info("scout_fetch unreachable source=%s reason=%s", source_id, reason)
+        return f"unreachable: {reason}"
+
+    md = result.markdown
+    truncated = False
+    if len(md) > MAX_MARKDOWN_CHARS:
+        md = md[:MAX_MARKDOWN_CHARS]
+        truncated = True
+
+    # Promote state to FETCHED; upgrade title if the fetched page had a
+    # better one and the original was just the URL.
+    header_updates: dict[str, object] = {"state": SourceState.FETCHED}
+    if result.title and (not meta.title or meta.title == meta.url):
+        header_updates["title"] = result.title
+    new_meta = meta.model_copy(update=header_updates)
+
+    # Preview = leading chars after stripping heading markers - rough but
+    # good enough signal for tier/relevance guess.
+    preview = md.strip()[:SCOUT_PREVIEW_CHARS]
+    if truncated:
+        preview = (
+            f"{preview}\n\n"
+            f"_(content truncated — full text on note.content capped "
+            f"at {MAX_MARKDOWN_CHARS} chars)_"
+        )
+
+    await ctx.deps.memory.update(
+        source_id,
+        title=new_meta.title,
+        content=md,
+        metadata=new_meta,
+    )
+    return preview

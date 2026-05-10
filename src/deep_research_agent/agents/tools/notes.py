@@ -27,11 +27,11 @@ from ...schemas.note import (
     QuestionMetadata,
     SourceNoteMetadata,
 )
-from ...schemas.source import ClaimItem
+from ...schemas.source import ClaimItem, ReadingEntry
 from ..deps import Deps
 from ..events import current_agent_id, instrumented
 from ..memory import new_note_id
-from ..schemas import QuestionSynthesis
+from ..schemas import QuestionSynthesis, ScoutedSource, ScoutResult
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +134,7 @@ async def create_source_note(
 async def update_source_after_reading(
     ctx: RunContext[Deps],
     source_id: NoteID,
+    for_question_id: NoteID,
     tier: int,
     tier_rationale: str,
     peer_reviewed: bool,
@@ -141,43 +142,55 @@ async def update_source_after_reading(
     relevance_note: str,
     claims: list[ClaimInput] | None = None,
 ) -> str:
-    """Record what you learned after reading a source.
+    """Record what you learned after reading a source for your question.
 
-    Call this after fetch_url returns content for a source and you've
-    read enough of it to classify its quality and extract key claims.
-    Promotes the source from SCOUTED to ANALYZED.
+    APPENDS a reading entry to the source note; does not overwrite
+    prior readings. Two analysts investigating different sub-questions
+    can both call this on the same source - each reading's claims and
+    relevance_note live on their own entry keyed by agent_id +
+    for_question_id.
+
+    Source-intrinsic fields (tier, peer_reviewed, summary) follow
+    first-writer-wins semantics: if the source has none yet, yours
+    become the canonical values; if they're already set (e.g. by a
+    scout or an earlier reader), your args are recorded on your
+    reading entry but the source-level values stay put. Don't fight
+    over them - your perspective lives in the claims + relevance_note.
+
+    Promotes the source's `state` to ANALYZED on first reading.
 
     Args:
-      source_id: NoteID of the source note you're updating. Must be an
-        existing source_note id (from create_source_note or
+      source_id: NoteID of the source note you're appending to. Must
+        be an existing source_note id (from a scout dispatch or
         list_source_notes).
+      for_question_id: NoteID of the QUESTION note this reading is
+        being done for. Tags the reading so sibling analysts on
+        different questions can see your reading was for an unrelated
+        angle and still mine the source fresh.
       tier: Integer 1..5 rating source quality. 1 = peer-reviewed
         research in strong venues. 2 = arXiv preprint or well-cited
         technical report. 3 = reputable industry post, official docs,
         respected newsletter. 4 = community writeup, unreviewed blog.
-        5 = low-quality, promotional, or off-topic (you can still
-        record these but they shouldn't carry much weight).
-      tier_rationale: One sentence explaining why you assigned this
-        tier (e.g. "peer-reviewed NeurIPS paper with 200+ citations").
+        5 = low-quality, promotional, or off-topic.
+      tier_rationale: One sentence explaining the tier (e.g.
+        "peer-reviewed NeurIPS paper with 200+ citations").
       peer_reviewed: True iff this source went through formal peer
         review. arXiv preprints are NOT peer-reviewed; conference
         papers typically are.
       summary: 2-4 sentences summarizing the source's main argument
-        or findings in your own words. Goes onto the source note's
-        human-readable blurb.
-      relevance_note: One sentence on why this source matters for the
-        question you're investigating. Helps a future reader
-        (including the top-level researcher) see at a glance why this
-        source was kept.
-      claims: List of 3-6 key claims extracted from the source. Each
-        claim MUST include a verbatim quote from the source text.
-        Never paraphrase a quote - if you can't find a supporting
-        quote, drop the claim. Pass an empty list if the source
-        turned out to be unhelpful.
+        or findings. Becomes the source's canonical summary iff none
+        was set before.
+      relevance_note: One sentence on why this source matters FOR
+        YOUR QUESTION specifically. Lives on your reading entry; does
+        not overwrite other analysts' relevance notes.
+      claims: List of 3-6 key claims you extracted from the source
+        for your question. Each claim MUST include a verbatim quote.
+        Never paraphrase a quote - if you can't find one, drop the
+        claim. Pass an empty list if the source was unhelpful for
+        your angle.
 
-    Returns a one-line confirmation string. If source_id isn't a
-    source_note in memory, raises ModelRetry so you can call
-    list_source_notes and try again with a valid id.
+    Returns a one-line confirmation string. Raises ModelRetry with a
+    descriptive error if source_id or for_question_id isn't valid.
     """
     try:
         tier_enum = Tier(tier)
@@ -192,7 +205,7 @@ async def update_source_after_reading(
         raise ModelRetry(
             f"source note {source_id!r} not in memory. "
             "Call list_source_notes() to see valid source ids, "
-            "or create the source first with create_source_note()."
+            "or dispatch a scout to pull in fresh sources."
         )
     if existing.type != NoteType.SOURCE:
         raise ModelRetry(
@@ -200,39 +213,72 @@ async def update_source_after_reading(
             "Pass a source_note id here."
         )
 
+    question_note = ctx.deps.memory.get(for_question_id)
+    if question_note is None:
+        raise ModelRetry(
+            f"for_question_id {for_question_id!r} not in memory. "
+            "Pass the question_id you were assigned in your opening message."
+        )
+    if question_note.type != NoteType.QUESTION:
+        raise ModelRetry(
+            f"for_question_id {for_question_id!r} is a {question_note.type.value}, "
+            "not a question_note. Pass a question id, not a source id."
+        )
+
+    existing_meta = existing.metadata
+    assert isinstance(existing_meta, SourceNoteMetadata)
+
+    agent_id = current_agent_id() or "anonymous"
+    reading_idx = len(existing_meta.readings)
     claim_items: list[ClaimItem] = []
     for i, c in enumerate(claims or []):
         claim_items.append(
             ClaimItem(
-                id=f"{source_id}-c{i}",
+                id=f"{source_id}-r{reading_idx}-c{i}",
                 text=c.text,
                 quote=c.quote,
                 page_or_section=c.page_or_section,
                 extractor_confidence=0.8,
                 verification_status=VerificationStatus.UNVERIFIED,
                 claim_type=ClaimType.EXTERNAL,
+                for_questions=[str(for_question_id)],
             )
         )
 
-    existing_meta = existing.metadata
-    assert isinstance(existing_meta, SourceNoteMetadata)
-    new_meta = existing_meta.model_copy(
-        update={
-            "state": SourceState.ANALYZED,
-            "tier": tier_enum,
-            "tier_rationale": tier_rationale,
-            "peer_reviewed": peer_reviewed,
-            "summary": summary,
-            "claims": claim_items,
-        }
+    new_reading = ReadingEntry(
+        by_agent_id=agent_id,
+        for_question_id=str(for_question_id),
+        claims=claim_items,
+        relevance_note=relevance_note,
     )
+
+    # First-writer-wins on source-intrinsic fields. Scout or earlier
+    # reader has already seeded tier/summary/peer_reviewed in most
+    # cases; don't let later readers flip them.
+    header_updates: dict[str, object] = {
+        "state": SourceState.ANALYZED,
+        "readings": [*existing_meta.readings, new_reading],
+    }
+    if existing_meta.tier is None:
+        header_updates["tier"] = tier_enum
+        header_updates["tier_rationale"] = tier_rationale
+    if not existing_meta.peer_reviewed and peer_reviewed:
+        # Narrow upgrade: go from False→True only on positive evidence.
+        header_updates["peer_reviewed"] = True
+    if not existing_meta.summary and summary:
+        header_updates["summary"] = summary
+
+    new_meta = existing_meta.model_copy(update=header_updates)
     await ctx.deps.memory.update(
         source_id,
-        description=summary[:280] or existing.description,
-        content=relevance_note,
+        description=(new_meta.summary or existing.description)[:280],
         metadata=new_meta,
     )
-    return f"source {source_id} tier={tier} peer_reviewed={peer_reviewed} claims={len(claim_items)}"
+    return (
+        f"appended reading to source {source_id} "
+        f"(for_question={for_question_id}, claims={len(claim_items)}, "
+        f"total_readings={len(new_meta.readings)})"
+    )
 
 
 @instrumented
@@ -261,15 +307,25 @@ async def list_source_notes(
 ) -> list[dict[str, object]]:
     """List source notes in memory with their key metadata.
 
-    Returns one dict per source with id / url / title / state /
-    tier / peer_reviewed / summary / n_claims. Use this to audit
-    what's been gathered so far, to pick sources to cite in a
-    synthesis, or to inherit the landscape agent's scouted sources
-    before running your own searches.
+    Returns one dict per source with id / url / title / state / tier /
+    peer_reviewed / summary / topics / has_content / n_readings /
+    analyzed_for_questions. Use this to audit what's been gathered so
+    far, to pick sources to cite, or to spot sources already mined for
+    unrelated angles (fresh for your question) vs. already mined for
+    your question (reuse the existing reading).
+
+    Key signals to read:
+      - `has_content=True` means a scout already fetched + cleaned the
+        page text; you can `load_note(id)` to deep-read without
+        dispatching another scout.
+      - `analyzed_for_questions` lists NoteIDs of prior readers' target
+        questions. If your question isn't in the list, your reading
+        angle is still fresh; append a new reading. If your question
+        IS in the list, another reading already covers your angle.
 
     Args:
-      only_analyzed: If True, only return sources that have already
-        been read (state == ANALYZED). Default False - returns all
+      only_analyzed: If True, only return sources that have at least
+        one reading (state == ANALYZED). Default False - returns all
         sources including SCOUTED ones that haven't been read yet.
     """
     sources = ctx.deps.memory.list_by_type(NoteType.SOURCE)
@@ -280,6 +336,7 @@ async def list_source_notes(
             continue
         if only_analyzed and meta.state != SourceState.ANALYZED:
             continue
+        analyzed_for = sorted({r.for_question_id for r in meta.readings})
         out.append(
             {
                 "id": n.id,
@@ -289,7 +346,10 @@ async def list_source_notes(
                 "tier": meta.tier.value if meta.tier is not None else None,
                 "peer_reviewed": meta.peer_reviewed,
                 "summary": meta.summary,
-                "n_claims": len(meta.claims or []),
+                "topics": list(meta.topics),
+                "has_content": bool(n.content),
+                "n_readings": len(meta.readings),
+                "analyzed_for_questions": analyzed_for,
             }
         )
     return out
@@ -538,6 +598,57 @@ async def answer_question(
         f"answered question {question_id} "
         f"({confidence_lc} confidence, {len(qs.sources_cited)} sources cited)"
     )
+
+
+@instrumented
+async def commit_scout_result(
+    ctx: RunContext[Deps],
+    sources: list[ScoutedSource],
+    coverage_note: str,
+) -> str:
+    """Commit your sourcelist + coverage note for the dispatching analyst.
+
+    TERMINAL tool for the scout sub-agent - call exactly once as the
+    last tool call before ending your turn. Stashes the result in
+    `deps.outputs[scout_agent_id]` so the dispatching `scout()` tool
+    returns it to the analyst.
+
+    Args:
+      sources: List of ScoutedSource entries. Each must reference an
+        existing source_note id (from create_source_note you called
+        earlier). tier_guess is 1..5 or null; relevance_guess is one
+        of 'high' | 'medium' | 'low'; preview is a 2-3 sentence
+        excerpt from scout_fetch (empty if the source was never
+        fetched - e.g. paywall / 404).
+      coverage_note: One paragraph summarizing what you searched,
+        what you found, and where coverage is thin or strong. Tells
+        the analyst whether another scout dispatch on a different
+        angle is worth it.
+    """
+    if not sources and not coverage_note.strip():
+        raise ModelRetry(
+            "commit_scout_result needs either `sources` or a non-empty "
+            "`coverage_note`. If retrieval came up empty, say so in "
+            "coverage_note so the analyst knows."
+        )
+
+    # Validate each source_id exists and is a source_note.
+    for s in sources:
+        n = ctx.deps.memory.get(s.source_id)
+        if n is None:
+            raise ModelRetry(
+                f"source_id {s.source_id!r} in your sources list is not in memory. "
+                "Only reference source_ids you created via create_source_note."
+            )
+        if n.type != NoteType.SOURCE:
+            raise ModelRetry(f"source_id {s.source_id!r} is a {n.type.value}, not a source_note.")
+
+    agent_id = current_agent_id() or "anonymous"
+    ctx.deps.outputs[agent_id] = ScoutResult(
+        sources=list(sources),
+        coverage_note=coverage_note,
+    )
+    return f"committed scout result ({len(sources)} sources)"
 
 
 @instrumented
