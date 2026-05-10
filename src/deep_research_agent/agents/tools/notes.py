@@ -20,7 +20,14 @@ from pydantic_ai import RunContext
 
 from ...schemas.enums import ClaimType, NoteType, SourceState, Tier, VerificationStatus
 from ...schemas.ids import NoteID
-from ...schemas.note import Link, Note, QuestionMetadata, SourceNoteMetadata, SynthesisMetadata
+from ...schemas.note import (
+    LandscapeMetadata,
+    Link,
+    Note,
+    QuestionMetadata,
+    SourceNoteMetadata,
+    SynthesisMetadata,
+)
 from ...schemas.source import ClaimItem
 from ..deps import Deps
 from ..events import current_agent_id, instrumented
@@ -428,3 +435,49 @@ async def write_research_report(
     # without scanning the note graph for the right type + pattern.
     ctx.deps.outputs["__report_note_id__"] = note_id
     return f"committed research report as {note_id}"
+
+
+@instrumented
+async def write_landscape_brief(
+    ctx: RunContext[Deps],
+    brief_markdown: str,
+) -> str:
+    """Commit your landscape brief for the researcher to read.
+
+    MUST be called exactly once as your last tool call before ending
+    your turn. The brief is free-form markdown - include whatever is
+    useful for a downstream researcher deciding how to decompose the
+    query:
+      - apparent sub-areas or themes
+      - obvious gaps / under-covered angles
+      - terminology the field uses
+      - source clusters (e.g. which venues, which kinds of outlets)
+      - contested points you noticed in the snippets
+    Do NOT paraphrase full source content - the researcher will read
+    the source list separately. Keep the brief tight (~300-600 words).
+
+    Creates a LANDSCAPE note in memory and stashes the brief for the
+    wrapping landscape_run to return to its caller.
+    """
+
+    if not brief_markdown.strip():
+        raise ValueError("brief_markdown must be non-empty")
+
+    agent_id = current_agent_id() or "anonymous"
+    # Stash raw markdown for landscape_run to forward to the researcher.
+    ctx.deps.outputs[agent_id] = brief_markdown
+
+    # Durable landscape note.
+    note_id = new_note_id("landscape")
+    note = Note(
+        id=note_id,
+        type=NoteType.LANDSCAPE,
+        title="Landscape brief",
+        description=brief_markdown.splitlines()[0][:280] if brief_markdown else "",
+        content=brief_markdown,
+        metadata=LandscapeMetadata(raw_query=""),  # query filled by landscape_run
+        last_modified_at=_now(),
+        created_at=_now(),
+    )
+    await ctx.deps.memory.create(note)
+    return f"committed landscape brief as {note_id}"
