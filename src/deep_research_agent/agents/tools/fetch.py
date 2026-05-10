@@ -11,10 +11,11 @@ import logging
 
 from pydantic_ai import ModelRetry, RunContext
 
-from ...retrieval.fetch import fetch_and_extract
+from ...retrieval.fetch import FetchResult, fetch_and_extract
 from ...schemas.enums import NoteType, SourceState
 from ...schemas.ids import NoteID
 from ...schemas.note import SourceNoteMetadata
+from ...schemas.source import ContentKind
 from ..deps import Deps
 from ..events import instrumented
 from ..schemas import FetchedContent
@@ -84,25 +85,46 @@ async def fetch_url(ctx: RunContext[Deps], url: str) -> FetchedContent:
 # the analyst to retrieve via load_note.
 SCOUT_PREVIEW_CHARS = 600
 
+# Below this length, treat extracted content as likely abstract/preview
+# rather than full body text. arXiv abs pages and DOI landing stubs
+# typically produce 1-3KB of markdown through trafilatura; a real HTML
+# paper render is usually 15KB+. 4K is a generous ceiling that still
+# flags the common "abstract only" case.
+ABSTRACT_ONLY_THRESHOLD_CHARS = 4000
+
+
+def _fetch_failure_reason(result: FetchResult | None) -> str:
+    if result is None:
+        return "connection_failed"
+    if result.status_code >= 400:
+        return f"http_{result.status_code}"
+    return "no_main_content"
+
 
 @instrumented
 async def scout_fetch(ctx: RunContext[Deps], source_id: NoteID) -> str:
     """Fetch a source's URL, store cleaned content on the note, return a preview.
 
+    Tries the note's primary `url` first (HTML → trafilatura). If that
+    returns nothing or looks abstract-only AND the note carries a
+    `pdf_url`, falls back to the PDF (→ MarkItDown). The longer of the
+    two extractions wins.
+
     Writes the extracted markdown into `note.content` so downstream
     analysts can deep-read via `load_note(source_id)` without
-    re-fetching. Promotes the source from SCOUTED to FETCHED. Returns
-    a 2-3 sentence preview excerpt so you (the scout) can tier-guess
-    and relevance-guess without carrying the whole page in your
-    context.
+    re-fetching. Promotes the source from SCOUTED to FETCHED. Stamps
+    `content_kind` on the metadata so callers know whether the stored
+    body is full_text, abstract_only, or unavailable.
 
     Args:
       source_id: NoteID of a source_note you created via
-        create_source_note. The URL to fetch is read off the note.
+        create_source_note. The URL (and optional pdf_url) are read
+        off the note.
 
-    Returns the preview excerpt string. On fetch failure returns a
-    short "unreachable: <reason>" message and leaves `note.content`
-    empty - don't deep-read a failed source.
+    Returns a short preview excerpt. For abstract-only sources the
+    preview is prefixed with "[abstract-only] " so the scout records
+    the limitation. On total fetch failure returns "unreachable:
+    <reason>" and leaves `note.content` empty.
     """
     existing = ctx.deps.memory.get(source_id)
     if existing is None:
@@ -115,44 +137,96 @@ async def scout_fetch(ctx: RunContext[Deps], source_id: NoteID) -> str:
     meta = existing.metadata
     assert isinstance(meta, SourceNoteMetadata)
 
-    result = await fetch_and_extract(meta.url)
-    if result is None or not result.markdown:
-        reason = "connection_failed"
-        if result is not None:
-            if result.status_code >= 400:
-                reason = f"http_{result.status_code}"
-            else:
-                reason = "no_main_content"
+    primary_result = await fetch_and_extract(meta.url)
+    primary_md = primary_result.markdown if primary_result else None
+    primary_len = len(primary_md) if primary_md else 0
+
+    # Fall back to the PDF when HTML was missing or thin. Only bother
+    # hitting the PDF if the primary URL and pdf_url differ - some S2
+    # hits surface the same PDF in both slots.
+    fallback_result: FetchResult | None = None
+    fallback_md: str | None = None
+    if meta.pdf_url and meta.pdf_url != meta.url and primary_len < ABSTRACT_ONLY_THRESHOLD_CHARS:
+        fallback_result = await fetch_and_extract(meta.pdf_url)
+        fallback_md = fallback_result.markdown if fallback_result else None
+
+    # Pick the extraction with more body. Ties go to the primary so we
+    # don't churn if the PDF returned the same abstract.
+    fallback_len = len(fallback_md) if fallback_md else 0
+    if fallback_md and fallback_len > primary_len:
+        chosen_md = fallback_md
+        chosen_result = fallback_result
+        chosen_source = "pdf_fallback"
+    elif primary_md:
+        chosen_md = primary_md
+        chosen_result = primary_result
+        chosen_source = "primary"
+    else:
+        chosen_md = None
+        chosen_result = None
+        chosen_source = "none"
+
+    if not chosen_md:
+        reason = _fetch_failure_reason(primary_result)
+        if fallback_result is not None:
+            reason = f"{reason}; pdf_fallback: {_fetch_failure_reason(fallback_result)}"
+        header_updates: dict[str, object] = {
+            "state": SourceState.FETCHED,
+            "content_kind": "unavailable",
+        }
+        new_meta = meta.model_copy(update=header_updates)
+        await ctx.deps.memory.update(source_id, metadata=new_meta)
         logger.info("scout_fetch unreachable source=%s reason=%s", source_id, reason)
         return f"unreachable: {reason}"
 
-    md = result.markdown
     truncated = False
-    if len(md) > MAX_MARKDOWN_CHARS:
-        md = md[:MAX_MARKDOWN_CHARS]
+    if len(chosen_md) > MAX_MARKDOWN_CHARS:
+        chosen_md = chosen_md[:MAX_MARKDOWN_CHARS]
         truncated = True
 
-    # Promote state to FETCHED; upgrade title if the fetched page had a
-    # better one and the original was just the URL.
-    header_updates: dict[str, object] = {"state": SourceState.FETCHED}
-    if result.title and (not meta.title or meta.title == meta.url):
-        header_updates["title"] = result.title
+    content_kind: ContentKind = (
+        "full_text" if len(chosen_md) >= ABSTRACT_ONLY_THRESHOLD_CHARS else "abstract_only"
+    )
+
+    header_updates = {
+        "state": SourceState.FETCHED,
+        "content_kind": content_kind,
+    }
+    if (
+        chosen_result is not None
+        and chosen_result.title
+        and (not meta.title or meta.title == meta.url)
+    ):
+        header_updates["title"] = chosen_result.title
     new_meta = meta.model_copy(update=header_updates)
 
-    # Preview = leading chars after stripping heading markers - rough but
-    # good enough signal for tier/relevance guess.
-    preview = md.strip()[:SCOUT_PREVIEW_CHARS]
-    if truncated:
+    preview_body = chosen_md.strip()[:SCOUT_PREVIEW_CHARS]
+    if content_kind == "abstract_only":
         preview = (
-            f"{preview}\n\n"
+            f"[abstract-only] {preview_body}\n\n"
+            f"_(short content — analyst should treat this as preview/summary, "
+            f"not full body text)_"
+        )
+    elif truncated:
+        preview = (
+            f"{preview_body}\n\n"
             f"_(content truncated — full text on note.content capped "
             f"at {MAX_MARKDOWN_CHARS} chars)_"
         )
+    else:
+        preview = preview_body
 
     await ctx.deps.memory.update(
         source_id,
         title=new_meta.title,
-        content=md,
+        content=chosen_md,
         metadata=new_meta,
+    )
+    logger.info(
+        "scout_fetch ok source=%s via=%s chars=%d kind=%s",
+        source_id,
+        chosen_source,
+        len(chosen_md),
+        content_kind,
     )
     return preview

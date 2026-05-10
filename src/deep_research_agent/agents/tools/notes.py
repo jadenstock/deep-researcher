@@ -73,6 +73,8 @@ async def create_source_note(
     title: str,
     snippet: str = "",
     topics: list[str] | None = None,
+    pdf_url: str | None = None,
+    doi: str | None = None,
 ) -> NoteID:
     """Record a source you've found but not yet read fully.
 
@@ -94,19 +96,31 @@ async def create_source_note(
         'evaluation-methodology']). Used by the landscape agent to
         cluster sources and by the researcher to see corpus shape
         at a glance. Can be empty.
+      pdf_url: Optional PDF URL from the search hit. Forward this when
+        the SearchResult includes one - scout_fetch uses it as a
+        fallback when the primary URL returns only an abstract.
+      doi: Optional DOI from the search hit. Forward this when
+        present - find_related_papers uses it to look up citations /
+        references on Semantic Scholar.
     """
     existing = ctx.deps.memory.find_source_by_url(url)
     if existing is not None:
-        # Merge topics if the caller supplied new ones - helps when
-        # landscape scouts the same URL on two different rounds with
-        # different topic framings.
+        # Merge any new fields the caller supplied - lets a later scout
+        # fill in pdf_url/doi/topics a previous scout didn't have.
+        existing_meta = existing.metadata
+        assert isinstance(existing_meta, SourceNoteMetadata)
+        updates: dict[str, object] = {}
         if topics:
-            existing_meta = existing.metadata
-            assert isinstance(existing_meta, SourceNoteMetadata)
             merged = list(dict.fromkeys([*existing_meta.topics, *topics]))
             if merged != existing_meta.topics:
-                new_meta = existing_meta.model_copy(update={"topics": merged})
-                await ctx.deps.memory.update(existing.id, metadata=new_meta)
+                updates["topics"] = merged
+        if pdf_url and not existing_meta.pdf_url:
+            updates["pdf_url"] = pdf_url
+        if doi and not existing_meta.doi:
+            updates["doi"] = doi
+        if updates:
+            new_meta = existing_meta.model_copy(update=updates)
+            await ctx.deps.memory.update(existing.id, metadata=new_meta)
         return existing.id
 
     source_id = new_note_id("source")
@@ -122,6 +136,8 @@ async def create_source_note(
             state=SourceState.SCOUTED,
             summary=snippet or None,
             topics=list(topics or []),
+            pdf_url=pdf_url,
+            doi=doi,
         ),
         last_modified_at=_now(),
         created_at=_now(),
@@ -308,16 +324,20 @@ async def list_source_notes(
     """List source notes in memory with their key metadata.
 
     Returns one dict per source with id / url / title / state / tier /
-    peer_reviewed / summary / topics / has_content / n_readings /
-    analyzed_for_questions. Use this to audit what's been gathered so
-    far, to pick sources to cite, or to spot sources already mined for
-    unrelated angles (fresh for your question) vs. already mined for
-    your question (reuse the existing reading).
+    peer_reviewed / summary / topics / has_content / content_kind /
+    n_readings / analyzed_for_questions. Use this to audit what's been
+    gathered so far, to pick sources to cite, or to spot sources
+    already mined for unrelated angles (fresh for your question) vs.
+    already mined for your question (reuse the existing reading).
 
     Key signals to read:
       - `has_content=True` means a scout already fetched + cleaned the
         page text; you can `load_note(id)` to deep-read without
         dispatching another scout.
+      - `content_kind` is "full_text" (substantive body), "abstract_only"
+        (short content - likely just an abstract or preview) or
+        "unavailable" (fetch failed). Treat abstract_only as a summary,
+        not a full source - dispatch a fresh scout if you need depth.
       - `analyzed_for_questions` lists NoteIDs of prior readers' target
         questions. If your question isn't in the list, your reading
         angle is still fresh; append a new reading. If your question
@@ -348,6 +368,7 @@ async def list_source_notes(
                 "summary": meta.summary,
                 "topics": list(meta.topics),
                 "has_content": bool(n.content),
+                "content_kind": meta.content_kind,
                 "n_readings": len(meta.readings),
                 "analyzed_for_questions": analyzed_for,
             }

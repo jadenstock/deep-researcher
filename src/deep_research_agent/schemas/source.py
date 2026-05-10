@@ -13,6 +13,7 @@ which questions get their own ANALYZE_SOURCE spawned against this source.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -24,6 +25,14 @@ from .enums import (
     Tier,
     VerificationStatus,
 )
+
+# Classification of how much of a source we actually retrieved. Set by
+# scout_fetch after extraction.
+#   full_text     - substantive body text (paper HTML render, long article)
+#   abstract_only - short content only (arXiv abs page, DOI landing stub,
+#                   paywall preview). Analyst should treat it as a summary.
+#   unavailable   - fetch failed entirely (paywall block, 404, parse fail).
+ContentKind = Literal["full_text", "abstract_only", "unavailable"]
 
 
 class StructuredContent(BaseModel):
@@ -119,6 +128,15 @@ class SourceMetadata(BaseModel):
     authors: list[str] = Field(default_factory=list)
     venue: str | None = None
     year: int | None = None
+    # Persistent identifiers, populated when search hit supplied them.
+    # `doi` feeds S2 citation/reference traversal; `pdf_url` is the
+    # fallback URL tried by scout_fetch when the HTML render comes back
+    # abstract-only (arxiv.org/abs redirect, DOI landing stub, etc.).
+    doi: str | None = None
+    pdf_url: str | None = None
+    # Populated by scout_fetch after extraction - tells analysts whether
+    # they have full body text or just an abstract/preview on this note.
+    content_kind: ContentKind | None = None
     # Lifecycle state in the shared corpus. Handlers consume this to gate
     # work: FETCH_AND_EXTRACT only runs on SCOUTED; ANALYZE_SOURCE only on
     # FETCHED/ANALYZED; SYNTHESIZE only reads ANALYZED sources with claims

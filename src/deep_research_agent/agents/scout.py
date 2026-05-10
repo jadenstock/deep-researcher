@@ -36,7 +36,7 @@ from .tools.notes import (
     create_source_note,
     list_source_notes,
 )
-from .tools.search import search_academic, search_web
+from .tools.search import find_related_papers, search_academic, search_web
 
 logger = logging.getLogger(__name__)
 
@@ -62,21 +62,40 @@ analyst's job. Your job is retrieval grunt work + a first-pass triage.
    angle. Use different wording, venues, and time windows so results
    don't collapse.
 3. **Create source notes.** Call `create_source_note(url, title,
-   snippet, topics=[...])` on promising hits. URL-dedup is automatic
-   - if the landscape agent already scouted a URL, your call
-   returns the existing id. Topics are cheap labels like
-   ['benchmarks', 'methodology-critique']; skip if unsure.
+   snippet, topics=[...], pdf_url=..., doi=...)` on promising hits.
+   URL-dedup is automatic - if the landscape agent already scouted a
+   URL, your call returns the existing id. Topics are cheap labels
+   like ['benchmarks', 'methodology-critique']; skip if unsure.
+   **Always forward `pdf_url` and `doi` from the SearchResult when
+   they're present** - `pdf_url` lets scout_fetch fall back to the
+   full PDF when the landing page returns only an abstract, and
+   `doi` enables citation traversal via find_related_papers.
 4. **Skim top candidates.** Call `scout_fetch(source_id)` in parallel
    on the 6-8 most promising sources. This fetches the URL, writes
    cleaned page text onto the source note's `content`, and returns a
-   short preview excerpt for you to judge tier and relevance.
+   short preview excerpt for you to judge tier and relevance. If the
+   note has a `pdf_url` and the HTML came back thin, scout_fetch
+   automatically tries the PDF. Previews prefixed with
+   `[abstract-only]` mean the stored content is short (likely just
+   the abstract) - note this in your triage; an analyst who needs
+   depth may need another angle.
    Analysts will deep-read the stored content via `load_note` later
    - don't paraphrase it into your output.
-5. **Optional reformulation round.** If the first pass came up thin
+5. **Citation traversal (when it fits).** When a scouted source is
+   clearly on-angle AND the angle is about a specific technical
+   thread (not a broad survey question), call
+   `find_related_papers(source_id, direction="citing" or
+   "cited_by", limit=N)`. "citing" = papers that cite the seed
+   (later work building on it); "cited_by" = the seed's
+   bibliography. Citation traversal is typically much higher signal
+   than another keyword search on niche topics - one good peer-
+   reviewed paper's citation list often beats 10 reformulated
+   queries. Requires the seed note to have a DOI or arXiv URL.
+6. **Optional reformulation round.** If the first pass came up thin
    or off-topic, run one more round of searches with sharper queries
    based on what the previews taught you. Hard stop after ~3 total
    rounds.
-6. **Commit.** Call `commit_scout_result(sources=[...],
+7. **Commit.** Call `commit_scout_result(sources=[...],
    coverage_note=...)`.
    - `sources`: one entry per source you want to surface to the
      analyst. Include your `tier_guess` (1..5, or null if unsure),
@@ -84,9 +103,11 @@ analyst's job. Your job is retrieval grunt work + a first-pass triage.
      `preview` excerpt from `scout_fetch` (empty if unreachable).
      Cap at ~10 entries - if you have more, pick the strongest.
    - `coverage_note`: one paragraph. What did you search? What did
-     you find? Where is coverage thin? This tells the analyst
-     whether another scout dispatch on a different angle is needed.
-7. **End.** After `commit_scout_result` returns, produce a one-line
+     you find? Where is coverage thin? Flag abstract-only sources
+     so the analyst knows depth is limited on those. This tells the
+     analyst whether another scout dispatch on a different angle is
+     needed.
+8. **End.** After `commit_scout_result` returns, produce a one-line
    acknowledgment and stop.
 
 ## Triage guidance
@@ -99,7 +120,9 @@ analyst's job. Your job is retrieval grunt work + a first-pass triage.
   off the requested angle is `medium` at best.
 - Unreachable sources (paywall, 404, PDF parse failure) still get a
   sourcelist entry with an empty preview, so the analyst knows you
-  found a pointer but couldn't retrieve it.
+  found a pointer but couldn't retrieve it. scout_fetch already
+  tries pdf_url when the HTML comes back thin - if you still see
+  "unreachable" or "[abstract-only]", the depth limit is real.
 
 ## Discipline
 - You never read sources deeply. Preview-level skim is the
@@ -123,6 +146,7 @@ def build_scout(deps: Deps, model_id: str) -> Agent[Deps, str]:
     )
     agent.tool(search_web)
     agent.tool(search_academic)
+    agent.tool(find_related_papers)
     agent.tool(create_source_note)
     agent.tool(list_source_notes)
     agent.tool(scout_fetch)

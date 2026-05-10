@@ -36,6 +36,14 @@ class SearchResult(BaseModel):
     venue: str | None = None
     year: int | None = None
     citation_count: int | None = None
+    # Fallback URL when the primary `url` is an HTML landing page that
+    # may return abstract-only content. Academic providers populate this;
+    # scouts should forward it into create_source_note so scout_fetch can
+    # fall back to the PDF.
+    pdf_url: str | None = None
+    # DOI, when the provider supplied one. Needed for S2 citation /
+    # reference traversal via find_related_papers.
+    doi: str | None = None
 
 
 class FetchedContent(BaseModel):

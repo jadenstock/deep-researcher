@@ -13,14 +13,42 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+from typing import Literal
 
-from pydantic_ai import RunContext
+from pydantic_ai import ModelRetry, RunContext
 
+from ...schemas.enums import NoteType
+from ...schemas.ids import NoteID
+from ...schemas.note import SourceNoteMetadata
 from ..deps import Deps
 from ..events import instrumented
 from ..schemas import SearchResult
 
 logger = logging.getLogger(__name__)
+
+# Extract an arXiv id from any arxiv.org URL (abs / pdf / html). Used as
+# the fallback when a source note has no DOI but a recognizable arXiv
+# URL - S2 accepts `ARXIV:{id}` as a paper_id.
+_ARXIV_URL_RE = re.compile(
+    r"arxiv\.org/(?:abs|pdf|html)/([^/\s?#]+?)(?:v\d+)?(?:\.pdf)?(?:[/?#]|$)",
+    re.IGNORECASE,
+)
+
+
+def _source_to_s2_paper_id(meta: SourceNoteMetadata) -> str | None:
+    """Resolve a source note's metadata to a Semantic Scholar paper_id.
+
+    Returns `DOI:{doi}` when a DOI is on the note, else `ARXIV:{id}`
+    when the URL parses as an arXiv link, else None (caller handles
+    the miss).
+    """
+    if meta.doi:
+        return f"DOI:{meta.doi}"
+    m = _ARXIV_URL_RE.search(meta.url)
+    if m:
+        return f"ARXIV:{m.group(1)}"
+    return None
 
 
 @instrumented
@@ -58,6 +86,8 @@ async def search_web(ctx: RunContext[Deps], query: str, count: int = 8) -> list[
             venue=h.venue,
             year=h.year,
             citation_count=h.citation_count,
+            pdf_url=h.pdf_url,
+            doi=h.doi,
         )
         for h in hits
     ]
@@ -112,6 +142,78 @@ async def search_academic(ctx: RunContext[Deps], query: str, limit: int = 6) -> 
                 venue=h.venue,
                 year=h.year,
                 citation_count=h.citation_count,
+                pdf_url=h.pdf_url,
+                doi=h.doi,
             )
         )
     return deduped
+
+
+@instrumented
+async def find_related_papers(
+    ctx: RunContext[Deps],
+    source_id: NoteID,
+    direction: Literal["citing", "cited_by"],
+    limit: int = 20,
+) -> list[SearchResult]:
+    """Traverse the citation graph from an existing source note via Semantic Scholar.
+
+    Use this when you've found a seed paper that's clearly on-angle and
+    you want a curated bibliography rather than more keyword searches.
+    Citation traversal is usually much higher signal than lexical
+    search on niche topics - one good paper's citation list often
+    yields more relevant work than 10 reformulated queries.
+
+    Args:
+      source_id: NoteID of an existing source_note (from
+        create_source_note). The note must have either a DOI or an
+        arXiv URL; otherwise the lookup fails with a ModelRetry.
+      direction: "citing" returns papers that cite the seed (forward
+        traversal - later work building on it). "cited_by" returns
+        papers the seed itself cites (backward traversal - the seed's
+        bibliography).
+      limit: Max papers to return. Default 20; S2 caps at 50.
+
+    Returns a list of SearchResult that you can feed into
+    create_source_note (remember to forward pdf_url and doi). Does
+    NOT create source notes for you - the scout decides which
+    results are worth recording.
+    """
+    note = ctx.deps.memory.get(source_id)
+    if note is None:
+        raise ModelRetry(
+            f"source_id {source_id!r} not in memory. "
+            "Pass a source_note id you created via create_source_note."
+        )
+    if note.type != NoteType.SOURCE:
+        raise ModelRetry(f"note {source_id!r} is a {note.type.value}, not a source_note.")
+    meta = note.metadata
+    assert isinstance(meta, SourceNoteMetadata)
+
+    paper_id = _source_to_s2_paper_id(meta)
+    if paper_id is None:
+        raise ModelRetry(
+            f"source {source_id!r} has no DOI and its URL is not arXiv - "
+            "can't look up citations. Try another seed source with a DOI."
+        )
+
+    if direction == "citing":
+        hits = await ctx.deps.semantic_scholar.get_citations(paper_id, limit=limit)
+    else:
+        hits = await ctx.deps.semantic_scholar.get_references(paper_id, limit=limit)
+
+    return [
+        SearchResult(
+            title=h.title,
+            url=h.url,
+            snippet=h.snippet,
+            source=h.source,
+            authors=h.authors,
+            venue=h.venue,
+            year=h.year,
+            citation_count=h.citation_count,
+            pdf_url=h.pdf_url,
+            doi=h.doi,
+        )
+        for h in hits
+    ]
