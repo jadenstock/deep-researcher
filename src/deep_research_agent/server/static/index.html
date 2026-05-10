@@ -95,6 +95,15 @@
     border-radius: 4px; border: 1px solid var(--border);
   }
   #debug.err { color: var(--err); }
+  #tokens {
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 10px; color: var(--muted);
+    padding: 4px 8px; background: var(--panel-2);
+    border-radius: 4px; border: 1px solid var(--border);
+    cursor: help;
+  }
+  #tokens .label { color: var(--muted); }
+  #tokens .n { color: var(--fg); font-weight: 600; }
 
   main {
     display: flex;
@@ -438,6 +447,7 @@
     <button class="tab" id="tab-report" data-view="report" role="tab" hidden>Report</button>
   </div>
   <div id="debug" title="events received · nodes in graph · layout engine">evt=0 · nodes=0 · layout=?</div>
+  <div id="tokens" title="Total tokens used by this run (hover for per-model breakdown)"><span class="label">tokens:</span> <span class="n" id="tokens-in">0</span> in / <span class="n" id="tokens-out">0</span> out</div>
   <div id="status">idle</div>
 </header>
 <main id="live-view">
@@ -488,8 +498,67 @@
   const reportContent = document.getElementById("report-content");
   const tabLive = document.getElementById("tab-live");
   const tabReport = document.getElementById("tab-report");
+  const tokensEl = document.getElementById("tokens");
+  const tokensInEl = document.getElementById("tokens-in");
+  const tokensOutEl = document.getElementById("tokens-out");
   let lastReportNoteId = null;
   let eventCount = 0;
+
+  // Running token totals for the current run. Keys: "in", "out",
+  // "cacheRead", "cacheWrite". Per-model map keyed by model_id holds
+  // the same shape — surfaced in the tooltip on hover.
+  const tokenTotals = { in: 0, out: 0, cacheRead: 0, cacheWrite: 0 };
+  const tokenByModel = new Map();
+
+  function fmtNum(n) {
+    if (n < 1000) return String(n);
+    if (n < 1_000_000) return (n / 1000).toFixed(n < 10_000 ? 1 : 0) + "k";
+    return (n / 1_000_000).toFixed(2) + "M";
+  }
+
+  function resetTokens() {
+    tokenTotals.in = tokenTotals.out = tokenTotals.cacheRead = tokenTotals.cacheWrite = 0;
+    tokenByModel.clear();
+    renderTokens();
+  }
+
+  function renderTokens() {
+    tokensInEl.textContent = fmtNum(tokenTotals.in);
+    tokensOutEl.textContent = fmtNum(tokenTotals.out);
+    // Per-model breakdown lands in the title tooltip. Short lines,
+    // one per model, so hovering gives a quick audit without needing
+    // a dedicated panel.
+    const lines = ["tokens: " + tokenTotals.in.toLocaleString() + " in / " + tokenTotals.out.toLocaleString() + " out"];
+    if (tokenTotals.cacheRead || tokenTotals.cacheWrite) {
+      lines.push("  cache: " + tokenTotals.cacheRead.toLocaleString() + " read / " + tokenTotals.cacheWrite.toLocaleString() + " write");
+    }
+    if (tokenByModel.size) {
+      lines.push("");
+      for (const [model, m] of tokenByModel) {
+        lines.push(`${model}: ${m.in.toLocaleString()} in / ${m.out.toLocaleString()} out`);
+      }
+    }
+    tokensEl.title = lines.join("\n");
+  }
+
+  function onTokenUsage(data) {
+    const inT = data.input_tokens || 0;
+    const outT = data.output_tokens || 0;
+    const cacheR = data.cache_read_tokens || 0;
+    const cacheW = data.cache_write_tokens || 0;
+    tokenTotals.in += inT;
+    tokenTotals.out += outT;
+    tokenTotals.cacheRead += cacheR;
+    tokenTotals.cacheWrite += cacheW;
+    const mid = data.model_id || "?";
+    const m = tokenByModel.get(mid) || { in: 0, out: 0, cacheRead: 0, cacheWrite: 0 };
+    m.in += inT;
+    m.out += outT;
+    m.cacheRead += cacheR;
+    m.cacheWrite += cacheW;
+    tokenByModel.set(mid, m);
+    renderTokens();
+  }
   function updateDebug(extra) {
     const nodeCount = cy ? cy.nodes().length : 0;
     const engine = colaAvailable ? "cola" : "cose";
@@ -1210,6 +1279,9 @@
       case "tool_call_end":
         onToolCallEnd(data);
         break;
+      case "token_usage":
+        onTokenUsage(data);
+        break;
       case "run_done":
         logRow(kind, `run complete${data.report_note_id ? ` — report ${data.report_note_id}` : ""}`, at);
         setStatus("done", "ok");
@@ -1249,6 +1321,7 @@
     tasksEl.innerHTML = "";
     clearRunningAgents();
     cy.elements().remove();
+    resetTokens();
     lastReportNoteId = null;
     tabReport.hidden = true;
     tabReport.classList.remove("has-report", "flash");
@@ -1339,6 +1412,7 @@
     tasksEl.innerHTML = "";
     clearRunningAgents();
     cy.elements().remove();
+    resetTokens();
     lastReportNoteId = null;
     tabReport.hidden = true;
     tabReport.classList.remove("has-report", "flash");

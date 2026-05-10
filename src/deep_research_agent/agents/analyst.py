@@ -26,6 +26,7 @@ from pydantic_ai import Agent
 from ..agent_factory import make_model
 from ..schemas.enums import RoleClass, TaskTier
 from ..schemas.ids import NoteID
+from ._usage import record_run_usage
 from .deps import Deps
 from .events import reset_current_agent_id, set_current_agent_id
 from .schemas import QuestionSynthesis
@@ -142,7 +143,9 @@ async def analyst_run(
     token = set_current_agent_id(agent_id)
     try:
         try:
-            await agent.run(
+            # `agent.iter()` so the finally-block can still read
+            # `run.usage()` when a deep tool call raises.
+            async with agent.iter(
                 (
                     f"Your assigned question_id is {question_id}.\n"
                     f"Question: {question}\n"
@@ -150,7 +153,18 @@ async def analyst_run(
                     f"{question_id} to answer_question."
                 ),
                 deps=deps,
-            )
+            ) as run:
+                try:
+                    async for _ in run:
+                        pass
+                finally:
+                    await record_run_usage(
+                        deps,
+                        run.usage(),
+                        agent_id=agent_id,
+                        agent_type="ANALYST",
+                        model_id=model_id,
+                    )
         except Exception as exc:
             deps.events.on_agent_done(
                 agent_id=agent_id,

@@ -36,6 +36,7 @@ from .events import (
     event_run_done,
     event_run_failed,
     event_run_started,
+    event_token_usage,
     event_tool_call_end,
     event_tool_call_start,
 )
@@ -171,6 +172,29 @@ class SessionPublisher(EventPublisher):
                 status=status,
                 summary=summary,
                 duration_ms=duration_ms,
+            )
+        )
+
+    def on_token_usage(
+        self,
+        *,
+        agent_id: str,
+        agent_type: str,
+        model_id: str,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int,
+        cache_write_tokens: int,
+    ) -> None:
+        self._session.publish(
+            event_token_usage(
+                agent_id=agent_id,
+                agent_type=agent_type,
+                model_id=model_id,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
             )
         )
 

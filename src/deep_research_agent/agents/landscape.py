@@ -20,6 +20,7 @@ from pydantic_ai import Agent
 
 from ..agent_factory import make_model
 from ..schemas.enums import RoleClass, TaskTier
+from ._usage import record_run_usage
 from .deps import Deps
 from .events import reset_current_agent_id, set_current_agent_id
 from .tools.notes import create_source_note, list_source_notes, write_landscape_brief
@@ -117,7 +118,22 @@ async def landscape_run(deps: Deps, query: str) -> str:
     token = set_current_agent_id(agent_id)
     try:
         try:
-            await agent.run(f"Scout the landscape for this query: {query}", deps=deps)
+            # `agent.iter()` gives us access to `run.usage()` in a
+            # finally-block regardless of whether the run completed,
+            # so partial token burn on crashes still lands in the
+            # shared tracker.
+            async with agent.iter(f"Scout the landscape for this query: {query}", deps=deps) as run:
+                try:
+                    async for _ in run:
+                        pass
+                finally:
+                    await record_run_usage(
+                        deps,
+                        run.usage(),
+                        agent_id=agent_id,
+                        agent_type="LANDSCAPE",
+                        model_id=model_id,
+                    )
         except Exception as exc:
             deps.events.on_agent_done(
                 agent_id=agent_id,

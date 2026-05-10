@@ -93,6 +93,18 @@ class EventPublisher(Protocol):
         duration_ms: int,
     ) -> None: ...
 
+    def on_token_usage(
+        self,
+        *,
+        agent_id: str,
+        agent_type: str,
+        model_id: str,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int,
+        cache_write_tokens: int,
+    ) -> None: ...
+
 
 class NoOpPublisher:
     """Default publisher - swallow every event. Used by the CLI path
@@ -114,6 +126,9 @@ class NoOpPublisher:
         pass
 
     def on_tool_end(self, **_: object) -> None:  # pragma: no cover
+        pass
+
+    def on_token_usage(self, **_: object) -> None:  # pragma: no cover
         pass
 
 

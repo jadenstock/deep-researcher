@@ -29,6 +29,7 @@ from ..agent_factory import make_model
 from ..schemas.enums import NoteType, QuestionClassification, RoleClass, TaskTier
 from ..schemas.ids import NoteID
 from ..schemas.note import Note, QuestionMetadata, SourceNoteMetadata
+from ._usage import record_run_usage
 from .analyst import analyst_run
 from .deps import Deps
 from .events import reset_current_agent_id, set_current_agent_id
@@ -264,7 +265,20 @@ async def research_run(deps: Deps, query: str) -> ResearcherReport:
     token = set_current_agent_id(agent_id)
     try:
         try:
-            await agent.run(opening, deps=deps)
+            # `agent.iter()` so the finally-block can still read
+            # `run.usage()` when a deep tool call raises.
+            async with agent.iter(opening, deps=deps) as run:
+                try:
+                    async for _ in run:
+                        pass
+                finally:
+                    await record_run_usage(
+                        deps,
+                        run.usage(),
+                        agent_id=agent_id,
+                        agent_type="RESEARCHER",
+                        model_id=model_id,
+                    )
         except Exception as exc:
             deps.events.on_agent_done(
                 agent_id=agent_id,

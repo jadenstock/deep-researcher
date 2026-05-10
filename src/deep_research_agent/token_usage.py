@@ -74,12 +74,16 @@ class TokenUsageTracker:
         model_id: str,
         usage: Any,
         task_type: str | None = None,
-    ) -> None:
+    ) -> dict[str, int]:
         """Record a single `agent.run()` completion.
 
         `usage` is a pydantic_ai RunUsage (or compatible); we read the
         fields defensively so a version bump that adds/renames fields
         won't crash the run.
+
+        Returns the scalar deltas that were recorded (input/output/cache
+        tokens) so callers can forward them to UI events without having
+        to re-parse the RunUsage object.
         """
         input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
         output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
@@ -97,6 +101,13 @@ class TokenUsageTracker:
             t.tool_calls += tool_calls
             if task_type:
                 t.by_task_type[task_type] = t.by_task_type.get(task_type, 0) + 1
+
+        return {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cache_read_tokens": cache_read,
+            "cache_write_tokens": cache_write,
+        }
 
     def snapshot(self) -> dict[str, ModelTotals]:
         """Return a shallow copy of per-model totals. Safe to read

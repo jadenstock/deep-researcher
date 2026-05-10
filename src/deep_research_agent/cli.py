@@ -171,6 +171,7 @@ async def _run_research(args: argparse.Namespace) -> int:
     console.print(f"  report:          [bold cyan]{run_dir / 'report.md'}[/]")
     console.print(f"  notes json:      [dim]{run_dir / 'notes.json'}[/]")
     console.print(f"  full report:     [dim]{run_dir / 'report.json'}[/]")
+    console.print(f"  token usage:     [dim]{run_dir / 'token_usage.json'}[/]")
     return 0
 
 
@@ -201,6 +202,15 @@ def _dump_run(
     # something useful from the sub-agents that finished.
     md = compose_report_markdown(query=query, report=report, memory=deps.memory)
     (run_dir / "report.md").write_text(md)
+
+    # Per-run token accounting. Mirrors the server runner so CLI users
+    # get the same table/JSON. Written last so a failure here doesn't
+    # mask the report artifacts.
+    try:
+        deps.tracker.save_json(run_dir / "token_usage.json")
+    except Exception:
+        logger.exception("token_usage save failed")
+    logger.info("%s", deps.tracker.format_table())
 
 
 if __name__ == "__main__":

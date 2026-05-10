@@ -11,6 +11,9 @@ protocol (kinds + payload shapes) matches what the live UI
     task_done     -> { id, type, status, verdict }
     note_created  -> NoteSummary
     note_replaced -> NoteSummary
+    token_usage   -> { agent_id, agent_type, model_id, input_tokens,
+                       output_tokens, cache_read_tokens, cache_write_tokens }
+                     — per-agent delta, UI sums them into a running total
     run_done      -> { report_note_id }
     run_failed    -> { error }
 
@@ -99,6 +102,7 @@ class Event(BaseModel):
         "note_replaced",
         "tool_call_start",
         "tool_call_end",
+        "token_usage",
         "run_done",
         "run_failed",
     ]
@@ -202,6 +206,31 @@ def event_tool_call_end(
             "status": status,
             "summary": summary,
             "duration_ms": duration_ms,
+        },
+    )
+
+
+def event_token_usage(
+    *,
+    agent_id: str,
+    agent_type: str,
+    model_id: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int,
+    cache_write_tokens: int,
+) -> Event:
+    """Per-agent token-usage delta. UI accumulates these for a running total."""
+    return Event(
+        kind="token_usage",
+        data={
+            "agent_id": agent_id,
+            "agent_type": agent_type,
+            "model_id": model_id,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cache_read_tokens": cache_read_tokens,
+            "cache_write_tokens": cache_write_tokens,
         },
     )
 
