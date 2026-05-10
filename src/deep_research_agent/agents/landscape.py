@@ -85,6 +85,7 @@ def build_landscape_agent(deps: Deps) -> Agent[Deps, str]:
         deps_type=Deps,
         output_type=str,
         system_prompt=LANDSCAPE_SYSTEM,
+        tool_retries=5,
     )
     agent.tool(search_web)
     agent.tool(search_academic)

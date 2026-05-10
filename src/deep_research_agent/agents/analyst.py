@@ -103,6 +103,7 @@ def build_analyst(deps: Deps) -> Agent[Deps, str]:
         deps_type=Deps,
         output_type=str,
         system_prompt=ANALYST_SYSTEM,
+        tool_retries=5,
     )
     agent.tool(search_web)
     agent.tool(search_academic)
