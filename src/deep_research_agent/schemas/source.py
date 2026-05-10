@@ -116,6 +116,15 @@ class SourceMetadata(BaseModel):
     raw_content_ref: str | None = None  # path to on-disk cached full content
     structured_content: StructuredContent | None = None
     summary: str | None = None
+    topics: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Cheap topic labels assigned at scout time (e.g. "
+            "['benchmarks', 'evaluation-methodology']). Landscape and "
+            "analysts use this to cluster / filter; researcher sees it "
+            "in the injected source list for corpus overview."
+        ),
+    )
     landscape_contribution: str | None = None  # survey-only; one-line "what this adds"
     claims: list[ClaimItem] = Field(default_factory=list)  # populated on analyzer upgrade
     evaluation: EvalItem | None = None  # populated on analyzer upgrade
