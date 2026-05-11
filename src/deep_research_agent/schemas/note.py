@@ -12,7 +12,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, Field
 
 from .enums import ConfidenceLevel, NoteType, QuestionClassification, QuestionStatus
-from .ids import NoteID, TaskID
+from .ids import NoteID
 from .source import SourceMetadata
 
 
@@ -83,7 +83,5 @@ class Note(BaseModel):
     links: list[Link] = Field(default_factory=list)
     metadata: NoteMetadata
     version: int = 1
-    last_modified_by: TaskID | None = None
     last_modified_at: datetime
-    created_by: TaskID | None = None
     created_at: datetime

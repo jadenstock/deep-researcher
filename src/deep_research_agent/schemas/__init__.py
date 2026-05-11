@@ -15,7 +15,7 @@ from .enums import (
     Tier,
     VerificationStatus,
 )
-from .ids import NoteID, RunID, SourceID, TaskID
+from .ids import NoteID, RunID, SourceID
 from .note import (
     LandscapeMetadata,
     Link,
@@ -45,7 +45,6 @@ __all__ = [
     "SourceNoteMetadata",
     "SourceState",
     "SynthesisMetadata",
-    "TaskID",
     "TaskTier",
     "Tier",
     "VerificationStatus",

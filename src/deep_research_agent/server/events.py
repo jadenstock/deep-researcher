@@ -45,7 +45,6 @@ class NoteSummary(BaseModel):
     subtype: str | None = None
     title: str
     description: str
-    by_task_id: str | None = None
     links: list[dict[str, str]] = Field(default_factory=list)
     version: int = 1
     # Source notes carry a SourceState ("SCOUTED"|"FETCHED"|"ANALYZED") that
@@ -62,7 +61,6 @@ class NoteSummary(BaseModel):
             subtype=subtype,
             title=note.title,
             description=note.description,
-            by_task_id=note.last_modified_by or note.created_by,
             links=[
                 {"target_id": link.target_id, "edge_type": link.edge_type} for link in note.links
             ],
