@@ -20,7 +20,7 @@ from typing import Any
 
 from pydantic_ai import Agent
 
-from ..schemas.enums import AgentRunStatus, RoleClass, TaskTier
+from ..schemas.enums import AgentRunStatus, AgentType, RoleClass, TaskTier
 from ._debug import log_run_node
 from ._usage import record_run_usage
 from .deps import Deps
@@ -32,7 +32,7 @@ async def drive_agent(
     deps: Deps,
     agent: Agent[Deps, Any],
     agent_id: str,
-    agent_type: str,
+    agent_type: AgentType,
     goal: str,
     tier: TaskTier,
     role: RoleClass,
@@ -51,8 +51,8 @@ async def drive_agent(
         agent_id=agent_id,
         agent_type=agent_type,
         goal=goal,
-        tier=tier.value,
-        role=role.value,
+        tier=tier,
+        role=role,
         model_id=model_id,
         mode=mode,
     )

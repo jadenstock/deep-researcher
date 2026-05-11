@@ -14,6 +14,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from ..schemas.enums import AgentType
+
 if TYPE_CHECKING:
     from .deps import Deps
 
@@ -25,7 +27,7 @@ async def record_run_usage(
     usage: Any,
     *,
     agent_id: str,
-    agent_type: str,
+    agent_type: AgentType,
     model_id: str,
 ) -> None:
     """Record a RunUsage into the tracker and emit a UI event.

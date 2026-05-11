@@ -32,7 +32,6 @@ from ..config import (
 )
 from ..retrieval import apply_retrieval_rate_limits
 from ..run_id import new_run_id
-from ..schemas.enums import QuestionStatus
 from . import history
 from .events import SessionRegistry
 from .runner import run_session
@@ -251,20 +250,6 @@ def create_app(
         if session is None:
             raise HTTPException(status_code=404, detail="run not found")
 
-        notes_by_type: dict[str, int] = {}
-        sources_by_state: dict[str, int] = {}
-        questions_by_status: dict[str, int] = {s.value: 0 for s in QuestionStatus}
-        for note in session.notes.values():
-            t = note.type.value
-            notes_by_type[t] = notes_by_type.get(t, 0) + 1
-            st = getattr(note.metadata, "state", None)
-            if st is not None:
-                key = str(getattr(st, "value", st))
-                sources_by_state[key] = sources_by_state.get(key, 0) + 1
-            status = getattr(note.metadata, "status", None)
-            if status in questions_by_status:
-                questions_by_status[status] += 1
-
         # Task count comes from the event history so we don't have to
         # reach into the scheduler state.
         tasks_count = sum(1 for e in session.history if e.kind == "task_started")
@@ -277,6 +262,7 @@ def create_app(
         if session.tracker is not None:
             tokens_payload = session.tracker.to_dict()
 
+        note_dicts = (n.model_dump(mode="json") for n in session.notes.values())
         return {
             "run_id": session.run_id,
             "query": session.query,
@@ -286,9 +272,7 @@ def create_app(
             "duration_s": duration_s,
             "report_note_id": session.report_note_id,
             "tokens": tokens_payload,
-            "notes_by_type": notes_by_type,
-            "sources_by_state": sources_by_state,
-            "questions_by_status": questions_by_status,
+            **history.summarize_notes(note_dicts),
             "tasks": tasks_count,
             "notes_total": len(session.notes),
         }

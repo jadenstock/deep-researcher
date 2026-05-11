@@ -12,9 +12,12 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from ..schemas.enums import QuestionStatus
 
 RUN_ID_RE = re.compile(r"^\d{8}T\d{6}-[0-9a-f]{8}$")
 
@@ -110,6 +113,34 @@ def _read_token_usage(runs_dir: Path, run_id: str) -> dict[str, Any]:
         return {"per_model": {}, "grand_totals": {}}
 
 
+def summarize_notes(notes: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    """Count notes by type / source state / question status.
+
+    Operates on serialized note dicts (the on-disk form). Live callers
+    pass `note.model_dump(mode="json")`. Returns the three counter
+    dicts used by both `/api/run/{run_id}/summary` and
+    `/api/history/{run_id}/summary`.
+    """
+    notes_by_type: dict[str, int] = {}
+    sources_by_state: dict[str, int] = {}
+    questions_by_status: dict[str, int] = {s.value: 0 for s in QuestionStatus}
+    for note in notes:
+        t = note.get("type", "")
+        notes_by_type[t] = notes_by_type.get(t, 0) + 1
+        md = note.get("metadata") or {}
+        st = md.get("state")
+        if st:
+            sources_by_state[str(st)] = sources_by_state.get(str(st), 0) + 1
+        status = md.get("status")
+        if status in questions_by_status:
+            questions_by_status[status] += 1
+    return {
+        "notes_by_type": notes_by_type,
+        "sources_by_state": sources_by_state,
+        "questions_by_status": questions_by_status,
+    }
+
+
 def summarize(runs_dir: Path, run_id: str) -> dict[str, Any] | None:
     """Build a summary payload shaped like /api/run/{run_id}/summary.
 
@@ -125,20 +156,6 @@ def summarize(runs_dir: Path, run_id: str) -> dict[str, Any] | None:
     root = _root_question(notes)
     query = (root.get("description") or root.get("title") or "") if root else ""
 
-    notes_by_type: dict[str, int] = {}
-    sources_by_state: dict[str, int] = {}
-    questions_by_status: dict[str, int] = {"OPEN": 0, "IN_PROGRESS": 0, "SYNTHESIZED": 0}
-    for note in notes:
-        t = note.get("type", "")
-        notes_by_type[t] = notes_by_type.get(t, 0) + 1
-        md = note.get("metadata") or {}
-        st = md.get("state")
-        if st:
-            sources_by_state[str(st)] = sources_by_state.get(str(st), 0) + 1
-        status = md.get("status")
-        if status in questions_by_status:
-            questions_by_status[status] += 1
-
     return {
         "run_id": run_id,
         "query": query,
@@ -148,9 +165,7 @@ def summarize(runs_dir: Path, run_id: str) -> dict[str, Any] | None:
         "duration_s": None,
         "report_note_id": root.get("id") if root else None,
         "tokens": _read_token_usage(runs_dir, run_id),
-        "notes_by_type": notes_by_type,
-        "sources_by_state": sources_by_state,
-        "questions_by_status": questions_by_status,
+        **summarize_notes(notes),
         "tasks": 0,
         "notes_total": len(notes),
     }

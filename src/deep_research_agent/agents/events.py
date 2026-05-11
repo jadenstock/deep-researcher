@@ -25,6 +25,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
+from ..schemas.enums import AgentRunStatus, AgentType, RoleClass, TaskTier
 from ..schemas.note import Note
 
 # Scoped per asyncio task. Each agent run function sets this at entry;
@@ -53,10 +54,10 @@ class EventPublisher(Protocol):
         self,
         *,
         agent_id: str,
-        agent_type: str,
+        agent_type: AgentType,
         goal: str,
-        tier: str,
-        role: str,
+        tier: TaskTier,
+        role: RoleClass,
         model_id: str | None,
         mode: str | None = None,
     ) -> None: ...
@@ -65,8 +66,8 @@ class EventPublisher(Protocol):
         self,
         *,
         agent_id: str,
-        agent_type: str,
-        status: str,
+        agent_type: AgentType,
+        status: AgentRunStatus,
         verdict: str,
     ) -> None: ...
 
@@ -98,7 +99,7 @@ class EventPublisher(Protocol):
         self,
         *,
         agent_id: str,
-        agent_type: str,
+        agent_type: AgentType,
         model_id: str,
         input_tokens: int,
         output_tokens: int,

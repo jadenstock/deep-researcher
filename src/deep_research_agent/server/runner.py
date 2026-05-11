@@ -27,7 +27,7 @@ from ..agents.schemas import compose_report_markdown
 from ..config import LocalConfig, RoutingConfig
 from ..observability import silence_noisy_loggers
 from ..run_artifacts import persist_run_artifacts
-from ..schemas.enums import NoteType, QuestionStatus
+from ..schemas.enums import AgentRunStatus, AgentType, NoteType, QuestionStatus, RoleClass, TaskTier
 from ..schemas.ids import NoteID
 from ..schemas.note import Note, QuestionMetadata, SynthesisMetadata
 from .events import (
@@ -95,20 +95,20 @@ class SessionPublisher(EventPublisher):
         self,
         *,
         agent_id: str,
-        agent_type: str,
+        agent_type: AgentType,
         goal: str,
-        tier: str,
-        role: str,
+        tier: TaskTier,
+        role: RoleClass,
         model_id: str | None,
         mode: str | None = None,
     ) -> None:
         self._session.publish(
             event_agent_started(
                 agent_id=agent_id,
-                agent_type=agent_type,
+                agent_type=agent_type.value,
                 goal=goal,
-                tier=tier,
-                role=role,
+                tier=tier.value,
+                role=role.value,
                 model_id=model_id,
                 mode=mode,
             )
@@ -118,15 +118,15 @@ class SessionPublisher(EventPublisher):
         self,
         *,
         agent_id: str,
-        agent_type: str,
-        status: str,
+        agent_type: AgentType,
+        status: AgentRunStatus,
         verdict: str,
     ) -> None:
         self._session.publish(
             event_agent_done(
                 agent_id=agent_id,
-                agent_type=agent_type,
-                status=status,
+                agent_type=agent_type.value,
+                status=status.value,
                 verdict=verdict,
             )
         )
@@ -181,7 +181,7 @@ class SessionPublisher(EventPublisher):
         self,
         *,
         agent_id: str,
-        agent_type: str,
+        agent_type: AgentType,
         model_id: str,
         input_tokens: int,
         output_tokens: int,
@@ -191,7 +191,7 @@ class SessionPublisher(EventPublisher):
         self._session.publish(
             event_token_usage(
                 agent_id=agent_id,
-                agent_type=agent_type,
+                agent_type=agent_type.value,
                 model_id=model_id,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
