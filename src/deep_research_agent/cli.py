@@ -21,13 +21,14 @@ from pathlib import Path
 
 from rich.console import Console
 
+from ._time import utc_now
 from .agents.deps import build_deps, close_deps
 from .agents.researcher import research_run
 from .agents.schemas import ResearcherReport, compose_report_markdown
 from .config import load_local_config, load_routing_config
 from .observability import silence_noisy_loggers
 from .retrieval import apply_retrieval_rate_limits
-from .run_artifacts import persist_run_artifacts
+from .run_artifacts import build_run_summary, persist_run_artifacts
 from .run_id import new_run_id
 
 logger = logging.getLogger(__name__)
@@ -124,6 +125,7 @@ async def _run_research(args: argparse.Namespace) -> int:
     apply_retrieval_rate_limits(local.retrieval)
 
     run_id = new_run_id()
+    started_at = utc_now()
     run_dir = Path(args.runs_dir) / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -148,7 +150,7 @@ async def _run_research(args: argparse.Namespace) -> int:
         # Always dump what we have - notes accumulated up to the failure point
         # are usually the most useful artifact for debugging.
         try:
-            await _dump_run(run_dir, args.query, deps, report)
+            await _dump_run(run_id, run_dir, args.query, started_at, deps, report)
         except Exception:
             logger.exception("dump failed")
     finally:
@@ -171,8 +173,10 @@ async def _run_research(args: argparse.Namespace) -> int:
 
 
 async def _dump_run(
+    run_id: str,
     run_dir: Path,
     query: str,
+    started_at,
     deps,
     report: ResearcherReport | None,
 ) -> None:
@@ -181,11 +185,21 @@ async def _dump_run(
     (reconstruct from synthesis/source notes) uniformly.
     """
     md = compose_report_markdown(query=query, report=report, memory=deps.memory)
+    summary = build_run_summary(
+        run_id=run_id,
+        query=query,
+        started_at=started_at,
+        finished_at=utc_now(),
+        report_note_id=None,
+        notes=deps.memory.all(),
+        tokens=deps.tracker.to_dict(),
+    )
     await persist_run_artifacts(
         run_dir,
         notes=deps.memory.all(),
         report_markdown=md,
         report_json=report.model_dump(mode="json") if report is not None else None,
+        summary=summary,
     )
     try:
         await asyncio.to_thread(deps.tracker.save_json, run_dir / "token_usage.json")

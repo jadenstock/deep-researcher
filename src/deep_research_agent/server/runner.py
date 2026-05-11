@@ -23,10 +23,10 @@ from ..agents.events import EventPublisher
 from ..agents.memory import NoteMemory, new_note_id
 from ..agents.researcher import research_run
 from ..agents.run_config import RunConfig
-from ..agents.schemas import compose_report_markdown
+from ..agents.schemas import ResearcherReport, compose_report_markdown
 from ..config import LocalConfig, RoutingConfig
 from ..observability import silence_noisy_loggers
-from ..run_artifacts import persist_run_artifacts
+from ..run_artifacts import build_run_summary, persist_run_artifacts
 from ..schemas.enums import AgentRunStatus, AgentType, NoteType, QuestionStatus, RoleClass, TaskTier
 from ..schemas.ids import NoteID
 from ..schemas.note import Note, QuestionMetadata, SynthesisMetadata
@@ -251,6 +251,123 @@ async def _materialize_fallback_report_note(
     return note_id
 
 
+async def _resolve_report_note(
+    *,
+    session: RunSession,
+    deps,
+    publisher: SessionPublisher,
+    report,
+) -> NoteID:
+    """Find (or materialize) the note id the UI should load as the report.
+
+    Happy path: the researcher answered the root QUESTION note, making
+    it the report note. If not, compose a report from available state
+    and materialize a SYNTHESIS note so the UI still has something to
+    load.
+    """
+    note_id = _find_answered_root_question_id(deps.memory)
+    if note_id is not None:
+        return note_id
+    logger.warning(
+        "run_id=%s: root question never answered; "
+        "materializing composed report from available notes",
+        session.run_id,
+    )
+    fallback_md = compose_report_markdown(query=session.query, report=report, memory=deps.memory)
+    return await _materialize_fallback_report_note(
+        publisher=publisher,
+        report_markdown=fallback_md,
+        description=f"Fallback report for: {session.query}",
+    )
+
+
+async def _dump_success(
+    *,
+    session: RunSession,
+    deps,
+    run_dir: Path,
+    report: ResearcherReport,
+    report_note_id: NoteID,
+) -> None:
+    final_md = compose_report_markdown(query=session.query, report=report, memory=deps.memory)
+    summary = build_run_summary(
+        run_id=session.run_id,
+        query=session.query,
+        started_at=session.started_at,
+        finished_at=utc_now(),
+        report_note_id=report_note_id,
+        notes=deps.memory.all(),
+        tokens=deps.tracker.to_dict(),
+    )
+    await persist_run_artifacts(
+        run_dir,
+        notes=deps.memory.all(),
+        report_markdown=final_md,
+        report_json=report.model_dump(mode="json"),
+        summary=summary,
+    )
+
+
+async def _dump_failure(
+    *,
+    session: RunSession,
+    deps,
+    publisher: SessionPublisher,
+    run_dir: Path,
+    exc: BaseException,
+) -> NoteID:
+    partial_md = compose_report_markdown(query=session.query, report=None, memory=deps.memory)
+    partial_note_id = await _materialize_fallback_report_note(
+        publisher=publisher,
+        report_markdown=partial_md,
+        description=f"Partial report - run failed: {type(exc).__name__}",
+    )
+    summary = build_run_summary(
+        run_id=session.run_id,
+        query=session.query,
+        started_at=session.started_at,
+        finished_at=utc_now(),
+        report_note_id=partial_note_id,
+        notes=deps.memory.all(),
+        tokens=deps.tracker.to_dict(),
+    )
+    await persist_run_artifacts(
+        run_dir,
+        notes=deps.memory.all(),
+        report_markdown=partial_md,
+        report_json=None,
+        summary=summary,
+    )
+    return partial_note_id
+
+
+async def _finalize(
+    *,
+    session: RunSession,
+    deps,
+    run_dir: Path,
+    run_log_handler: logging.FileHandler,
+) -> None:
+    """Always-run cleanup: token snapshot, dep close, log detach."""
+    try:
+        run_dir.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(deps.tracker.save_json, run_dir / "token_usage.json")
+    except Exception:
+        logger.exception("token_usage save failed run_id=%s", session.run_id)
+    logger.info("run_id=%s %s", session.run_id, deps.tracker.format_table())
+    try:
+        await close_deps(deps)
+    except Exception:
+        logger.exception("close_deps failed run_id=%s", session.run_id)
+    try:
+        logging.getLogger().removeHandler(run_log_handler)
+        run_log_handler.close()
+    except Exception:
+        logger.exception("run_log detach failed run_id=%s", session.run_id)
+    session.finished_at = utc_now()
+    session.finished = True
+
+
 async def run_session(
     session: RunSession,
     routing: RoutingConfig,
@@ -278,71 +395,36 @@ async def run_session(
 
     try:
         report = await research_run(deps, session.query)
-        # Happy path: the researcher called `answer_question` on the
-        # root question note, which transitioned it to SYNTHESIZED and
-        # wrote the final synthesis into its `content`. The root
-        # QUESTION note IS the report note - surface its id to the UI.
-        report_note_id: NoteID | None = _find_answered_root_question_id(deps.memory)
-        if report_note_id is None:
-            # Agent ended without committing to the root question -
-            # fall back to composing a report from whatever state
-            # research_run was able to assemble, and materialize it as
-            # a SYNTHESIS note so the UI still has something to load.
-            logger.warning(
-                "run_id=%s: root question never answered; "
-                "materializing composed report from available notes",
-                session.run_id,
-            )
-            fallback_md = compose_report_markdown(
-                query=session.query, report=report, memory=deps.memory
-            )
-            report_note_id = await _materialize_fallback_report_note(
-                publisher=publisher,
-                report_markdown=fallback_md,
-                description=f"Fallback report for: {session.query}",
-            )
-
-        final_md = compose_report_markdown(query=session.query, report=report, memory=deps.memory)
-        await persist_run_artifacts(
-            run_dir,
-            notes=deps.memory.all(),
-            report_markdown=final_md,
-            report_json=report.model_dump(mode="json"),
+        report_note_id = await _resolve_report_note(
+            session=session, deps=deps, publisher=publisher, report=report
+        )
+        await _dump_success(
+            session=session,
+            deps=deps,
+            run_dir=run_dir,
+            report=report,
+            report_note_id=report_note_id,
         )
         session.report_note_id = report_note_id
         session.publish(event_run_done(report_note_id))
-        # Count answered sub-question notes for an accurate log line.
-        answered_subs = [
-            n
+        answered_subs = sum(
+            1
             for n in deps.memory.list_by_type(NoteType.QUESTION)
             if isinstance(n.metadata, QuestionMetadata)
             and n.metadata.status == QuestionStatus.SYNTHESIZED
             and n.metadata.parent_question_id is not None
-        ]
+        )
         logger.info(
             "run complete run_id=%s notes=%d questions=%d",
             session.run_id,
             len(deps.memory),
-            len(answered_subs),
+            answered_subs,
         )
     except Exception as exc:
         logger.exception("run failed run_id=%s", session.run_id)
-        # Compose a partial report from whatever SYNTHESIZED sub-question
-        # notes survive so a failed run is still autopsy-able from disk.
         try:
-            partial_md = compose_report_markdown(
-                query=session.query, report=None, memory=deps.memory
-            )
-            await persist_run_artifacts(
-                run_dir,
-                notes=deps.memory.all(),
-                report_markdown=partial_md,
-                report_json=None,
-            )
-            partial_note_id = await _materialize_fallback_report_note(
-                publisher=publisher,
-                report_markdown=partial_md,
-                description=f"Partial report - run failed: {type(exc).__name__}",
+            partial_note_id = await _dump_failure(
+                session=session, deps=deps, publisher=publisher, run_dir=run_dir, exc=exc
             )
             logger.info(
                 "partial report materialized run_id=%s note=%s",
@@ -353,21 +435,6 @@ async def run_session(
             logger.exception("partial dump failed run_id=%s", session.run_id)
         session.publish(event_run_failed(f"{type(exc).__name__}: {exc}"))
     finally:
-        # Token usage snapshot - costs don't care whether the run finished.
-        try:
-            run_dir.mkdir(parents=True, exist_ok=True)
-            await asyncio.to_thread(deps.tracker.save_json, run_dir / "token_usage.json")
-        except Exception:
-            logger.exception("token_usage save failed run_id=%s", session.run_id)
-        logger.info("run_id=%s %s", session.run_id, deps.tracker.format_table())
-        try:
-            await close_deps(deps)
-        except Exception:
-            logger.exception("close_deps failed run_id=%s", session.run_id)
-        try:
-            logging.getLogger().removeHandler(run_log_handler)
-            run_log_handler.close()
-        except Exception:
-            logger.exception("run_log detach failed run_id=%s", session.run_id)
-        session.finished_at = utc_now()
-        session.finished = True
+        await _finalize(
+            session=session, deps=deps, run_dir=run_dir, run_log_handler=run_log_handler
+        )

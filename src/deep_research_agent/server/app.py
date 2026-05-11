@@ -31,6 +31,7 @@ from ..config import (
     load_routing_config,
 )
 from ..retrieval import apply_retrieval_rate_limits
+from ..run_artifacts import summarize_notes
 from ..run_id import new_run_id
 from . import history
 from .events import SessionRegistry
@@ -272,7 +273,7 @@ def create_app(
             "duration_s": duration_s,
             "report_note_id": session.report_note_id,
             "tokens": tokens_payload,
-            **history.summarize_notes(note_dicts),
+            **summarize_notes(note_dicts),
             "tasks": tasks_count,
             "notes_total": len(session.notes),
         }
