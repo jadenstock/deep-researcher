@@ -210,6 +210,125 @@
   body.resizing { cursor: col-resize; user-select: none; }
   body.resizing-row { cursor: row-resize; user-select: none; }
 
+  /* Settings panel - slide-in from the right, hidden by default.
+     Contains per-run knob sliders and model dropdowns. Knob state
+     persists in localStorage so a refresh keeps the last config. */
+  .icon-btn {
+    background: var(--panel-2); color: var(--muted);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 10px; font-size: 13px; cursor: pointer;
+    line-height: 1;
+  }
+  .icon-btn:hover { color: var(--text); border-color: var(--accent); }
+  .icon-btn.has-changes { color: var(--accent); border-color: var(--accent); }
+
+  #settings-scrim {
+    position: fixed; inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    z-index: 40;
+    display: none;
+  }
+  #settings-scrim.open { display: block; }
+  #settings-panel {
+    position: fixed;
+    top: 0; right: 0; bottom: 0;
+    width: 420px; max-width: 90vw;
+    background: var(--panel);
+    border-left: 1px solid var(--border);
+    box-shadow: -12px 0 32px rgba(0, 0, 0, 0.45);
+    z-index: 41;
+    display: none;
+    flex-direction: column;
+    animation: slideInRight 0.18s ease-out;
+  }
+  #settings-panel.open { display: flex; }
+  #settings-panel .settings-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px; border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  #settings-panel .settings-head h2 {
+    font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--muted); margin: 0;
+  }
+  #settings-panel .settings-close {
+    background: transparent; color: var(--muted);
+    border: 1px solid transparent; border-radius: 4px;
+    padding: 2px 8px; font-size: 16px; cursor: pointer; line-height: 1;
+  }
+  #settings-panel .settings-close:hover {
+    color: var(--text); border-color: var(--border);
+  }
+  #settings-panel .settings-body {
+    flex: 1 1 auto; overflow-y: auto;
+    padding: 14px 16px 8px 16px;
+  }
+  #settings-panel .settings-foot {
+    display: flex; gap: 8px; justify-content: flex-end;
+    padding: 10px 14px; border-top: 1px solid var(--border);
+    background: var(--panel);
+  }
+  #settings-panel .settings-foot .btn-secondary {
+    background: var(--panel-2); color: var(--muted);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 12px; font-size: 12px; cursor: pointer;
+  }
+  #settings-panel .settings-foot .btn-secondary:hover {
+    color: var(--text); border-color: var(--accent);
+  }
+  #settings-panel h3 {
+    font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--muted); margin: 16px 0 8px 0;
+    padding-bottom: 4px; border-bottom: 1px solid var(--border);
+  }
+  #settings-panel h3:first-child { margin-top: 0; }
+  .knob-row { margin-bottom: 14px; }
+  .knob-row .knob-label {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 12px; color: var(--text); margin-bottom: 4px;
+  }
+  .knob-row .knob-label .name { font-weight: 500; }
+  .knob-row .knob-label .val {
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 12px; color: var(--accent);
+    font-variant-numeric: tabular-nums;
+  }
+  .knob-row .knob-label .val.modified::after {
+    content: " •"; color: var(--warn);
+  }
+  .knob-row input[type="range"] {
+    width: 100%; accent-color: var(--accent);
+  }
+  .knob-row .knob-help {
+    font-size: 10.5px; color: var(--muted); margin-top: 3px;
+    line-height: 1.35;
+  }
+  .knob-row select {
+    width: 100%;
+    background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 5px 8px; font-size: 12px;
+    font-family: ui-monospace, Menlo, monospace;
+  }
+  .knob-row select:focus {
+    outline: 1px solid var(--accent); border-color: var(--accent);
+  }
+  .model-grid {
+    display: grid;
+    grid-template-columns: 70px 1fr;
+    gap: 8px 10px;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+  .model-grid .tier-label {
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 11px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.05em;
+  }
+  .model-grid .tier-label.modified::after {
+    content: " •"; color: var(--warn);
+  }
+
   /* Running agents — live cards, one per dispatched task, removed on done. */
   #running-agents { overflow-y: auto; padding: 6px 8px; font-size: 12px; }
   #running-agents .empty {
@@ -654,6 +773,7 @@
   <h1>dra <span>·</span> live</h1>
   <input id="query" placeholder="Ask a research question…" autocomplete="off" />
   <button id="go">Run</button>
+  <button class="icon-btn" id="settings-btn" title="Tune run budgets + models">⚙</button>
   <div class="tabs" role="tablist">
     <button class="tab active" id="tab-graph" data-view="live" role="tab">Graph</button>
     <button class="tab" id="tab-report" data-view="report" role="tab" hidden>Report</button>
@@ -721,6 +841,19 @@
   <a class="banner-link" id="banner-link">See summary</a>
   <button class="banner-close" id="banner-close" title="Dismiss">×</button>
 </div>
+<div id="settings-scrim"></div>
+<aside id="settings-panel" aria-hidden="true">
+  <div class="settings-head">
+    <h2>Run settings</h2>
+    <button class="settings-close" id="settings-close" title="Close (Esc)">×</button>
+  </div>
+  <div class="settings-body" id="settings-body">
+    <div style="color:var(--muted);font-size:11px;padding:24px 0;text-align:center;">Loading…</div>
+  </div>
+  <div class="settings-foot">
+    <button class="btn-secondary" id="settings-reset" title="Reset all knobs to server defaults">Reset to defaults</button>
+  </div>
+</aside>
 <script>
 (() => {
   const queryInput = document.getElementById("query");
@@ -1864,10 +1997,15 @@
     setStatus("starting…");
     let res;
     try {
+      const body = { query };
+      const cfg = typeof window.buildRunConfigPayload === "function"
+        ? window.buildRunConfigPayload()
+        : null;
+      if (cfg && Object.keys(cfg).length > 0) body.config = cfg;
       res = await fetch("/api/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query }),
+        body: JSON.stringify(body),
       });
     } catch (err) {
       setStatus("offline", "err");
@@ -2117,6 +2255,300 @@
   goBtn.addEventListener("click", startRun);
   queryInput.addEventListener("keydown", e => {
     if (e.key === "Enter") startRun();
+  });
+
+  // ---- Settings panel: per-run knobs + model overrides -------------------
+  //
+  // Fetches /api/config/defaults on load to populate sliders and dropdowns
+  // without hardcoding any default or model ID. User values persist in
+  // localStorage across refreshes. `buildRunConfigPayload()` is called by
+  // startRun() to attach the current config to the POST body.
+
+  const SETTINGS_LS_KEY = "dra.run_config.v1";
+  const TIER_ORDER = ["LOW", "MID", "HIGH"];
+  const ROLE_ORDER = ["generative", "judgment", "cheap_deterministic"];
+  const ROLE_LABELS = {
+    generative: "Generative",
+    judgment: "Judgment",
+    cheap_deterministic: "Cheap / deterministic",
+  };
+  const BUDGET_KNOBS = [
+    {
+      key: "analyst_budget",
+      label: "Analyst dispatch budget",
+      help: "Total analyst sub-agents the researcher may spawn per run. Each verify / adversarial dispatch also counts.",
+    },
+    {
+      key: "scout_budget_per_analyst",
+      label: "Scout budget (per analyst)",
+      help: "Scouts an analyst may dispatch while investigating its sub-question.",
+    },
+    {
+      key: "scout_search_budget",
+      label: "Scout search budget",
+      help: "Hard cap on web/academic/citation searches inside one scout run. Exhaustion forces the scout to commit with what it has.",
+    },
+  ];
+
+  const settingsBtn = document.getElementById("settings-btn");
+  const settingsPanel = document.getElementById("settings-panel");
+  const settingsScrim = document.getElementById("settings-scrim");
+  const settingsClose = document.getElementById("settings-close");
+  const settingsBody = document.getElementById("settings-body");
+  const settingsReset = document.getElementById("settings-reset");
+
+  let settingsState = {
+    defaults: null,       // { budgets, model_catalog, routing_defaults } from /api/config/defaults
+    budgets: {},          // current slider values { key: int }
+    modelSelections: {},  // { "<tier>.<role>": "<model_id>" } — every slot's current selection
+  };
+
+  function modelOverridesDiff() {
+    // Return only the (tier, role) slots where the current selection
+    // differs from the server's routing default. This is what gets
+    // POSTed to /api/run; matching defaults pass through unset so the
+    // server keeps its routing.
+    const defaults = settingsState.defaults?.routing_defaults || {};
+    const out = {};
+    for (const [key, model] of Object.entries(settingsState.modelSelections)) {
+      const [tier, role] = key.split(".");
+      if (defaults[tier]?.[role] !== model) out[key] = model;
+    }
+    return out;
+  }
+
+  async function fetchSettingsDefaults() {
+    try {
+      const res = await fetch("/api/config/defaults");
+      if (!res.ok) return null;
+      return await res.json();
+    } catch {
+      return null;
+    }
+  }
+
+  function loadSavedSettings() {
+    try {
+      const raw = localStorage.getItem(SETTINGS_LS_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function saveSettings() {
+    try {
+      localStorage.setItem(SETTINGS_LS_KEY, JSON.stringify({
+        budgets: settingsState.budgets,
+        modelSelections: settingsState.modelSelections,
+      }));
+    } catch {}
+  }
+
+  function budgetIsModified(key) {
+    const defaults = settingsState.defaults?.budgets?.[key];
+    if (!defaults) return false;
+    return settingsState.budgets[key] !== defaults.default;
+  }
+
+  function anyModified() {
+    if (Object.keys(modelOverridesDiff()).length > 0) return true;
+    return BUDGET_KNOBS.some(k => budgetIsModified(k.key));
+  }
+
+  function updateSettingsButtonIndicator() {
+    settingsBtn.classList.toggle("has-changes", anyModified());
+  }
+
+  function renderSettings() {
+    const defaults = settingsState.defaults;
+    if (!defaults) {
+      settingsBody.innerHTML = `<div style="color:var(--err);font-size:12px;">Could not load defaults from server.</div>`;
+      return;
+    }
+    const parts = [];
+    parts.push(`<h3>Budgets</h3>`);
+    for (const knob of BUDGET_KNOBS) {
+      const spec = defaults.budgets[knob.key];
+      if (!spec) continue;
+      const val = settingsState.budgets[knob.key];
+      const modified = val !== spec.default;
+      parts.push(`
+        <div class="knob-row" data-knob="${knob.key}">
+          <div class="knob-label">
+            <span class="name">${knob.label}</span>
+            <span class="val${modified ? ' modified' : ''}" data-val="${knob.key}">${val}</span>
+          </div>
+          <input type="range" min="${spec.min}" max="${spec.max}" step="1" value="${val}" data-range="${knob.key}" />
+          <div class="knob-help">${knob.help} <span style="opacity:0.7;">(default ${spec.default}, range ${spec.min}–${spec.max})</span></div>
+        </div>
+      `);
+    }
+
+    parts.push(`<h3>Models</h3>`);
+    parts.push(`<div style="font-size:10.5px;color:var(--muted);margin-bottom:10px;line-height:1.4;">Each slot starts at the server's routing default. Changes to another option override for the next run.</div>`);
+    const routingDefaults = defaults.routing_defaults || {};
+    for (const role of ROLE_ORDER) {
+      const options = defaults.model_catalog[role] || [];
+      if (options.length === 0) continue;
+      parts.push(`<div style="margin-bottom:14px;">`);
+      parts.push(`<div style="font-size:11px;color:var(--text);font-weight:500;margin-bottom:6px;">${ROLE_LABELS[role]}</div>`);
+      parts.push(`<div class="model-grid">`);
+      for (const tier of TIER_ORDER) {
+        const key = `${tier}.${role}`;
+        const serverDefault = routingDefaults[tier]?.[role] || "";
+        const current = settingsState.modelSelections[key] || serverDefault;
+        // Make sure the current value is offered even if it's not in
+        // the curated catalog (e.g. routing YAML uses an off-catalog
+        // model) — otherwise the dropdown would silently flip to the
+        // first option.
+        const allOptions = options.includes(current) ? options : [current, ...options];
+        const modified = current !== serverDefault;
+        const optsHtml = allOptions
+          .map(m => `<option value="${m}"${m === current ? ' selected' : ''}>${m}</option>`)
+          .join("");
+        parts.push(`<div class="tier-label${modified ? ' modified' : ''}">${tier}</div>`);
+        parts.push(`<select data-model="${tier}.${role}">${optsHtml}</select>`);
+      }
+      parts.push(`</div></div>`);
+    }
+
+    settingsBody.innerHTML = parts.join("");
+
+    settingsBody.querySelectorAll('input[type="range"]').forEach(inp => {
+      inp.addEventListener("input", e => {
+        const key = e.target.getAttribute("data-range");
+        const val = parseInt(e.target.value, 10);
+        settingsState.budgets[key] = val;
+        const valEl = settingsBody.querySelector(`[data-val="${key}"]`);
+        if (valEl) {
+          valEl.textContent = String(val);
+          const modified = val !== settingsState.defaults.budgets[key].default;
+          valEl.classList.toggle("modified", modified);
+        }
+        saveSettings();
+        updateSettingsButtonIndicator();
+      });
+    });
+    settingsBody.querySelectorAll('select[data-model]').forEach(sel => {
+      sel.addEventListener("change", e => {
+        const key = e.target.getAttribute("data-model");
+        const val = e.target.value;
+        const [tier, role] = key.split(".");
+        const serverDefault = settingsState.defaults.routing_defaults?.[tier]?.[role] || "";
+        if (val) settingsState.modelSelections[key] = val;
+        // Mark modified on the tier label (previous sibling in the grid).
+        const labelEl = e.target.previousElementSibling;
+        if (labelEl && labelEl.classList.contains("tier-label")) {
+          labelEl.classList.toggle("modified", val !== serverDefault);
+        }
+        saveSettings();
+        updateSettingsButtonIndicator();
+      });
+    });
+  }
+
+  function openSettings() {
+    settingsPanel.classList.add("open");
+    settingsScrim.classList.add("open");
+    settingsPanel.setAttribute("aria-hidden", "false");
+  }
+  function closeSettings() {
+    settingsPanel.classList.remove("open");
+    settingsScrim.classList.remove("open");
+    settingsPanel.setAttribute("aria-hidden", "true");
+  }
+  function resetSettings() {
+    const defaults = settingsState.defaults;
+    if (!defaults) return;
+    for (const knob of BUDGET_KNOBS) {
+      const spec = defaults.budgets[knob.key];
+      if (spec) settingsState.budgets[knob.key] = spec.default;
+    }
+    // Reset selections to server routing defaults (so dropdowns display
+    // the actual default model names, not an empty "(default)" slot).
+    settingsState.modelSelections = {};
+    const routingDefaults = defaults.routing_defaults || {};
+    for (const tier of TIER_ORDER) {
+      for (const role of ROLE_ORDER) {
+        const d = routingDefaults[tier]?.[role];
+        if (d) settingsState.modelSelections[`${tier}.${role}`] = d;
+      }
+    }
+    saveSettings();
+    renderSettings();
+    updateSettingsButtonIndicator();
+  }
+
+  // Exposed for startRun() to attach the current config to /api/run.
+  // Returns null if defaults haven't loaded yet (caller should still
+  // POST - server defaults will kick in).
+  window.buildRunConfigPayload = function () {
+    if (!settingsState.defaults) return null;
+    const out = {};
+    for (const knob of BUDGET_KNOBS) {
+      if (knob.key in settingsState.budgets) {
+        out[knob.key] = settingsState.budgets[knob.key];
+      }
+    }
+    const diff = modelOverridesDiff();
+    if (Object.keys(diff).length > 0) {
+      const overrides = {};
+      for (const [k, model] of Object.entries(diff)) {
+        const [tier, role] = k.split(".");
+        if (!overrides[tier]) overrides[tier] = {};
+        overrides[tier][role] = model;
+      }
+      out.model_overrides = overrides;
+    }
+    return out;
+  };
+
+  (async () => {
+    const defaults = await fetchSettingsDefaults();
+    if (!defaults) {
+      settingsBody.innerHTML = `<div style="color:var(--err);font-size:12px;padding:24px 0;text-align:center;">Could not load /api/config/defaults.</div>`;
+      return;
+    }
+    settingsState.defaults = defaults;
+    const saved = loadSavedSettings();
+    for (const knob of BUDGET_KNOBS) {
+      const spec = defaults.budgets[knob.key];
+      if (!spec) continue;
+      let val = spec.default;
+      if (saved && typeof saved.budgets?.[knob.key] === "number") {
+        val = Math.max(spec.min, Math.min(spec.max, saved.budgets[knob.key]));
+      }
+      settingsState.budgets[knob.key] = val;
+    }
+    // Seed every (tier, role) slot with the server's routing default so
+    // dropdowns open pre-populated. Saved selections then overlay on top.
+    const routingDefaults = defaults.routing_defaults || {};
+    for (const tier of TIER_ORDER) {
+      for (const role of ROLE_ORDER) {
+        const d = routingDefaults[tier]?.[role];
+        if (d) settingsState.modelSelections[`${tier}.${role}`] = d;
+      }
+    }
+    if (saved && saved.modelSelections && typeof saved.modelSelections === "object") {
+      for (const [k, v] of Object.entries(saved.modelSelections)) {
+        if (typeof v === "string" && v) settingsState.modelSelections[k] = v;
+      }
+    }
+    renderSettings();
+    updateSettingsButtonIndicator();
+  })();
+
+  settingsBtn.addEventListener("click", openSettings);
+  settingsClose.addEventListener("click", closeSettings);
+  settingsScrim.addEventListener("click", closeSettings);
+  settingsReset.addEventListener("click", resetSettings);
+  document.addEventListener("keydown", e => {
+    if (e.key === "Escape" && settingsPanel.classList.contains("open")) {
+      closeSettings();
+    }
   });
 })();
 </script>

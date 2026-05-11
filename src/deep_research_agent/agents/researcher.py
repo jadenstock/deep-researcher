@@ -51,7 +51,8 @@ logger = logging.getLogger(__name__)
 
 # Hard cap on analyst dispatches per research run. Prompt says less;
 # this is the backstop so a misbehaving researcher can't runaway-spawn.
-DEFAULT_ANALYST_BUDGET = 8
+# Default lives in `run_config.py`; read from `deps.run_config` at
+# build time so UI-supplied overrides flow through.
 
 
 RESEARCHER_SYSTEM = """\
@@ -410,10 +411,11 @@ async def research_run(deps: Deps, query: str) -> ResearcherReport:
     brief_markdown = await landscape_run(deps, query)
 
     # --- 3. Build the researcher's opening prompt (query + brief + source list).
+    analyst_budget = deps.run_config.analyst_budget
     agent = build_researcher(
         deps,
         root_question_id=root_id,
-        analyst_budget_start=DEFAULT_ANALYST_BUDGET,
+        analyst_budget_start=analyst_budget,
     )
     agent_id = f"res-{uuid.uuid4().hex[:8]}"
     model_id = deps.routing.model_id_for(RoleClass.GENERATIVE, TaskTier.HIGH)
@@ -424,7 +426,7 @@ async def research_run(deps: Deps, query: str) -> ResearcherReport:
         f"User query (root_question_id={root_id}):\n{query}\n\n"
         f"## Landscape brief\n{brief_markdown}\n\n"
         f"## Scouted sources (id — title — url — topics — snippet)\n{source_list}\n\n"
-        f"Your analyst dispatch budget: {DEFAULT_ANALYST_BUDGET}.\n"
+        f"Your analyst dispatch budget: {analyst_budget}.\n"
         f"Begin. When you commit the final report, pass question_id={root_id} "
         "to answer_question."
     )

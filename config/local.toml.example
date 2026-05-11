@@ -41,7 +41,3 @@ brave_api_key = ""
 # paywalled DOI hits to open-access PDFs when available. Leave unset to
 # skip the Unpaywall rescue step entirely.
 # unpaywall_email = "you@example.com"
-
-[observability]
-# Optional Pydantic Logfire token for tracing PydanticAI agent calls.
-# logfire_token = ""

@@ -22,6 +22,7 @@ from ..agents.deps import build_deps, close_deps
 from ..agents.events import EventPublisher
 from ..agents.memory import NoteMemory, new_note_id, utc_now
 from ..agents.researcher import research_run
+from ..agents.run_config import RunConfig
 from ..agents.schemas import compose_report_markdown
 from ..config import LocalConfig, RoutingConfig
 from ..observability import silence_noisy_loggers
@@ -278,12 +279,16 @@ async def run_session(
     routing: RoutingConfig,
     local: LocalConfig,
     runs_dir: Path,
+    run_config: RunConfig | None = None,
 ) -> None:
     """Execute one agent research run and stream events onto `session`.
 
     Any exception inside the run is caught and surfaced as a
     `run_failed` event rather than propagated - the WebSocket clients
     need to see the failure.
+
+    `run_config` carries UI-supplied knobs (budgets + model
+    overrides). Defaults are used when omitted.
     """
     session.publish(event_run_started(session.run_id, session.query))
     run_dir = runs_dir / session.run_id
@@ -291,7 +296,7 @@ async def run_session(
     run_log_handler = _attach_run_log_handler(run_dir, session.run_id)
 
     publisher = SessionPublisher(session)
-    deps = build_deps(local, routing, events=publisher)
+    deps = build_deps(local, routing, events=publisher, run_config=run_config)
     session.tracker = deps.tracker
 
     try:

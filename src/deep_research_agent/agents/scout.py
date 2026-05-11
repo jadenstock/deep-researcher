@@ -20,15 +20,17 @@ from __future__ import annotations
 
 import logging
 import uuid
+from typing import Literal
 
 from pydantic_ai import Agent, ModelRetry, RunContext
 
 from ..agent_factory import make_model
 from ..schemas.enums import AgentRunStatus, AgentType, NoteType, RoleClass, TaskTier
+from ..schemas.ids import NoteID
 from ._run import drive_agent
 from .deps import Deps
 from .events import instrumented
-from .schemas import ScoutedSource, ScoutResult
+from .schemas import ScoutedSource, ScoutResult, SearchResult
 from .tools.fetch import scout_fetch
 from .tools.notes import (
     create_source_note,
@@ -91,8 +93,10 @@ analyst's job. Your job is retrieval grunt work + a first-pass triage.
    queries. Requires the seed note to have a DOI or arXiv URL.
 6. **Optional reformulation round.** If the first pass came up thin
    or off-topic, run one more round of searches with sharper queries
-   based on what the previews taught you. Hard stop after ~3 total
-   rounds.
+   based on what the previews taught you. You have a hard search
+   budget stated in your opening message (shared across search_web,
+   search_academic, and find_related_papers); the search tools refuse
+   further calls once it's exhausted.
 7. **Commit.** Call `commit_scout_result(sources=[...],
    coverage_note=...)`.
    - `sources`: one entry per source you want to surface to the
@@ -134,7 +138,9 @@ analyst's job. Your job is retrieval grunt work + a first-pass triage.
 """
 
 
-def build_scout(deps: Deps, model_id: str) -> tuple[Agent[Deps, str], list[ScoutResult]]:
+def build_scout(
+    deps: Deps, model_id: str, search_budget_start: int
+) -> tuple[Agent[Deps, str], list[ScoutResult]]:
     agent = Agent(
         make_model(model_id, deps.local),
         deps_type=Deps,
@@ -142,12 +148,110 @@ def build_scout(deps: Deps, model_id: str) -> tuple[Agent[Deps, str], list[Scout
         system_prompt=SCOUT_SYSTEM,
         tool_retries=5,
     )
-    agent.tool(search_web)
-    agent.tool(search_academic)
-    agent.tool(find_related_papers)
     agent.tool(create_source_note)
     agent.tool(list_source_notes)
     agent.tool(scout_fetch)
+
+    # Shared budget across all three search tools. Each call burns
+    # one unit; when exhausted, the tools raise ModelRetry so the
+    # scout stops searching and commits with what it has. The prompt
+    # says "~3 rounds of 2-4 parallel searches" which is ~6-12 calls;
+    # default cap of 8 accommodates that without letting a misbehaving
+    # scout runaway.
+    search_budget = [search_budget_start]
+
+    def _spend_search(tool_name: str) -> None:
+        if search_budget[0] <= 0:
+            raise ModelRetry(
+                f"{tool_name} refused: search budget exhausted "
+                f"({search_budget_start} total calls across search_web / "
+                "search_academic / find_related_papers). Commit your result "
+                "with commit_scout_result using the sources you already have."
+            )
+        search_budget[0] -= 1
+
+    @agent.tool
+    @instrumented
+    async def search_web_tool(
+        ctx: RunContext[Deps], query: str, count: int = 8
+    ) -> list[SearchResult]:
+        """Run a web search (Brave) for the given query.
+
+        Use this for: current events, tutorials, industry posts, official
+        docs, company announcements - anything not primarily in
+        peer-reviewed literature. Safe to call multiple times in one turn
+        with different query formulations; pydantic-ai dispatches them
+        concurrently.
+
+        Args:
+          query: Natural-language search query. Keywords matter more
+            than full sentences.
+          count: Number of hits to return. Default 8; keep it small
+            (5-10) per call since varied queries in parallel usually
+            beat one huge one.
+
+        Returns a list of SearchResult. Empty list if no web-search
+        provider is configured (no Brave key).
+
+        Counts against this scout's shared search budget; raises
+        ModelRetry when the budget hits 0.
+        """
+        _spend_search("search_web")
+        return await search_web(ctx, query, count=count)
+
+    @agent.tool
+    @instrumented
+    async def search_academic_tool(
+        ctx: RunContext[Deps], query: str, limit: int = 6
+    ) -> list[SearchResult]:
+        """Run an academic search across Semantic Scholar + arXiv in parallel.
+
+        Use this for: peer-reviewed literature, preprints, benchmarks,
+        methods, empirical claims, state-of-the-art, citation trails.
+        Results carry authors / venue / year / citation_count when
+        available, which helps tier classification.
+
+        Args:
+          query: Natural-language search query. Specific technical
+            terms, author names, paper titles, or concept keywords
+            work best.
+          limit: Max hits per provider (not total). Default 6.
+
+        Returns a list of SearchResult deduped by URL.
+
+        Counts against this scout's shared search budget; raises
+        ModelRetry when the budget hits 0.
+        """
+        _spend_search("search_academic")
+        return await search_academic(ctx, query, limit=limit)
+
+    @agent.tool
+    @instrumented
+    async def find_related_papers_tool(
+        ctx: RunContext[Deps],
+        source_id: NoteID,
+        direction: Literal["citing", "cited_by"],
+        limit: int = 20,
+    ) -> list[SearchResult]:
+        """Traverse the citation graph from an existing source note via Semantic Scholar.
+
+        Use this when you have a seed paper clearly on-angle and want a
+        curated bibliography rather than more keyword searches.
+        Citation traversal is usually much higher signal than lexical
+        search on niche topics.
+
+        Args:
+          source_id: NoteID of an existing source_note. Must have a
+            DOI or an arXiv URL.
+          direction: "citing" = papers that cite the seed.
+            "cited_by" = the seed's bibliography.
+          limit: Max papers. Default 20; S2 caps at 50.
+
+        Counts against this scout's shared search budget; raises
+        ModelRetry when the budget hits 0.
+        """
+        _spend_search("find_related_papers")
+        return await find_related_papers(ctx, source_id, direction, limit=limit)
 
     outbox: list[ScoutResult] = []
 
@@ -209,7 +313,8 @@ async def scout_run(deps: Deps, request: str) -> ScoutResult:
     so the analyst sees a gap rather than a missing value.
     """
     model_id = deps.routing.model_id_for(RoleClass.CHEAP_DETERMINISTIC, TaskTier.MID)
-    agent, outbox = build_scout(deps, model_id)
+    search_budget = deps.run_config.scout_search_budget
+    agent, outbox = build_scout(deps, model_id, search_budget_start=search_budget)
     agent_id = f"scout-{uuid.uuid4().hex[:8]}"
     logger.info("scout start agent_id=%s model=%s request=%r", agent_id, model_id, request[:160])
     await drive_agent(
@@ -221,7 +326,12 @@ async def scout_run(deps: Deps, request: str) -> ScoutResult:
         tier=TaskTier.MID,
         role=RoleClass.CHEAP_DETERMINISTIC,
         model_id=model_id,
-        prompt=f"Scout request: {request}",
+        prompt=(
+            f"Scout request: {request}\n"
+            f"Your search budget: {search_budget} total calls across "
+            "search_web / search_academic / find_related_papers. Spend them "
+            "where they matter."
+        ),
     )
 
     if outbox:

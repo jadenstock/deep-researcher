@@ -41,8 +41,8 @@ from .tools.notes import (
 
 # Hard cap on scout sub-agent dispatches per analyst run. Prompt
 # encourages fewer; this is the backstop so a misbehaving analyst
-# can't runaway-spawn scouts.
-DEFAULT_SCOUT_BUDGET = 4
+# can't runaway-spawn scouts. Default lives in `run_config.py`; read
+# from `deps.run_config` at build time so UI overrides flow through.
 
 logger = logging.getLogger(__name__)
 
@@ -138,8 +138,9 @@ relevant material. The condensed view shows:
    analyzed or analyzed for unrelated questions).
 2. **Dispatch scouts as needed.** If the existing corpus is thin on
    your angle, call `scout(request=...)` - optionally multiple times
-   in parallel with distinct angles. Scout budget is 4 per run;
-   spend them where they move the needle, not for breadth's sake.
+   in parallel with distinct angles. Your scout budget for this run
+   is stated in your opening message; spend scouts where they move
+   the needle, not for breadth's sake.
    Scouts return ScoutResult with a sourcelist (tier_guess,
    relevance_guess, preview) and a coverage_note. They create the
    source notes and fetch content into `note.content` for you.
@@ -279,10 +280,10 @@ def build_analyst(
             searched and where coverage is thin. Use it to decide whether
             another scout dispatch on a different angle is warranted.
 
-        Budget: capped at 4 scout dispatches per analyst run. When the
-        budget is exhausted, this tool raises ModelRetry - stop
-        dispatching scouts and commit your answer with the evidence you
-        already have.
+        Budget: a per-run cap on scout dispatches set by the
+        orchestrator. When the budget is exhausted, this tool raises
+        ModelRetry - stop dispatching scouts and commit your answer
+        with the evidence you already have.
         """
         if budget[0] <= 0:
             raise ModelRetry(
@@ -321,7 +322,8 @@ async def analyst_run(
     """
     role, tier = _routing_for_mode(mode)
     model_id = deps.routing.model_id_for(role, tier)
-    agent = build_analyst(deps, mode, model_id, scout_budget_start=DEFAULT_SCOUT_BUDGET)
+    scout_budget = deps.run_config.scout_budget_per_analyst
+    agent = build_analyst(deps, mode, model_id, scout_budget_start=scout_budget)
     agent_id = f"an-{uuid.uuid4().hex[:8]}"
     logger.info(
         "analyst start agent_id=%s qid=%s mode=%s model=%s q=%r",
@@ -344,7 +346,7 @@ async def analyst_run(
         prompt=(
             f"Your assigned question_id is {question_id}.\n"
             f"Question: {question}\n"
-            f"You have {DEFAULT_SCOUT_BUDGET} scout dispatches available.\n"
+            f"You have {scout_budget} scout dispatches available.\n"
             "When you commit your answer, pass question_id="
             f"{question_id} to answer_question."
         ),

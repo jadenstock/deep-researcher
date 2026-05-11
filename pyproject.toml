@@ -16,7 +16,6 @@ dependencies = [
     "rich>=13.9",
     "pyyaml>=6.0",
     "python-dateutil>=2.9",
-    "logfire>=4.0",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
 ]

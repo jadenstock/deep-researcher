@@ -95,14 +95,9 @@ class RetrievalKeys(BaseModel):
     arxiv_min_interval_s: float = 3.0
 
 
-class ObservabilityKeys(BaseModel):
-    logfire_token: str | None = None
-
-
 class LocalConfig(BaseModel):
     llm: LLMEndpoint
     retrieval: RetrievalKeys = Field(default_factory=RetrievalKeys)
-    observability: ObservabilityKeys = Field(default_factory=ObservabilityKeys)
 
 
 def load_local_config(path: Path | str = "config/local.toml") -> LocalConfig:

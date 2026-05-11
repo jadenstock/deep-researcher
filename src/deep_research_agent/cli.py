@@ -26,7 +26,7 @@ from .agents.deps import build_deps, close_deps
 from .agents.researcher import research_run
 from .agents.schemas import ResearcherReport, compose_report_markdown
 from .config import load_local_config, load_routing_config
-from .observability import setup_logfire, silence_noisy_loggers
+from .observability import silence_noisy_loggers
 from .retrieval import apply_retrieval_rate_limits
 from .run_id import new_run_id
 
@@ -121,7 +121,6 @@ def _run_serve(args: argparse.Namespace) -> int:
 async def _run_research(args: argparse.Namespace) -> int:
     local = load_local_config(args.local_config)
     routing = load_routing_config(args.routing)
-    setup_logfire(local)
     apply_retrieval_rate_limits(local.retrieval)
 
     run_id = new_run_id()

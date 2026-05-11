@@ -8,7 +8,7 @@ src/deep_research_agent/
 ├─ cli.py                CLI entry point (`dra research` / `dra serve`)
 ├─ config.py             LocalConfig (TOML) + RoutingConfig (YAML) loaders
 ├─ agent_factory.py      model_id → pydantic-ai OpenAIChatModel
-├─ observability.py      Optional Logfire setup
+├─ observability.py      Silences noisy third-party loggers
 ├─ token_usage.py        Per-agent-per-model token tracker
 ├─ schemas/              Typed domain models (notes, sources, enums, IDs)
 ├─ retrieval/            HTTP clients: Brave, Semantic Scholar, arXiv, fetch
@@ -24,7 +24,7 @@ Both paths share `research_run` from `agents/researcher.py`.
 
 **`config.py`** — two config shapes:
 - `LocalConfig` (TOML, gitignored): `llm.api_base_url`, `llm.api_key`,
-  retrieval API keys, rate-limit overrides, optional Logfire token.
+  retrieval API keys, rate-limit overrides.
 - `RoutingConfig` (YAML, tracked): `tiers[LOW|MID|HIGH]` each with
   `generative` / `judgment` / `cheap_deterministic` → model_id strings.
 
@@ -33,9 +33,9 @@ Both paths share `research_run` from `agents/researcher.py`.
 `OpenAIChatModel` pointed at the local endpoint. Pins
 `max_tokens=16384`.
 
-**`observability.py`** — opt-in Logfire bootstrap. If
-`local.observability.logfire_token` is set, Logfire captures pydantic-ai
-traces.
+**`observability.py`** — pins noisy third-party loggers (pdfminer,
+httpx, urllib3, …) at WARNING so their DEBUG streams don't drown real
+errors. Called once at startup from `cli.py`.
 
 **`token_usage.py`** — `TokenUsageTracker` aggregates
 `RequestUsage` snapshots keyed by `(agent_id, agent_type, model_id)`.

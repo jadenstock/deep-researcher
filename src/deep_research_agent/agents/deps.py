@@ -23,6 +23,7 @@ from ..retrieval.semantic_scholar import SemanticScholarClient
 from ..token_usage import TokenUsageTracker
 from .events import EventPublisher, NoOpPublisher
 from .memory import NoteMemory
+from .run_config import RunConfig
 
 
 @dataclass
@@ -36,17 +37,25 @@ class Deps:
     tracker: TokenUsageTracker
     events: EventPublisher
     http_client: httpx.AsyncClient
+    run_config: RunConfig
 
 
 def build_deps(
     local: LocalConfig,
     routing: RoutingConfig,
     events: EventPublisher | None = None,
+    run_config: RunConfig | None = None,
 ) -> Deps:
     """Assemble Deps from config. Web search is optional - some
     environments only have academic search (S2 + arXiv are
     unauthenticated or key-less). `events` defaults to a no-op; the
     server passes a publisher that feeds the UI.
+
+    `run_config` carries per-run knobs (budgets + model overrides).
+    Defaults kick in when omitted, so the CLI path needs no change.
+    Model overrides in `run_config` are applied onto `routing` here,
+    so agent code sees a single effective routing table via
+    `deps.routing.model_id_for(...)`.
 
     The returned Deps owns an `http_client` shared across retrieval
     clients. Callers are responsible for calling `close_deps(deps)` in
@@ -61,10 +70,12 @@ def build_deps(
         else None
     )
     publisher = events or NoOpPublisher()
+    effective_run_config = run_config or RunConfig()
+    effective_routing = effective_run_config.apply_to_routing(routing)
     return Deps(
         memory=NoteMemory(publisher=publisher),
         local=local,
-        routing=routing,
+        routing=effective_routing,
         brave=brave,
         semantic_scholar=SemanticScholarClient(
             http_client, local.retrieval.semantic_scholar_api_key
@@ -73,6 +84,7 @@ def build_deps(
         tracker=TokenUsageTracker(),
         events=publisher,
         http_client=http_client,
+        run_config=effective_run_config,
     )
 
 

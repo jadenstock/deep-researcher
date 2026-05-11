@@ -23,13 +23,13 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from ..agents.run_config import RunConfig, defaults_payload
 from ..config import (
     LocalConfig,
     RoutingConfig,
     load_local_config,
     load_routing_config,
 )
-from ..observability import setup_logfire
 from ..retrieval import apply_retrieval_rate_limits
 from ..run_id import new_run_id
 from ..schemas.enums import QuestionStatus
@@ -93,6 +93,10 @@ INDEX_HTML = STATIC_DIR / "index.html"
 
 class RunRequest(BaseModel):
     query: str
+    # Optional per-run knobs from the UI's Settings panel. Missing or
+    # partial `config` falls through to `RunConfig` defaults, so older
+    # clients that omit the field keep working unchanged.
+    config: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -113,7 +117,6 @@ def create_app(
     """Build and return a configured FastAPI app."""
     local = load_local_config(local_path)
     routing = load_routing_config(routing_path)
-    setup_logfire(local)
     apply_retrieval_rate_limits(local.retrieval)
 
     state = ServerState(
@@ -149,16 +152,41 @@ def create_app(
             raise HTTPException(status_code=400, detail="query must not be empty")
         run_id = new_run_id()
         session = state.registry.create(run_id, body.query)
+        run_config = RunConfig.from_payload(body.config)
         session.task = asyncio.create_task(
             run_session(
                 session,
                 state.routing,
                 state.local,
                 state.runs_dir,
+                run_config=run_config,
             )
         )
-        logger.info("run queued run_id=%s query=%r", run_id, body.query[:160])
+        logger.info(
+            "run queued run_id=%s query=%r cfg=%s",
+            run_id,
+            body.query[:160],
+            {
+                "analyst_budget": run_config.analyst_budget,
+                "scout_budget_per_analyst": run_config.scout_budget_per_analyst,
+                "scout_search_budget": run_config.scout_search_budget,
+                "model_overrides": {
+                    f"{tier.value}.{role.value}": model
+                    for (tier, role), model in run_config.model_overrides.items()
+                },
+            },
+        )
         return {"run_id": run_id}
+
+    @app.get("/api/config/defaults")
+    async def get_config_defaults() -> dict:
+        """Return the tunable-knob defaults + slider ranges + model catalog.
+
+        The UI's Settings panel fetches this on load to populate its
+        sliders and dropdowns. Keeps the UI from hardcoding any
+        default; the server stays the single source of truth.
+        """
+        return defaults_payload(state.routing)
 
     @app.get("/api/runs")
     async def list_runs() -> dict[str, list[dict]]:
