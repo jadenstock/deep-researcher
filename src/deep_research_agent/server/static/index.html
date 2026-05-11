@@ -1381,8 +1381,13 @@
   function renderNote(note) {
     const meta = JSON.stringify(note.metadata, null, 2);
     const body = note.content ? marked.parse(note.content) : "<em>(no content)</em>";
+    // Question notes truncate `title` to 120 chars; the full question lives
+    // in `description`. Show description as the heading for questions.
+    const heading = note.type === "question_note" && note.description
+      ? note.description
+      : note.title;
     detailsEl.innerHTML = `
-      <h3>${escape(note.title)}</h3>
+      <h3>${escape(heading)}</h3>
       <div class="subtitle">${note.type} · v${note.version} · ${note.id}</div>
       <details class="meta"><summary>metadata</summary>${escape(meta)}</details>
       <div class="body">${body}</div>
@@ -1402,7 +1407,7 @@
       const res = await fetch(`/api/note/${currentRunId}/${noteId}`);
       if (!res.ok) throw new Error(`${res.status}`);
       const note = await res.json();
-      renderReport(note);
+      await renderReport(note);
     } catch (err) {
       reportContent.innerHTML = `<div class="report-empty">Failed to load: ${escape(String(err))}</div>`;
     }
@@ -1571,9 +1576,82 @@
     hideBanner();
   });
 
-  function renderReport(note) {
-    const body = note.content ? marked.parse(note.content) : "<em>(no content)</em>";
+  // Matches inline citation groups like `[source-abc123]` or
+  // `[source-abc, source-def]`. Reports embed raw source-note ids; we
+  // replace these with numbered links and append a References section.
+  const CITATION_RE = /\[(source-[a-f0-9]+(?:\s*,\s*source-[a-f0-9]+)*)\]/g;
+
+  async function resolveSourceNote(id) {
+    if (historicalNotesById && historicalNotesById.has(id)) {
+      return historicalNotesById.get(id);
+    }
+    if (!currentRunId) return null;
+    try {
+      const res = await fetch(`/api/note/${currentRunId}/${id}`);
+      if (!res.ok) return null;
+      return await res.json();
+    } catch { return null; }
+  }
+
+  function mdEscape(s) {
+    return String(s).replace(/([\\\[\]])/g, "\\$1");
+  }
+
+  async function transformReportCitations(content) {
+    const ids = new Set();
+    let m;
+    CITATION_RE.lastIndex = 0;
+    while ((m = CITATION_RE.exec(content)) !== null) {
+      for (const part of m[1].split(",")) ids.add(part.trim());
+    }
+    if (ids.size === 0) return { content, refs: [] };
+
+    const resolved = new Map();
+    await Promise.all([...ids].map(async id => {
+      const note = await resolveSourceNote(id);
+      if (note) resolved.set(id, note);
+    }));
+
+    const order = new Map();
+    const transformed = content.replace(CITATION_RE, (_match, group) => {
+      const parts = group.split(",").map(s => s.trim());
+      const links = parts.map(id => {
+        if (!order.has(id)) order.set(id, order.size + 1);
+        const n = order.get(id);
+        return `[${n}](#ref-${n})`;
+      });
+      return `[${links.join(", ")}]`;
+    });
+
+    const refs = [...order.entries()].map(([id, num]) => ({
+      num, id, note: resolved.get(id) || null,
+    }));
+    return { content: transformed, refs };
+  }
+
+  function renderReferencesMarkdown(refs) {
+    if (!refs.length) return "";
+    const lines = refs.map(({ num, id, note }) => {
+      const anchor = `<a id="ref-${num}"></a>`;
+      if (!note) return `${num}. ${anchor}\`${id}\` *(not found)*`;
+      const title = mdEscape(note.title || id);
+      const url = (note.metadata && note.metadata.url) || "";
+      return url
+        ? `${num}. ${anchor}[${title}](${url})`
+        : `${num}. ${anchor}${title}`;
+    });
+    return `\n\n## References\n\n${lines.join("\n")}\n`;
+  }
+
+  async function renderReport(note) {
     const meta = JSON.stringify(note.metadata || {}, null, 2);
+    let body;
+    if (note.content) {
+      const { content, refs } = await transformReportCitations(note.content);
+      body = marked.parse(content + renderReferencesMarkdown(refs));
+    } else {
+      body = "<em>(no content)</em>";
+    }
     reportContent.innerHTML = `
       <div class="report-head">
         <h1>${escape(note.title || "Report")}</h1>
@@ -2210,12 +2288,14 @@
       const res = await fetch(`/api/history/${runId}/report`);
       if (res.ok) {
         const md = await res.text();
+        const { content, refs } = await transformReportCitations(md);
+        const rendered = marked.parse(content + renderReferencesMarkdown(refs));
         reportContent.innerHTML = `
           <div class="report-head">
             <h1>Report</h1>
             <div class="sub">${escape(runId)}</div>
           </div>
-          <div class="report-body">${marked.parse(md)}</div>
+          <div class="report-body">${rendered}</div>
         `;
         tabReport.hidden = false;
         tabReport.classList.add("has-report");
