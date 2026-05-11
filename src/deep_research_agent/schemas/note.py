@@ -11,7 +11,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
-from .enums import NoteType, QuestionClassification
+from .enums import ConfidenceLevel, NoteType, QuestionClassification, QuestionStatus
 from .ids import NoteID, SourceID, TaskID
 from .source import SourceMetadata
 
@@ -59,7 +59,7 @@ class QuestionMetadata(BaseModel):
     type: Literal[NoteType.QUESTION] = NoteType.QUESTION
     classification: QuestionClassification
     adopted_position: str | None = None
-    status: Literal["OPEN", "IN_PROGRESS", "SYNTHESIZED"] = "OPEN"
+    status: QuestionStatus = QuestionStatus.OPEN
 
     # Tree structure: None for the root question (the user's original query),
     # otherwise the id of the question this one was spawned from.
@@ -69,7 +69,7 @@ class QuestionMetadata(BaseModel):
     # Kept here (on the question note) rather than on a separate synthesis
     # note so a question's lifecycle and answer live in one place.
     report_markdown: str | None = None
-    confidence: Literal["high", "medium", "low"] | None = None
+    confidence: ConfidenceLevel | None = None
     sources_cited: list[NoteID] = Field(default_factory=list)
     disagreements: list[str] = Field(default_factory=list)
     open_issues: list[str] = Field(default_factory=list)

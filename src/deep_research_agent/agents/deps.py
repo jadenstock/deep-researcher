@@ -17,9 +17,39 @@ from ..config import LocalConfig, RoutingConfig
 from ..retrieval.arxiv import ArxivClient
 from ..retrieval.brave import BraveClient
 from ..retrieval.semantic_scholar import SemanticScholarClient
+from ..schemas.ids import NoteID
 from ..token_usage import TokenUsageTracker
 from .events import EventPublisher, NoOpPublisher
 from .memory import NoteMemory
+
+
+@dataclass
+class RunState:
+    """Mutable per-run state that tools and agent drivers read and write.
+
+    Kept separate from `Deps` so `Deps` itself stays a stable container
+    of clients and config; `RunState` holds the pieces that change
+    during the run.
+
+    Fields:
+      - `root_question_id`: set by the researcher on entry so the
+        investigate_question tool can parent-link sub-questions and
+        get_research_state can surface the root separately.
+      - `analyst_budget` / `scout_budget`: dispatch caps. `None` means
+        "no budget configured" (tool skips the check); an int is the
+        remaining count. Set by the wrapping `*_run` on entry,
+        decremented by the dispatching tool.
+      - `agent_outputs`: typed payload per agent_id. TERMINAL tools
+        (answer_question, commit_scout_result, write_landscape_brief)
+        stash their structured output here; the wrapping `*_run`
+        reads it after the agent finishes. Concurrent sub-agents
+        write to distinct keys so no lock is needed.
+    """
+
+    root_question_id: NoteID | None = None
+    analyst_budget: int | None = None
+    scout_budget: int | None = None
+    agent_outputs: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass
@@ -33,12 +63,7 @@ class Deps:
     tracker: TokenUsageTracker
     events: EventPublisher
     http_client: httpx.AsyncClient
-    # Per-agent structured outputs keyed on agent_id. The write_*
-    # tools (tools/notes.py) populate this when an agent commits its
-    # final payload; the *_run wrappers read it after agent.run()
-    # returns. Concurrent sub-agents write to distinct keys so no
-    # lock is needed - dict item assignment is safe under asyncio.
-    outputs: dict[str, object] = field(default_factory=dict)
+    state: RunState = field(default_factory=RunState)
 
 
 def build_deps(

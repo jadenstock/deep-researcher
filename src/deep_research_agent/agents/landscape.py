@@ -19,11 +19,9 @@ import uuid
 from pydantic_ai import Agent
 
 from ..agent_factory import make_model
-from ..schemas.enums import NoteType, RoleClass, TaskTier
-from ._debug import log_run_node
-from ._usage import record_run_usage
+from ..schemas.enums import AgentRunStatus, AgentType, NoteType, RoleClass, TaskTier
+from ._run import drive_agent
 from .deps import Deps
-from .events import reset_current_agent_id, set_current_agent_id
 from .tools.notes import create_source_note, list_source_notes, write_landscape_brief
 from .tools.search import search_academic, search_web
 
@@ -107,44 +105,21 @@ async def landscape_run(deps: Deps, query: str) -> str:
     agent = build_landscape_agent(deps)
     agent_id = f"land-{uuid.uuid4().hex[:8]}"
     model_id = deps.routing.model_id_for(RoleClass.GENERATIVE, TaskTier.MID)
-    deps.events.on_agent_start(
-        agent_id=agent_id,
-        agent_type="LANDSCAPE",
-        goal=query,
-        tier=TaskTier.MID.value,
-        role=RoleClass.GENERATIVE.value,
-        model_id=model_id,
-    )
     logger.info("landscape start agent_id=%s query=%r", agent_id, query[:200])
-    token = set_current_agent_id(agent_id)
     try:
-        try:
-            # `agent.iter()` gives us access to `run.usage()` in a
-            # finally-block regardless of whether the run completed,
-            # so partial token burn on crashes still lands in the
-            # shared tracker.
-            async with agent.iter(f"Scout the landscape for this query: {query}", deps=deps) as run:
-                try:
-                    async for node in run:
-                        log_run_node(agent_id, node)
-                finally:
-                    await record_run_usage(
-                        deps,
-                        run.usage(),
-                        agent_id=agent_id,
-                        agent_type="LANDSCAPE",
-                        model_id=model_id,
-                    )
-        except Exception as exc:
-            deps.events.on_agent_done(
-                agent_id=agent_id,
-                agent_type="LANDSCAPE",
-                status="ABANDONED",
-                verdict=f"failed: {type(exc).__name__}: {exc}"[:200],
-            )
-            raise
+        await drive_agent(
+            deps=deps,
+            agent=agent,
+            agent_id=agent_id,
+            agent_type=AgentType.LANDSCAPE,
+            goal=query,
+            tier=TaskTier.MID,
+            role=RoleClass.GENERATIVE,
+            model_id=model_id,
+            prompt=f"Scout the landscape for this query: {query}",
+        )
 
-        committed = deps.outputs.get(agent_id)
+        committed = deps.state.agent_outputs.get(agent_id)
         if isinstance(committed, str) and committed.strip():
             brief = committed
         else:
@@ -158,15 +133,13 @@ async def landscape_run(deps: Deps, query: str) -> str:
             )
 
         n_sources = deps.memory.count_by_type(NoteType.SOURCE)
-        verdict = f"brief committed, {n_sources} sources scouted"
         deps.events.on_agent_done(
             agent_id=agent_id,
-            agent_type="LANDSCAPE",
-            status="DONE",
-            verdict=verdict,
+            agent_type=AgentType.LANDSCAPE,
+            status=AgentRunStatus.DONE,
+            verdict=f"brief committed, {n_sources} sources scouted",
         )
         logger.info("landscape done agent_id=%s sources=%d", agent_id, n_sources)
         return brief
     finally:
-        reset_current_agent_id(token)
-        deps.outputs.pop(agent_id, None)
+        deps.state.agent_outputs.pop(agent_id, None)

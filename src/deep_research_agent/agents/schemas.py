@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
+from ..schemas.enums import ConfidenceLevel
 from ..schemas.ids import NoteID
 
 if TYPE_CHECKING:
@@ -89,7 +90,7 @@ class QuestionSynthesis(BaseModel):
             "contradicting claims that need a tiebreaker source."
         ),
     )
-    confidence: str = Field(
+    confidence: ConfidenceLevel = Field(
         ...,
         description="One of: 'high', 'medium', 'low'. Reflect source quality + coverage.",
     )
@@ -174,7 +175,7 @@ def compose_report_markdown(
     answered QUESTION notes in memory so the run still produces some
     markdown on disk.
     """
-    from ..schemas.enums import NoteType
+    from ..schemas.enums import NoteType, QuestionStatus
     from ..schemas.note import QuestionMetadata, SourceNoteMetadata
 
     parts: list[str] = ["# Research report", "", f"**Query:** {query}", ""]
@@ -192,7 +193,8 @@ def compose_report_markdown(
         answered = [
             n
             for n in memory.list_by_type(NoteType.QUESTION)
-            if isinstance(n.metadata, QuestionMetadata) and n.metadata.status == "SYNTHESIZED"
+            if isinstance(n.metadata, QuestionMetadata)
+            and n.metadata.status == QuestionStatus.SYNTHESIZED
         ]
         if answered:
             parts.append("## Partial report (reconstructed from answered questions)")

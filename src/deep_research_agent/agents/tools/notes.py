@@ -17,7 +17,15 @@ import logging
 from pydantic import BaseModel, Field
 from pydantic_ai import ModelRetry, RunContext
 
-from ...schemas.enums import ClaimType, NoteType, SourceState, Tier, VerificationStatus
+from ...schemas.enums import (
+    ClaimType,
+    ConfidenceLevel,
+    NoteType,
+    QuestionStatus,
+    SourceState,
+    Tier,
+    VerificationStatus,
+)
 from ...schemas.ids import NoteID
 from ...schemas.note import (
     LandscapeMetadata,
@@ -391,7 +399,7 @@ async def get_research_state(ctx: RunContext[Deps]) -> dict[str, object]:
     """
     from ...schemas.note import QuestionMetadata, SourceNoteMetadata
 
-    root_id = ctx.deps.outputs.get("__root_question_id__")
+    root_id = ctx.deps.state.root_question_id
     questions = []
     root_summary: dict[str, object] | None = None
     for n in ctx.deps.memory.list_by_type(NoteType.QUESTION):
@@ -421,17 +429,13 @@ async def get_research_state(ctx: RunContext[Deps]) -> dict[str, object]:
         sources_by_tier[tier_key] = sources_by_tier.get(tier_key, 0) + 1
         sources_by_state[meta.state.value] = sources_by_state.get(meta.state.value, 0) + 1
 
-    budget_remaining = ctx.deps.outputs.get("__analyst_budget__")
-
     return {
         "root_question": root_summary,
         "questions": questions,
         "sources_by_tier": sources_by_tier,
         "sources_by_state": sources_by_state,
         "budget": {
-            "analyst_dispatches_remaining": (
-                budget_remaining if isinstance(budget_remaining, int) else None
-            ),
+            "analyst_dispatches_remaining": ctx.deps.state.analyst_budget,
         },
     }
 
@@ -449,9 +453,10 @@ async def get_research_state(ctx: RunContext[Deps]) -> dict[str, object]:
 # 3. Tool-call events fire in the UI - the user sees the write
 #    attempt land (or fail + retry) in the agent card.
 #
-# Each tool stashes its structured payload in `deps.outputs[agent_id]`
-# so the wrapping `*_run` function can read the committed data
-# without relying on the agent's stringy final message.
+# Each tool stashes its structured payload in
+# `deps.state.agent_outputs[agent_id]` so the wrapping `*_run`
+# function can read the committed data without relying on the
+# agent's stringy final message.
 
 
 @instrumented
@@ -509,9 +514,12 @@ async def answer_question(
     isn't a valid question_note id - call get_research_state or
     pass the id from your opening message and try again.
     """
-    confidence_lc = confidence.strip().lower()
-    if confidence_lc not in {"high", "medium", "low"}:
-        raise ModelRetry(f"confidence must be 'high', 'medium', or 'low'; got {confidence!r}")
+    try:
+        confidence_enum = ConfidenceLevel(confidence.strip().lower())
+    except ValueError as exc:
+        raise ModelRetry(
+            f"confidence must be 'high', 'medium', or 'low'; got {confidence!r}"
+        ) from exc
 
     if not report.strip():
         raise ModelRetry(
@@ -538,9 +546,9 @@ async def answer_question(
     agent_id = current_agent_id() or "anonymous"
     new_meta = existing_meta.model_copy(
         update={
-            "status": "SYNTHESIZED",
+            "status": QuestionStatus.SYNTHESIZED,
             "report_markdown": report,
-            "confidence": confidence_lc,
+            "confidence": confidence_enum,
             "sources_cited": list(sources_cited or []),
             "disagreements": list(disagreements or []),
             "open_issues": list(open_issues or []),
@@ -561,15 +569,15 @@ async def answer_question(
     qs = QuestionSynthesis(
         question=existing.description or existing.title,
         report=report,
-        confidence=confidence_lc,
+        confidence=confidence_enum,
         sources_cited=list(sources_cited or []),
         disagreements=list(disagreements or []),
         open_issues=list(open_issues or []),
     )
-    ctx.deps.outputs[agent_id] = qs
+    ctx.deps.state.agent_outputs[agent_id] = qs
     return (
         f"answered question {question_id} "
-        f"({confidence_lc} confidence, {len(qs.sources_cited)} sources cited)"
+        f"({confidence_enum} confidence, {len(qs.sources_cited)} sources cited)"
     )
 
 
@@ -583,7 +591,7 @@ async def commit_scout_result(
 
     TERMINAL tool for the scout sub-agent - call exactly once as the
     last tool call before ending your turn. Stashes the result in
-    `deps.outputs[scout_agent_id]` so the dispatching `scout()` tool
+    `deps.state.agent_outputs[scout_agent_id]` so the dispatching `scout()` tool
     returns it to the analyst.
 
     Args:
@@ -617,7 +625,7 @@ async def commit_scout_result(
             raise ModelRetry(f"source_id {s.source_id!r} is a {n.type.value}, not a source_note.")
 
     agent_id = current_agent_id() or "anonymous"
-    ctx.deps.outputs[agent_id] = ScoutResult(
+    ctx.deps.state.agent_outputs[agent_id] = ScoutResult(
         sources=list(sources),
         coverage_note=coverage_note,
     )
@@ -661,7 +669,7 @@ async def write_landscape_brief(
 
     agent_id = current_agent_id() or "anonymous"
     # Stash raw markdown for landscape_run to forward to the researcher.
-    ctx.deps.outputs[agent_id] = brief_markdown
+    ctx.deps.state.agent_outputs[agent_id] = brief_markdown
 
     # Durable landscape note.
     note_id = new_note_id("landscape")

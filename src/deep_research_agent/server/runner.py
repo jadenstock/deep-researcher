@@ -25,7 +25,7 @@ from ..agents.researcher import research_run
 from ..agents.schemas import compose_report_markdown
 from ..config import LocalConfig, RoutingConfig
 from ..observability import silence_noisy_loggers
-from ..schemas.enums import NoteType
+from ..schemas.enums import NoteType, QuestionStatus
 from ..schemas.ids import NoteID
 from ..schemas.note import Note, QuestionMetadata, SynthesisMetadata
 from .events import (
@@ -211,7 +211,7 @@ def _find_answered_root_question_id(memory: NoteMemory) -> NoteID | None:
         meta = n.metadata
         if not isinstance(meta, QuestionMetadata):
             continue
-        if meta.parent_question_id is None and meta.status == "SYNTHESIZED":
+        if meta.parent_question_id is None and meta.status == QuestionStatus.SYNTHESIZED:
             return n.id
     return None
 
@@ -337,7 +337,7 @@ async def run_session(
             n
             for n in deps.memory.list_by_type(NoteType.QUESTION)
             if isinstance(n.metadata, QuestionMetadata)
-            and n.metadata.status == "SYNTHESIZED"
+            and n.metadata.status == QuestionStatus.SYNTHESIZED
             and n.metadata.parent_question_id is not None
         ]
         logger.info(

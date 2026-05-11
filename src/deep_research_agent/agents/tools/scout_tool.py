@@ -55,14 +55,14 @@ async def scout(ctx: RunContext[Deps], request: str) -> ScoutResult:
     dispatching scouts and commit your answer with the evidence you
     already have.
     """
-    budget = ctx.deps.outputs.get("__scout_budget__")
-    if isinstance(budget, int) and budget <= 0:
+    budget = ctx.deps.state.scout_budget
+    if budget is not None and budget <= 0:
         raise ModelRetry(
             "scout dispatch budget exhausted (0 remaining). Stop dispatching "
             "scouts; deep-read the sources you already have and commit your "
             "answer with answer_question."
         )
-    if isinstance(budget, int):
-        ctx.deps.outputs["__scout_budget__"] = budget - 1
+    if budget is not None:
+        ctx.deps.state.scout_budget = budget - 1
 
     return await scout_run(ctx.deps, request)

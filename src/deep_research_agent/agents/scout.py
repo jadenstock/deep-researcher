@@ -24,11 +24,9 @@ import uuid
 from pydantic_ai import Agent
 
 from ..agent_factory import make_model
-from ..schemas.enums import RoleClass, TaskTier
-from ._debug import log_run_node
-from ._usage import record_run_usage
+from ..schemas.enums import AgentRunStatus, AgentType, RoleClass, TaskTier
+from ._run import drive_agent
 from .deps import Deps
-from .events import reset_current_agent_id, set_current_agent_id
 from .schemas import ScoutResult
 from .tools.fetch import scout_fetch
 from .tools.notes import (
@@ -165,43 +163,21 @@ async def scout_run(deps: Deps, request: str) -> ScoutResult:
     model_id = deps.routing.model_id_for(RoleClass.CHEAP_DETERMINISTIC, TaskTier.MID)
     agent = build_scout(deps, model_id)
     agent_id = f"scout-{uuid.uuid4().hex[:8]}"
-    deps.events.on_agent_start(
-        agent_id=agent_id,
-        agent_type="SCOUT",
-        goal=request,
-        tier=TaskTier.MID.value,
-        role=RoleClass.CHEAP_DETERMINISTIC.value,
-        model_id=model_id,
-    )
     logger.info("scout start agent_id=%s model=%s request=%r", agent_id, model_id, request[:160])
-    token = set_current_agent_id(agent_id)
     try:
-        try:
-            async with agent.iter(
-                f"Scout request: {request}",
-                deps=deps,
-            ) as run:
-                try:
-                    async for node in run:
-                        log_run_node(agent_id, node)
-                finally:
-                    await record_run_usage(
-                        deps,
-                        run.usage(),
-                        agent_id=agent_id,
-                        agent_type="SCOUT",
-                        model_id=model_id,
-                    )
-        except Exception as exc:
-            deps.events.on_agent_done(
-                agent_id=agent_id,
-                agent_type="SCOUT",
-                status="ABANDONED",
-                verdict=f"failed: {type(exc).__name__}: {exc}"[:200],
-            )
-            raise
+        await drive_agent(
+            deps=deps,
+            agent=agent,
+            agent_id=agent_id,
+            agent_type=AgentType.SCOUT,
+            goal=request,
+            tier=TaskTier.MID,
+            role=RoleClass.CHEAP_DETERMINISTIC,
+            model_id=model_id,
+            prompt=f"Scout request: {request}",
+        )
 
-        committed = deps.outputs.get(agent_id)
+        committed = deps.state.agent_outputs.get(agent_id)
         if isinstance(committed, ScoutResult):
             result = committed
         else:
@@ -213,15 +189,13 @@ async def scout_run(deps: Deps, request: str) -> ScoutResult:
                 ),
             )
 
-        verdict = f"{len(result.sources)} sources"
         deps.events.on_agent_done(
             agent_id=agent_id,
-            agent_type="SCOUT",
-            status="DONE",
-            verdict=verdict,
+            agent_type=AgentType.SCOUT,
+            status=AgentRunStatus.DONE,
+            verdict=f"{len(result.sources)} sources",
         )
         logger.info("scout done agent_id=%s sources=%d", agent_id, len(result.sources))
         return result
     finally:
-        reset_current_agent_id(token)
-        deps.outputs.pop(agent_id, None)
+        deps.state.agent_outputs.pop(agent_id, None)

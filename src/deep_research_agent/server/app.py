@@ -32,6 +32,7 @@ from ..config import (
 from ..observability import setup_logfire
 from ..retrieval import apply_retrieval_rate_limits
 from ..run_id import new_run_id
+from ..schemas.enums import QuestionStatus
 from .events import SessionRegistry
 from .runner import run_session
 
@@ -195,7 +196,7 @@ def create_app(
 
         notes_by_type: dict[str, int] = {}
         sources_by_state: dict[str, int] = {}
-        questions_by_status: dict[str, int] = {"OPEN": 0, "IN_PROGRESS": 0, "SYNTHESIZED": 0}
+        questions_by_status: dict[str, int] = {s.value: 0 for s in QuestionStatus}
         for note in session.notes.values():
             t = note.type.value
             notes_by_type[t] = notes_by_type.get(t, 0) + 1

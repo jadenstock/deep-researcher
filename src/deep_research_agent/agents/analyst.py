@@ -7,7 +7,7 @@ creating it before dispatching the analyst.
 Output: the analyst commits its answer by UPDATING the question note
 in place via the `answer_question` tool. The wrapping
 `analyst_run` reads the resulting QuestionSynthesis back from
-deps.outputs and returns it.
+`deps.state.agent_outputs` and returns it.
 
 Why the caller owns the question_id: it lets the researcher track
 its question tree (open/answered, parent links, dispatch state)
@@ -25,12 +25,10 @@ from typing import Literal
 from pydantic_ai import Agent
 
 from ..agent_factory import make_model
-from ..schemas.enums import RoleClass, TaskTier
+from ..schemas.enums import AgentRunStatus, AgentType, ConfidenceLevel, RoleClass, TaskTier
 from ..schemas.ids import NoteID
-from ._debug import log_run_node
-from ._usage import record_run_usage
+from ._run import drive_agent
 from .deps import Deps
-from .events import reset_current_agent_id, set_current_agent_id
 from .schemas import QuestionSynthesis
 from .tools.notes import (
     answer_question,
@@ -272,15 +270,6 @@ async def analyst_run(
     model_id = deps.routing.model_id_for(role, tier)
     agent = build_analyst(deps, mode, model_id)
     agent_id = f"an-{uuid.uuid4().hex[:8]}"
-    deps.events.on_agent_start(
-        agent_id=agent_id,
-        agent_type="ANALYST",
-        goal=question,
-        tier=tier.value,
-        role=role.value,
-        model_id=model_id,
-        mode=mode,
-    )
     logger.info(
         "analyst start agent_id=%s qid=%s mode=%s model=%s q=%r",
         agent_id,
@@ -291,44 +280,29 @@ async def analyst_run(
     )
     # Per-analyst-run scout dispatch budget. Scouts don't count against
     # the researcher's analyst budget - independent resource.
-    deps.outputs["__scout_budget__"] = DEFAULT_SCOUT_BUDGET
+    deps.state.scout_budget = DEFAULT_SCOUT_BUDGET
 
-    token = set_current_agent_id(agent_id)
     try:
-        try:
-            # `agent.iter()` so the finally-block can still read
-            # `run.usage()` when a deep tool call raises.
-            async with agent.iter(
-                (
-                    f"Your assigned question_id is {question_id}.\n"
-                    f"Question: {question}\n"
-                    f"You have {DEFAULT_SCOUT_BUDGET} scout dispatches available.\n"
-                    "When you commit your answer, pass question_id="
-                    f"{question_id} to answer_question."
-                ),
-                deps=deps,
-            ) as run:
-                try:
-                    async for node in run:
-                        log_run_node(agent_id, node)
-                finally:
-                    await record_run_usage(
-                        deps,
-                        run.usage(),
-                        agent_id=agent_id,
-                        agent_type="ANALYST",
-                        model_id=model_id,
-                    )
-        except Exception as exc:
-            deps.events.on_agent_done(
-                agent_id=agent_id,
-                agent_type="ANALYST",
-                status="ABANDONED",
-                verdict=f"failed: {type(exc).__name__}: {exc}"[:200],
-            )
-            raise
+        await drive_agent(
+            deps=deps,
+            agent=agent,
+            agent_id=agent_id,
+            agent_type=AgentType.ANALYST,
+            goal=question,
+            tier=tier,
+            role=role,
+            model_id=model_id,
+            prompt=(
+                f"Your assigned question_id is {question_id}.\n"
+                f"Question: {question}\n"
+                f"You have {DEFAULT_SCOUT_BUDGET} scout dispatches available.\n"
+                "When you commit your answer, pass question_id="
+                f"{question_id} to answer_question."
+            ),
+            mode=mode,
+        )
 
-        committed = deps.outputs.get(agent_id)
+        committed = deps.state.agent_outputs.get(agent_id)
         if isinstance(committed, QuestionSynthesis):
             qs = committed
         else:
@@ -340,7 +314,7 @@ async def analyst_run(
             qs = QuestionSynthesis(
                 question=question,
                 report=("_(no report produced - analyst ended without calling answer_question)_"),
-                confidence="low",
+                confidence=ConfidenceLevel.LOW,
                 open_issues=[
                     "Analyst did not call answer_question before ending its turn.",
                 ],
@@ -349,8 +323,8 @@ async def analyst_run(
         verdict = f"{mode}: {qs.confidence} confidence, {len(qs.sources_cited)} sources cited"
         deps.events.on_agent_done(
             agent_id=agent_id,
-            agent_type="ANALYST",
-            status="DONE",
+            agent_type=AgentType.ANALYST,
+            status=AgentRunStatus.DONE,
             verdict=verdict,
         )
         logger.info(
@@ -362,6 +336,5 @@ async def analyst_run(
         )
         return qs
     finally:
-        reset_current_agent_id(token)
-        deps.outputs.pop(agent_id, None)
-        deps.outputs.pop("__scout_budget__", None)
+        deps.state.agent_outputs.pop(agent_id, None)
+        deps.state.scout_budget = None

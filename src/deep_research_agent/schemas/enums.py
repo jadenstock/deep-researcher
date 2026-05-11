@@ -2,29 +2,29 @@
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import IntEnum, StrEnum
 
 
-class RoleClass(str, Enum):
+class RoleClass(StrEnum):
     GENERATIVE = "generative"
     JUDGMENT = "judgment"
     CHEAP_DETERMINISTIC = "cheap_deterministic"
 
 
-class TaskTier(str, Enum):
+class TaskTier(StrEnum):
     LOW = "LOW"
     MID = "MID"
     HIGH = "HIGH"
 
 
-class DependencyType(str, Enum):
+class DependencyType(StrEnum):
     PRODUCES_CONTEXT_FOR = "produces_context_for"
     COMPARED_AGAINST = "compared_against"
     TEMPORALLY_FOLLOWS = "temporally_follows"
     NONE = "none"
 
 
-class NoteType(str, Enum):
+class NoteType(StrEnum):
     LANDSCAPE = "landscape_note"
     SOURCE = "source_note"
     QUESTION = "question_note"
@@ -34,14 +34,55 @@ class NoteType(str, Enum):
     HYPOTHESIS = "hypothesis_note"
 
 
-class QuestionClassification(str, Enum):
+class QuestionClassification(StrEnum):
     LOOKUP = "lookup"
     SYNTHESIS = "synthesis"
     CONTESTED = "contested"
     SPARSE = "sparse"
 
 
-class Tier(int, Enum):
+class QuestionStatus(StrEnum):
+    """Lifecycle of a QUESTION note.
+
+    OPEN         - created but no analyst assigned yet.
+    IN_PROGRESS  - analyst dispatched; awaiting answer_question.
+    SYNTHESIZED  - analyst committed its answer onto the note.
+    """
+
+    OPEN = "OPEN"
+    IN_PROGRESS = "IN_PROGRESS"
+    SYNTHESIZED = "SYNTHESIZED"
+
+
+class ConfidenceLevel(StrEnum):
+    """Analyst / researcher confidence on a committed answer."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class AgentType(StrEnum):
+    """The four agent roles in the research pipeline."""
+
+    LANDSCAPE = "LANDSCAPE"
+    SCOUT = "SCOUT"
+    ANALYST = "ANALYST"
+    RESEARCHER = "RESEARCHER"
+
+
+class AgentRunStatus(StrEnum):
+    """Terminal status the wrapping *_run reports via on_agent_done.
+
+    DONE       - agent finished and committed (or produced a fallback).
+    ABANDONED  - agent.iter() raised; partial state may exist on notes.
+    """
+
+    DONE = "DONE"
+    ABANDONED = "ABANDONED"
+
+
+class Tier(IntEnum):
     TIER_1 = 1
     TIER_2 = 2
     TIER_3 = 3
@@ -49,14 +90,14 @@ class Tier(int, Enum):
     TIER_5 = 5
 
 
-class VerificationStatus(str, Enum):
+class VerificationStatus(StrEnum):
     UNVERIFIED = "UNVERIFIED"
     SUPPORTS = "SUPPORTS"
     REFUTES = "REFUTES"
     INCONCLUSIVE = "INCONCLUSIVE"
 
 
-class ClaimType(str, Enum):
+class ClaimType(StrEnum):
     """Claim taxonomy for verification triage.
 
     EXTERNAL       - claim references a fact, quantity, or phenomenon that
@@ -83,7 +124,7 @@ class ClaimType(str, Enum):
     META = "meta"
 
 
-class SourceState(str, Enum):
+class SourceState(StrEnum):
     """Lifecycle state of a source_note in the shared corpus.
 
     SCOUTED  - URL + title + snippet discovered by SCOUT_SOURCES. Not fetched
