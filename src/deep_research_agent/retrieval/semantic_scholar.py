@@ -177,6 +177,28 @@ class SemanticScholarClient:
         logger.info("s2_search query=%r hits=%d", query[:120], len(hits))
         return hits
 
+    async def _traverse(
+        self,
+        paper_id: str,
+        *,
+        endpoint: str,
+        row_key: str,
+        log_label: str,
+        limit: int,
+    ) -> list[SearchHit]:
+        """Follow a paper's citation graph. Shared by citations/references."""
+        url = f"{S2_PAPER_BASE}/{paper_id}/{endpoint}"
+        params = {"limit": min(limit, 50), "fields": _S2_FIELDS}
+        data = await self._request_json(
+            url, params, log_label=log_label, log_key=f"paper_id={paper_id!r}"
+        )
+        if data is None:
+            return []
+        rows = data.get("data", []) or []
+        hits = [h for h in (_paper_to_hit(row.get(row_key) or {}) for row in rows) if h is not None]
+        logger.info("%s paper_id=%r hits=%d", log_label, paper_id, len(hits))
+        return hits
+
     async def get_citations(self, paper_id: str, limit: int = 20) -> list[SearchHit]:
         """Return papers that cite `paper_id` (forward citation graph).
 
@@ -184,35 +206,20 @@ class SemanticScholarClient:
         `ARXIV:2401.12345`, `CorpusID:N`, etc. Returns [] on any
         terminal API error.
         """
-        url = f"{S2_PAPER_BASE}/{paper_id}/citations"
-        params = {"limit": min(limit, 50), "fields": _S2_FIELDS}
-        data = await self._request_json(
-            url, params, log_label="s2_citations", log_key=f"paper_id={paper_id!r}"
+        return await self._traverse(
+            paper_id,
+            endpoint="citations",
+            row_key="citingPaper",
+            log_label="s2_citations",
+            limit=limit,
         )
-        if data is None:
-            return []
-        # Each row wraps the citing paper: {"citingPaper": {...}}
-        rows = data.get("data", []) or []
-        hits = [
-            h
-            for h in (_paper_to_hit(row.get("citingPaper") or {}) for row in rows)
-            if h is not None
-        ]
-        logger.info("s2_citations paper_id=%r hits=%d", paper_id, len(hits))
-        return hits
 
     async def get_references(self, paper_id: str, limit: int = 20) -> list[SearchHit]:
         """Return papers that `paper_id` cites (backward bibliography)."""
-        url = f"{S2_PAPER_BASE}/{paper_id}/references"
-        params = {"limit": min(limit, 50), "fields": _S2_FIELDS}
-        data = await self._request_json(
-            url, params, log_label="s2_references", log_key=f"paper_id={paper_id!r}"
+        return await self._traverse(
+            paper_id,
+            endpoint="references",
+            row_key="citedPaper",
+            log_label="s2_references",
+            limit=limit,
         )
-        if data is None:
-            return []
-        rows = data.get("data", []) or []
-        hits = [
-            h for h in (_paper_to_hit(row.get("citedPaper") or {}) for row in rows) if h is not None
-        ]
-        logger.info("s2_references paper_id=%r hits=%d", paper_id, len(hits))
-        return hits

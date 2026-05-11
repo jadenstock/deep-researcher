@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
-import json
 import logging
 from pathlib import Path
 
@@ -27,6 +26,7 @@ from ..agents.run_config import RunConfig
 from ..agents.schemas import compose_report_markdown
 from ..config import LocalConfig, RoutingConfig
 from ..observability import silence_noisy_loggers
+from ..run_artifacts import persist_run_artifacts
 from ..schemas.enums import NoteType, QuestionStatus
 from ..schemas.ids import NoteID
 from ..schemas.note import Note, QuestionMetadata, SynthesisMetadata
@@ -251,31 +251,6 @@ async def _materialize_fallback_report_note(
     return note_id
 
 
-async def _dump_artifacts(
-    run_dir: Path,
-    query: str,
-    notes: dict[str, Note],
-    report_markdown: str | None,
-    report_json: dict | None,
-) -> None:
-    """Persist per-run artifacts: report.md, report.json, notes.json."""
-    run_dir.mkdir(parents=True, exist_ok=True)
-    notes_out = [n.model_dump(mode="json") for n in notes.values()]
-    writes: list[tuple[Path, str]] = [
-        (run_dir / "notes.json", json.dumps(notes_out, indent=2, default=str)),
-    ]
-    if report_json is not None:
-        writes.append((run_dir / "report.json", json.dumps(report_json, indent=2, default=str)))
-    if report_markdown is not None:
-        writes.append(
-            (
-                run_dir / "report.md",
-                f"# Research report\n\n**Query:** {query}\n\n{report_markdown}\n",
-            )
-        )
-    await asyncio.gather(*(asyncio.to_thread(path.write_text, content) for path, content in writes))
-
-
 async def run_session(
     session: RunSession,
     routing: RoutingConfig,
@@ -327,14 +302,11 @@ async def run_session(
                 description=f"Fallback report for: {session.query}",
             )
 
-        await _dump_artifacts(
-            run_dir=run_dir,
-            query=session.query,
-            notes={n.id: n for n in deps.memory.all()},
-            report_markdown=(
-                report.report_markdown
-                or compose_report_markdown(query=session.query, report=report, memory=deps.memory)
-            ),
+        final_md = compose_report_markdown(query=session.query, report=report, memory=deps.memory)
+        await persist_run_artifacts(
+            run_dir,
+            notes=deps.memory.all(),
+            report_markdown=final_md,
             report_json=report.model_dump(mode="json"),
         )
         session.report_note_id = report_note_id
@@ -361,10 +333,9 @@ async def run_session(
             partial_md = compose_report_markdown(
                 query=session.query, report=None, memory=deps.memory
             )
-            await _dump_artifacts(
-                run_dir=run_dir,
-                query=session.query,
-                notes={n.id: n for n in deps.memory.all()},
+            await persist_run_artifacts(
+                run_dir,
+                notes=deps.memory.all(),
                 report_markdown=partial_md,
                 report_json=None,
             )

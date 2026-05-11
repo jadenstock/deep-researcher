@@ -206,25 +206,26 @@ def create_app(
     @app.get("/api/history")
     async def list_history() -> dict[str, list[dict]]:
         """Completed runs persisted under runs_dir, newest first."""
-        return {"runs": history.list_history(state.runs_dir)}
+        runs = await asyncio.to_thread(history.list_history, state.runs_dir)
+        return {"runs": runs}
 
     @app.get("/api/history/{run_id}/notes")
     async def history_notes(run_id: str) -> list[dict]:
-        notes = history.read_notes(state.runs_dir, run_id)
+        notes = await asyncio.to_thread(history.read_notes, state.runs_dir, run_id)
         if notes is None:
             raise HTTPException(status_code=404, detail="run not found")
         return notes
 
     @app.get("/api/history/{run_id}/report", response_class=PlainTextResponse)
     async def history_report(run_id: str) -> PlainTextResponse:
-        md = history.read_report_md(state.runs_dir, run_id)
+        md = await asyncio.to_thread(history.read_report_md, state.runs_dir, run_id)
         if md is None:
             raise HTTPException(status_code=404, detail="run not found")
         return PlainTextResponse(md, media_type="text/markdown; charset=utf-8")
 
     @app.get("/api/history/{run_id}/summary")
     async def history_summary(run_id: str) -> dict:
-        summary = history.summarize(state.runs_dir, run_id)
+        summary = await asyncio.to_thread(history.summarize, state.runs_dir, run_id)
         if summary is None:
             raise HTTPException(status_code=404, detail="run not found")
         return summary

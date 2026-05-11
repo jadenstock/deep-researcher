@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import logging
 import sys
 from pathlib import Path
@@ -28,6 +27,7 @@ from .agents.schemas import ResearcherReport, compose_report_markdown
 from .config import load_local_config, load_routing_config
 from .observability import silence_noisy_loggers
 from .retrieval import apply_retrieval_rate_limits
+from .run_artifacts import persist_run_artifacts
 from .run_id import new_run_id
 
 logger = logging.getLogger(__name__)
@@ -176,32 +176,17 @@ async def _dump_run(
     deps,
     report: ResearcherReport | None,
 ) -> None:
-    """Write per-run artifacts to disk. Three files side by side:
-    - `report.md` for humans (always written, even on partial runs)
-    - `report.json` for post-hoc inspection of the typed payload
-    - `notes.json` for the full note graph (sources + questions + claims)
-
-    Report composition delegates to `compose_report_markdown`, which
+    """Write per-run artifacts to disk. `compose_report_markdown`
     handles happy-path (use ResearcherReport) and crash-path
     (reconstruct from synthesis/source notes) uniformly.
     """
-    notes_out = [n.model_dump(mode="json") for n in deps.memory.all()]
-    await asyncio.to_thread(
-        (run_dir / "notes.json").write_text,
-        json.dumps(notes_out, indent=2, default=str),
-    )
-
-    if report is not None:
-        await asyncio.to_thread(
-            (run_dir / "report.json").write_text,
-            json.dumps(report.model_dump(mode="json"), indent=2, default=str),
-        )
-
-    # Always write report.md - even on failure there's usually
-    # something useful from the sub-agents that finished.
     md = compose_report_markdown(query=query, report=report, memory=deps.memory)
-    await asyncio.to_thread((run_dir / "report.md").write_text, md)
-
+    await persist_run_artifacts(
+        run_dir,
+        notes=deps.memory.all(),
+        report_markdown=md,
+        report_json=report.model_dump(mode="json") if report is not None else None,
+    )
     try:
         await asyncio.to_thread(deps.tracker.save_json, run_dir / "token_usage.json")
     except Exception:
