@@ -27,9 +27,9 @@ from ..schemas.enums import RoleClass, TaskTier
 # Budget defaults. These are the ceilings the current prompts assume,
 # so changing them requires no prompt rewrite for the agent to behave
 # sanely — the numbers just flow through.
-DEFAULT_ANALYST_BUDGET = 8
-DEFAULT_SCOUT_BUDGET_PER_ANALYST = 4
-DEFAULT_SCOUT_SEARCH_BUDGET = 8
+DEFAULT_ANALYST_BUDGET = 12
+DEFAULT_SCOUT_BUDGET_PER_ANALYST = 6
+DEFAULT_SCOUT_SEARCH_BUDGET = 16
 
 # UI slider ranges. Kept here so `GET /api/config/defaults` is the
 # single source of truth for both the defaults and the allowed range.
@@ -73,6 +73,7 @@ class RunConfig:
     scout_budget_per_analyst: int = DEFAULT_SCOUT_BUDGET_PER_ANALYST
     scout_search_budget: int = DEFAULT_SCOUT_SEARCH_BUDGET
     model_overrides: dict[tuple[TaskTier, RoleClass], str] = field(default_factory=dict)
+    skip_landscape: bool = False
 
     @staticmethod
     def from_payload(payload: dict[str, Any] | None) -> RunConfig:
@@ -134,11 +135,14 @@ class RunConfig:
                     if isinstance(model_id, str) and model_id.strip():
                         overrides[(tier, role)] = model_id.strip()
 
+        skip_landscape = bool(payload.get("skip_landscape", False))
+
         return RunConfig(
             analyst_budget=ab,
             scout_budget_per_analyst=sb,
             scout_search_budget=ssb,
             model_overrides=overrides,
+            skip_landscape=skip_landscape,
         )
 
     def apply_to_routing(self, routing: RoutingConfig) -> RoutingConfig:
@@ -198,4 +202,14 @@ def defaults_payload(routing: RoutingConfig) -> dict[str, Any]:
         },
         "model_catalog": {role.value: list(models) for role, models in MODEL_CATALOG.items()},
         "routing_defaults": routing_defaults,
+        "toggles": {
+            "skip_landscape": {
+                "default": False,
+                "label": "Skip landscape step",
+                "help": (
+                    "Bypass the landscape agent. The researcher starts with no brief "
+                    "and no pre-scouted sources. Use to A/B whether landscape helps."
+                ),
+            },
+        },
     }

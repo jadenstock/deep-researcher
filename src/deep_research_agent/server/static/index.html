@@ -313,6 +313,16 @@
   .knob-row select:focus {
     outline: 1px solid var(--accent); border-color: var(--accent);
   }
+  .knob-row.toggle-row .toggle-label {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12px; color: var(--text); cursor: pointer;
+  }
+  .knob-row.toggle-row .toggle-label input[type="checkbox"] {
+    accent-color: var(--accent); cursor: pointer;
+  }
+  .knob-row.toggle-row.modified .toggle-label .name::after {
+    content: " •"; color: var(--warn);
+  }
   .model-grid {
     display: grid;
     grid-template-columns: 70px 1fr;
@@ -2298,9 +2308,10 @@
   const settingsReset = document.getElementById("settings-reset");
 
   let settingsState = {
-    defaults: null,       // { budgets, model_catalog, routing_defaults } from /api/config/defaults
+    defaults: null,       // { budgets, model_catalog, routing_defaults, toggles } from /api/config/defaults
     budgets: {},          // current slider values { key: int }
     modelSelections: {},  // { "<tier>.<role>": "<model_id>" } — every slot's current selection
+    toggles: {},          // { "<toggle_key>": bool } — experimental on/off switches
   };
 
   function modelOverridesDiff() {
@@ -2343,6 +2354,7 @@
       localStorage.setItem(SETTINGS_LS_KEY, JSON.stringify({
         budgets: settingsState.budgets,
         modelSelections: settingsState.modelSelections,
+        toggles: settingsState.toggles,
       }));
     } catch {}
   }
@@ -2353,9 +2365,17 @@
     return settingsState.budgets[key] !== defaults.default;
   }
 
+  function toggleIsModified(key) {
+    const spec = settingsState.defaults?.toggles?.[key];
+    if (!spec) return false;
+    return settingsState.toggles[key] !== spec.default;
+  }
+
   function anyModified() {
     if (Object.keys(modelOverridesDiff()).length > 0) return true;
-    return BUDGET_KNOBS.some(k => budgetIsModified(k.key));
+    if (BUDGET_KNOBS.some(k => budgetIsModified(k.key))) return true;
+    const toggleDefs = settingsState.defaults?.toggles || {};
+    return Object.keys(toggleDefs).some(toggleIsModified);
   }
 
   function updateSettingsButtonIndicator() {
@@ -2415,6 +2435,25 @@
       parts.push(`</div></div>`);
     }
 
+    const toggleDefs = defaults.toggles || {};
+    if (Object.keys(toggleDefs).length > 0) {
+      parts.push(`<h3>Experimental</h3>`);
+      for (const [key, spec] of Object.entries(toggleDefs)) {
+        const current = settingsState.toggles[key];
+        const checked = current ? "checked" : "";
+        const modCls = current !== spec.default ? " modified" : "";
+        parts.push(`
+          <div class="knob-row toggle-row${modCls}" data-toggle="${key}">
+            <label class="toggle-label">
+              <input type="checkbox" data-toggle-input="${key}" ${checked} />
+              <span class="name">${spec.label}</span>
+            </label>
+            <div class="knob-help">${spec.help}</div>
+          </div>
+        `);
+      }
+    }
+
     settingsBody.innerHTML = parts.join("");
 
     settingsBody.querySelectorAll('input[type="range"]').forEach(inp => {
@@ -2428,6 +2467,16 @@
           const modified = val !== settingsState.defaults.budgets[key].default;
           valEl.classList.toggle("modified", modified);
         }
+        saveSettings();
+        updateSettingsButtonIndicator();
+      });
+    });
+    settingsBody.querySelectorAll('input[data-toggle-input]').forEach(cb => {
+      cb.addEventListener("change", e => {
+        const key = e.target.getAttribute("data-toggle-input");
+        settingsState.toggles[key] = e.target.checked;
+        const rowEl = settingsBody.querySelector(`[data-toggle="${key}"]`);
+        if (rowEl) rowEl.classList.toggle("modified", toggleIsModified(key));
         saveSettings();
         updateSettingsButtonIndicator();
       });
@@ -2477,6 +2526,9 @@
         if (d) settingsState.modelSelections[`${tier}.${role}`] = d;
       }
     }
+    for (const [key, spec] of Object.entries(defaults.toggles || {})) {
+      settingsState.toggles[key] = spec.default;
+    }
     saveSettings();
     renderSettings();
     updateSettingsButtonIndicator();
@@ -2502,6 +2554,13 @@
         overrides[tier][role] = model;
       }
       out.model_overrides = overrides;
+    }
+    const toggleDefs = settingsState.defaults?.toggles || {};
+    for (const [key, spec] of Object.entries(toggleDefs)) {
+      const current = settingsState.toggles[key];
+      if (current !== undefined && current !== spec.default) {
+        out[key] = current;
+      }
     }
     return out;
   };
@@ -2536,6 +2595,11 @@
       for (const [k, v] of Object.entries(saved.modelSelections)) {
         if (typeof v === "string" && v) settingsState.modelSelections[k] = v;
       }
+    }
+    for (const [key, spec] of Object.entries(defaults.toggles || {})) {
+      let val = spec.default;
+      if (saved && typeof saved.toggles?.[key] === "boolean") val = saved.toggles[key];
+      settingsState.toggles[key] = val;
     }
     renderSettings();
     updateSettingsButtonIndicator();

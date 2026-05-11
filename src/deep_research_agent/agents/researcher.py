@@ -408,7 +408,11 @@ async def research_run(deps: Deps, query: str) -> ResearcherReport:
     await deps.memory.create(root)
 
     # --- 2. Run the landscape agent (blocking).
-    brief_markdown = await landscape_run(deps, query)
+    if deps.run_config.skip_landscape:
+        logger.info("landscape SKIPPED via run_config.skip_landscape")
+        brief_markdown = "_(landscape disabled for this run)_"
+    else:
+        brief_markdown = await landscape_run(deps, query)
 
     # --- 3. Build the researcher's opening prompt (query + brief + source list).
     analyst_budget = deps.run_config.analyst_budget

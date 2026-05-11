@@ -174,6 +174,7 @@ def create_app(
                     f"{tier.value}.{role.value}": model
                     for (tier, role), model in run_config.model_overrides.items()
                 },
+                "skip_landscape": run_config.skip_landscape,
             },
         )
         return {"run_id": run_id}
