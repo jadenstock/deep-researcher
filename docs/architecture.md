@@ -105,17 +105,17 @@ notified on every mutation — that's how the UI streams the note graph.
 ## Control flow (single run)
 
 ```
-build_deps(local, routing, events)          # shared NoteMemory, clients, tracker
+build_deps(local, routing, events, run_config)  # shared NoteMemory, clients, tracker
   ↓
-research_run(deps, query)                   # agents/researcher.py
+research_run(deps, query)                       # agents/researcher.py
   ├─ create root QUESTION note
-  ├─ landscape_run(deps, query)             # blocking; returns brief markdown
+  ├─ landscape_run(deps, query)                 # unless run_config.skip_landscape
   │    └─ landscape agent → write_landscape_brief (commit)
   └─ researcher agent loop:
        get_research_state → decide → investigate_question(s) in parallel
          └─ analyst_run(deps, qid, q, mode)
               ├─ list_source_notes (inventory shared corpus)
-              ├─ scout(request) in parallel × N  (budget: 4 per analyst)
+              ├─ scout(request) in parallel × N  (per-analyst scout budget)
               │    └─ scout agent: search_web / search_academic
               │       + create_source_note + scout_fetch
               │       + find_related_papers
@@ -130,18 +130,48 @@ research_run(deps, query)                   # agents/researcher.py
 ### Budgets
 
 Budgets live as closure-scoped counters owned by the agent whose tool
-decrements them:
+decrements them. Their starting values come from the run-scoped
+`RunConfig` on `deps.run_config` (`agents/run_config.py`):
 
-- Analyst budget — max analyst dispatches per run (default 8, passed into
-  `build_researcher(..., analyst_budget_start=...)`). Decremented by the
-  closure-scoped `investigate_question` tool; when 0, the tool raises
-  `ModelRetry` asking the researcher to commit.
-- Scout budget — max scout dispatches per analyst run (default 4, passed
-  into `build_analyst(..., scout_budget_start=...)`). Decremented by the
-  closure-scoped `scout` tool.
+- **Analyst budget** — max analyst dispatches per run
+  (`DEFAULT_ANALYST_BUDGET = 12`). Read in `research_run` and passed
+  into `build_researcher(..., analyst_budget_start=...)`; decremented
+  by the closure-scoped `investigate_question` tool. When 0 the tool
+  raises `ModelRetry` asking the researcher to commit.
+- **Scout budget (per analyst)** — max scout dispatches one analyst
+  may make (`DEFAULT_SCOUT_BUDGET_PER_ANALYST = 6`). Read in
+  `analyst_run` and passed into `build_analyst(...,
+  scout_budget_start=...)`; decremented by the closure-scoped `scout`
+  tool.
+- **Scout search budget (per scout)** — shared ceiling across a
+  scout's search tools (`DEFAULT_SCOUT_SEARCH_BUDGET = 16`, covers
+  `search_web` + `search_academic` + `find_related_papers`
+  combined). Read in `scout_run` and passed into `build_scout(...,
+  search_budget_start=...)`; the three search tools share one
+  closure counter so the scout can trade breadth for citation
+  traversal without a separate pool.
 
 Budgets are backstops. The agents' prompts push them toward doing less than
 the cap.
+
+### Per-run knobs (`RunConfig`)
+
+`RunConfig` (`agents/run_config.py`) is a frozen dataclass attached to
+`Deps`. The CLI uses defaults; the server accepts an optional `config`
+payload on `POST /api/run` and builds one via `RunConfig.from_payload`
+(values are clamped to the slider ranges defined in the same module).
+Fields:
+
+- `analyst_budget`, `scout_budget_per_analyst`, `scout_search_budget`
+  — the three counters above.
+- `model_overrides: dict[(TaskTier, RoleClass), str]` — per-slot
+  routing overrides. Applied by `apply_to_routing` inside `build_deps`
+  so agent code still resolves models via
+  `deps.routing.model_id_for(role, tier)` and never sees the override
+  directly.
+- `skip_landscape: bool` — when `True`, `research_run` skips
+  `landscape_run` entirely; the researcher starts with no brief and no
+  pre-scouted corpus. Used for A/B comparisons of the landscape step.
 
 ### Root-question ID
 
@@ -212,6 +242,11 @@ All calls go through the OpenAI-compatible endpoint in `local.toml`
 `max_tokens=16384` because the upstream default truncated
 `answer_question` tool-call args mid-report.
 
+Per-run model overrides live on `RunConfig.model_overrides` and are
+merged into `routing` inside `build_deps` (see above). The routing
+YAML stays the default policy; the UI surfaces a curated `MODEL_CATALOG`
+from `agents/run_config.py` for its dropdowns.
+
 ## Observability
 
 Two event surfaces:
@@ -238,8 +273,14 @@ Each run writes to `runs/<run_id>/`:
 - `report.md` — human-readable final report. Composed by
   `compose_report_markdown` (handles happy path + crash/partial
   reconstruction from answered sub-question notes + sources appendix).
-- `report.json` — typed `ResearcherReport` payload.
+- `report.json` — typed `ResearcherReport` payload (success path only).
 - `notes.json` — full note graph dump.
+- `run_summary.json` — pre-built summary (query, started/finished
+  timestamps, status, tokens, note counters). Mirrors
+  `GET /api/run/{run_id}/summary` so the history index can list runs
+  without re-parsing `notes.json`. Written on both success and
+  partial paths; legacy runs without it fall back to on-the-fly
+  summarization.
 - `token_usage.json` — per-model token breakdown.
 - `run.log` — per-run DEBUG log (server path only).
 

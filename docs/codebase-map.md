@@ -10,10 +10,13 @@ src/deep_research_agent/
 ├─ agent_factory.py      model_id → pydantic-ai OpenAIChatModel
 ├─ observability.py      Silences noisy third-party loggers
 ├─ token_usage.py        Per-agent-per-model token tracker
+├─ run_id.py             `new_run_id()` — shared CLI/server id format
+├─ run_artifacts.py      Writes notes.json / report.md / report.json to a run dir
+├─ _time.py              `utc_now()` helper shared across layers
 ├─ schemas/              Typed domain models (notes, sources, enums, IDs)
 ├─ retrieval/            HTTP clients: Brave, Semantic Scholar, arXiv, fetch
-├─ agents/               Agent loops + shared memory + tools
-└─ server/               FastAPI app, SSE/WebSocket, live UI
+├─ agents/               Agent loops + shared memory + tools + run_config
+└─ server/               FastAPI app, WebSocket, live UI + on-disk history
 ```
 
 ## Top level
@@ -41,6 +44,27 @@ errors. Called once at startup from `cli.py`.
 `RequestUsage` snapshots keyed by `(agent_id, agent_type, model_id)`.
 Produces a rich-format table for logs and a JSON dump for artifacts.
 
+**`run_id.py`** — `new_run_id()` returns `YYYYMMDDTHHMMSS-xxxxxxxx`.
+One-stop formatter so the CLI, server, and on-disk history reader all
+agree on the id shape. `server/history.py` guards against path
+traversal with the same regex.
+
+**`_time.py`** — tiny `utc_now()` helper. Every timestamp in the note
+graph comes from here so the schemas layer, agent loops, and server
+never drift on tz-awareness.
+
+**`run_artifacts.py`** — `persist_run_artifacts(run_dir, notes,
+report_markdown, report_json, run_summary)` writes `notes.json` +
+`report.md` (+ optional `report.json` + optional `run_summary.json`)
+in parallel. Shared by the CLI path and `server/runner.py` so both
+dump the same artifact shape. Also hosts `summarize_notes` (the
+shared note-counter helper used by both the live and on-disk summary
+endpoints) and `build_run_summary` (assembles the `run_summary.json`
+payload, which mirrors `GET /api/run/{run_id}/summary` so the
+history index can skip re-parsing `notes.json`). Token usage is
+intentionally left out — callers save it separately so even a failed
+main dump still leaves a usable `token_usage.json` on disk.
+
 ## `schemas/`
 
 Pure pydantic models. No behavior.
@@ -48,7 +72,7 @@ Pure pydantic models. No behavior.
 - **`enums.py`** — `NoteType`, `SourceState` (SCOUTED/FETCHED/ANALYZED),
   `Tier` (1..5), `QuestionClassification`, `RoleClass`, `TaskTier`,
   `ClaimType`, `VerificationStatus`.
-- **`ids.py`** — `NoteID`, `SourceID`, `TaskID` newtypes.
+- **`ids.py`** — `NoteID`, `SourceID`, `RunID` newtypes.
 - **`note.py`** — `Note` proper plus the discriminated
   `NoteMetadata` union (`LandscapeMetadata`, `SourceNoteMetadata`,
   `QuestionMetadata`, `SynthesisMetadata`, …).
@@ -70,6 +94,11 @@ Low-level HTTP clients. No agent awareness — they produce `SearchHit` /
 - **`fetch.py`** — `fetch_and_extract(url)` — HTML (trafilatura) and PDF
   (MarkItDown, capped at 15MB / 20 pages) extraction to markdown.
 - **`rate_limit.py`** — shared async semaphore + min-interval helpers.
+- **`_http.py`** — shared retry loop used by Brave and Semantic Scholar:
+  honors `Retry-After` on 429s with an exponential-backoff floor and a
+  total-wait cap, plus an independent short-budget retry for transient
+  transport errors (DNS blips, connection resets, read timeouts) so a
+  flaky network moment doesn't eat into the 429 budget.
 - **`__init__.py`** — `apply_retrieval_rate_limits(local.retrieval)` runs
   once at startup and programs the clients' intervals from config.
 
@@ -79,10 +108,22 @@ All agent code and shared runtime state.
 
 - **`deps.py`** — `Deps` dataclass passed to every agent via
   `RunContext[Deps]`. Holds the shared `NoteMemory`, retrieval clients,
-  config, token tracker, and event publisher. Immutable after
-  construction — run-scoped mutable state (budgets, root-question id)
-  lives in `build_*` closures owned by the agent that consumes it; the
-  note graph is the only shared mutable surface between agents.
+  config, token tracker, event publisher, shared `httpx.AsyncClient`,
+  and the per-run `RunConfig`. Immutable after construction —
+  run-scoped mutable state (budgets, root-question id) lives in
+  `build_*` closures owned by the agent that consumes it; the note
+  graph is the only shared mutable surface between agents. `build_deps`
+  applies `RunConfig.model_overrides` onto `routing` so downstream
+  agent code resolves models through a single effective table.
+- **`run_config.py`** — `RunConfig` frozen dataclass: per-run budgets
+  (`analyst_budget`, `scout_budget_per_analyst`,
+  `scout_search_budget`), a `model_overrides` map, and a
+  `skip_landscape` toggle. `from_payload` builds one from the
+  server's optional API payload (values clamped to slider ranges).
+  `apply_to_routing` returns a new `RoutingConfig` with override slots
+  swapped. `defaults_payload` produces the JSON served by
+  `GET /api/config/defaults` so the UI sliders/dropdowns never
+  hardcode defaults.
 - **`memory.py`** — `NoteMemory`. Async-safe dict of `NoteID → Note`.
   Lock-serialized mutations, lock-free reads, URL-normalized dedup on
   source lookup, publisher callbacks on every create/update.
@@ -95,10 +136,15 @@ All agent code and shared runtime state.
   `_CURRENT_AGENT_ID` contextvar, and the `@instrumented` tool
   decorator that tags tool-call events with the currently running
   agent's id.
-- **`_debug.py`** / **`_usage.py`** — helpers called from every
-  `*_run` wrapper: `log_run_node` walks the pydantic-ai `agent.iter()`
-  node stream into the logger; `record_run_usage` posts `run.usage()`
-  into the `TokenUsageTracker` and emits a `token_usage` event.
+- **`_debug.py`** / **`_usage.py`** / **`_run.py`** — helpers called
+  from every `*_run` wrapper. `log_run_node` walks the pydantic-ai
+  `agent.iter()` node stream into the logger; `record_run_usage` posts
+  `run.usage()` into the `TokenUsageTracker` and emits a `token_usage`
+  event; `drive_agent` captures the shared iterate-and-log pattern
+  (set agent-id contextvar, publish `on_agent_start`, iterate the run
+  with logging + usage recording, publish `on_agent_done(ABANDONED)`
+  on exception). Each `*_run` caller still owns reading its committed
+  output, choosing a fallback, and publishing `on_agent_done(DONE)`.
 
 ### Agent loops
 
@@ -157,12 +203,23 @@ FastAPI app + live UI. Mirrors the CLI path but streams events.
 
 - **`app.py`** — FastAPI app factory (`create_app`). Endpoints:
   - `GET /` — serves `static/index.html`.
-  - `POST /api/run` — spawn a run, return `{run_id}`.
-  - `GET /api/runs` — list known runs.
-  - `GET /api/note/{run_id}/{note_id}` — fetch a note's JSON (used by
-    the UI's report / node-detail tabs).
-  - `GET /api/run/{run_id}/summary` — end-of-run debrief (tokens,
+  - `POST /api/run` — spawn a run with an optional `config` payload
+    (parsed into a `RunConfig`), return `{run_id}`.
+  - `GET /api/config/defaults` — budget defaults + slider ranges +
+    model catalog + current routing defaults. Feeds the UI's Settings
+    panel so nothing in the frontend hardcodes a default.
+  - `GET /api/runs` — list in-process runs (current server lifetime).
+  - `GET /api/history` — list completed runs on disk under `runs/`,
+    newest first. Complements `/api/runs` for pre-restart runs.
+  - `GET /api/history/{run_id}/notes` — note graph from the on-disk
+    `notes.json`.
+  - `GET /api/history/{run_id}/report` — `report.md` contents.
+  - `GET /api/history/{run_id}/summary` — on-disk summary (tokens,
     note counts, duration).
+  - `GET /api/note/{run_id}/{note_id}` — fetch a live note's JSON
+    (used by the UI's report / node-detail tabs).
+  - `GET /api/run/{run_id}/summary` — end-of-run debrief for a live
+    run (tokens, note counts, duration).
   - `WS /api/ws/{run_id}` — replay history on connect, then stream live
     events.
 - **`runner.py`** — `run_session(session, …)` runs one research session
@@ -175,6 +232,16 @@ FastAPI app + live UI. Mirrors the CLI path but streams events.
   queues), `SessionRegistry` (`run_id → RunSession`), and typed event
   constructors (`event_agent_started`, `event_note_created`,
   `event_tool_call_end`, …).
+- **`history.py`** — read-only view of completed runs persisted under
+  `runs/`. `SessionRegistry` only remembers the current process's
+  runs; this module serves the complementary view from disk. Validates
+  run ids against the `run_id.py` format (guarding path traversal and
+  ignoring legacy `run_*_xxxx` directories) and exposes
+  `list_history` / `read_notes` / `read_report_md` / `summarize`. Prefers
+  the pre-built `run_summary.json` for both `list_history` and
+  `summarize` and only falls back to parsing `notes.json` for legacy
+  runs that predate the summary artifact. Disk reads are wrapped in
+  `asyncio.to_thread` at the endpoint layer.
 - **`static/index.html`** — single-page live UI. Agents-running panel,
   note graph, tool-call ticker, report viewer, token usage table.
   Fetched with `Cache-Control: no-store` so iteration on the frontend
