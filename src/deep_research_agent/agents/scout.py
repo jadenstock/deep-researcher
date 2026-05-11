@@ -152,12 +152,9 @@ def build_scout(
     agent.tool(list_source_notes)
     agent.tool(scout_fetch)
 
-    # Shared budget across all three search tools. Each call burns
-    # one unit; when exhausted, the tools raise ModelRetry so the
-    # scout stops searching and commits with what it has. The prompt
-    # says "~3 rounds of 2-4 parallel searches" which is ~6-12 calls;
-    # default cap of 8 accommodates that without letting a misbehaving
-    # scout runaway.
+    # Shared budget across all three search tools. Each call burns one
+    # unit; when exhausted, the tools raise ModelRetry so the scout
+    # stops searching and commits with what it has.
     search_budget = [search_budget_start]
 
     def _spend_search(tool_name: str) -> None:

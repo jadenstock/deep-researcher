@@ -18,9 +18,10 @@ import json
 import logging
 from pathlib import Path
 
+from .._time import utc_now
 from ..agents.deps import build_deps, close_deps
 from ..agents.events import EventPublisher
-from ..agents.memory import NoteMemory, new_note_id, utc_now
+from ..agents.memory import NoteMemory, new_note_id
 from ..agents.researcher import research_run
 from ..agents.run_config import RunConfig
 from ..agents.schemas import compose_report_markdown
@@ -260,18 +261,19 @@ async def _dump_artifacts(
     """Persist per-run artifacts: report.md, report.json, notes.json."""
     run_dir.mkdir(parents=True, exist_ok=True)
     notes_out = [n.model_dump(mode="json") for n in notes.values()]
-    await asyncio.to_thread(
-        (run_dir / "notes.json").write_text,
-        json.dumps(notes_out, indent=2, default=str),
-    )
+    writes: list[tuple[Path, str]] = [
+        (run_dir / "notes.json", json.dumps(notes_out, indent=2, default=str)),
+    ]
     if report_json is not None:
-        await asyncio.to_thread(
-            (run_dir / "report.json").write_text,
-            json.dumps(report_json, indent=2, default=str),
-        )
+        writes.append((run_dir / "report.json", json.dumps(report_json, indent=2, default=str)))
     if report_markdown is not None:
-        md = f"# Research report\n\n**Query:** {query}\n\n{report_markdown}\n"
-        await asyncio.to_thread((run_dir / "report.md").write_text, md)
+        writes.append(
+            (
+                run_dir / "report.md",
+                f"# Research report\n\n**Query:** {query}\n\n{report_markdown}\n",
+            )
+        )
+    await asyncio.gather(*(asyncio.to_thread(path.write_text, content) for path, content in writes))
 
 
 async def run_session(
@@ -353,12 +355,8 @@ async def run_session(
         )
     except Exception as exc:
         logger.exception("run failed run_id=%s", session.run_id)
-        # Dump whatever partial state we have so a failed run is
-        # autopsy-able from disk. Each analyst commits its synthesis
-        # onto its assigned QUESTION note (status=SYNTHESIZED), so
-        # even when the top-level researcher crashes before answering
-        # the root we can still compose a partial report from the
-        # answered sub-question notes.
+        # Compose a partial report from whatever SYNTHESIZED sub-question
+        # notes survive so a failed run is still autopsy-able from disk.
         try:
             partial_md = compose_report_markdown(
                 query=session.query, report=None, memory=deps.memory
@@ -370,10 +368,6 @@ async def run_session(
                 report_markdown=partial_md,
                 report_json=None,
             )
-            # Materialize a fallback SYNTHESIS note for the partial
-            # report so the UI's report tab can still render something
-            # (compat shim - the happy-path report lives on the root
-            # QUESTION note).
             partial_note_id = await _materialize_fallback_report_note(
                 publisher=publisher,
                 report_markdown=partial_md,
@@ -388,8 +382,7 @@ async def run_session(
             logger.exception("partial dump failed run_id=%s", session.run_id)
         session.publish(event_run_failed(f"{type(exc).__name__}: {exc}"))
     finally:
-        # Token usage snapshot - costs don't care whether the run
-        # finished. Stored as JSON next to the run artifacts.
+        # Token usage snapshot - costs don't care whether the run finished.
         try:
             run_dir.mkdir(parents=True, exist_ok=True)
             await asyncio.to_thread(deps.tracker.save_json, run_dir / "token_usage.json")

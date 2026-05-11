@@ -1,8 +1,8 @@
 """Pydantic data models for the note graph.
 
-The note graph is the agents' persistent memory across a run. Notes
-have a type (source / question / synthesis / hypothesis / ...) and a
-discriminated metadata payload specific to that type.
+The note graph is the agents' persistent memory across a run. Notes have
+a type (source / question / synthesis / landscape) and a discriminated
+metadata payload specific to that type.
 """
 
 from .enums import (
@@ -17,38 +17,25 @@ from .enums import (
 )
 from .ids import NoteID, RunID, SourceID, TaskID
 from .note import (
-    DecisionMetadata,
-    HypothesisMetadata,
     LandscapeMetadata,
     Link,
     Note,
     NoteMetadata,
-    OpenQuestionMetadata,
-    PositionItem,
     QuestionMetadata,
     SourceNoteMetadata,
     SynthesisMetadata,
-    ThemeItem,
 )
-from .source import ClaimItem, SourceMetadata, StructuredContent
+from .source import ClaimItem, SourceMetadata
 
 __all__ = [
-    # source
     "ClaimItem",
-    # enums
     "ClaimType",
-    # note
-    "DecisionMetadata",
-    "HypothesisMetadata",
     "LandscapeMetadata",
     "Link",
     "Note",
-    # ids
     "NoteID",
     "NoteMetadata",
     "NoteType",
-    "OpenQuestionMetadata",
-    "PositionItem",
     "QuestionClassification",
     "QuestionMetadata",
     "RoleClass",
@@ -57,11 +44,9 @@ __all__ = [
     "SourceMetadata",
     "SourceNoteMetadata",
     "SourceState",
-    "StructuredContent",
     "SynthesisMetadata",
     "TaskID",
     "TaskTier",
-    "ThemeItem",
     "Tier",
     "VerificationStatus",
 ]

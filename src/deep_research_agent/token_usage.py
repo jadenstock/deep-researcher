@@ -1,17 +1,15 @@
 """Per-run token-usage bookkeeping.
 
-A run touches many models - tier classifier, landscape surveyor,
-decomposer, analyzers, synthesizers, verifiers, judge, validator,
-report writer. Each goes through pydantic_ai which reports a
+A run touches several models across the landscape / scout / analyst /
+researcher agents. Each goes through pydantic_ai which reports a
 `RunUsage` on every `agent.run()`. We aggregate those counts per
 model so a run summary can say "HIGH-tier model burned 40k input /
 12k output across 18 calls".
 
 Scope is intentionally per-run, not process-global: a tracker is
-instantiated in runner.py / cli.py, attached to the AgentExecutor,
-and used via `HandlerContext.track(agent, user)`. At end of run
-we log a formatted summary and write a token_usage.json alongside
-the report for later analysis.
+instantiated in runner.py / cli.py and threaded through Deps. At
+end of run we log a formatted summary and write a token_usage.json
+alongside the report for later analysis.
 """
 
 from __future__ import annotations
@@ -36,8 +34,8 @@ class ModelTotals:
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
     tool_calls: int = 0
-    # Task-type breakdown so you can see, e.g., that ANALYZE_SOURCE
-    # dominates the call count for a given model.
+    # Agent-type breakdown (LANDSCAPE / SCOUT / ANALYST / RESEARCHER)
+    # so you can see which role dominates the call count for a given model.
     by_task_type: dict[str, int] = field(default_factory=dict)
 
     @property

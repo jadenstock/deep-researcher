@@ -16,10 +16,6 @@ protocol (kinds + payload shapes) matches what the live UI
                      — per-agent delta, UI sums them into a running total
     run_done      -> { report_note_id }
     run_failed    -> { error }
-
-Keeping the "task_*" kind names means the existing UI (which
-originally tracked scheduler tasks) renders our agent invocations
-without frontend changes - each agent is a "task" in UI terms.
 """
 
 from __future__ import annotations
@@ -27,11 +23,12 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import OrderedDict, deque
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from .._time import utc_now
 from ..schemas.note import Note
 
 logger = logging.getLogger(__name__)
@@ -113,7 +110,7 @@ class Event(BaseModel):
         "run_done",
         "run_failed",
     ]
-    at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    at: datetime = Field(default_factory=utc_now)
     data: dict[str, Any]
 
 
@@ -142,7 +139,7 @@ def event_agent_started(
         role=role,
         model_id=model_id,
         mode=mode,
-        started_at=datetime.now(UTC),
+        started_at=utc_now(),
     )
     return Event(kind="task_started", data=summary.model_dump(mode="json"))
 
@@ -269,7 +266,7 @@ class RunSession:
     def __init__(self, run_id: str, query: str) -> None:
         self.run_id = run_id
         self.query = query
-        self.started_at = datetime.now(UTC)
+        self.started_at = utc_now()
         self.finished_at: datetime | None = None
         self.finished = False
         self.history: deque[Event] = deque(maxlen=self.HISTORY_CAP)

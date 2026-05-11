@@ -18,12 +18,13 @@ import uuid
 
 from pydantic_ai import Agent
 
+from .._time import utc_now
 from ..agent_factory import make_model
 from ..schemas.enums import AgentRunStatus, AgentType, NoteType, RoleClass, TaskTier
 from ..schemas.note import LandscapeMetadata, Note
 from ._run import drive_agent
 from .deps import Deps
-from .memory import new_note_id, utc_now
+from .memory import new_note_id
 from .tools.notes import create_source_note, list_source_notes, write_landscape_brief
 from .tools.search import search_academic, search_web
 

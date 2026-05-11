@@ -21,11 +21,11 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import UTC, datetime
 from typing import Literal, cast
 
 from pydantic_ai import Agent, ModelRetry, RunContext
 
+from .._time import utc_now
 from ..agent_factory import make_model
 from ..schemas.enums import (
     AgentRunStatus,
@@ -48,11 +48,6 @@ from .schemas import QuestionSynthesis, ResearcherReport, question_synthesis_fro
 from .tools.notes import answer_question, load_note
 
 logger = logging.getLogger(__name__)
-
-# Hard cap on analyst dispatches per research run. Prompt says less;
-# this is the backstop so a misbehaving researcher can't runaway-spawn.
-# Default lives in `run_config.py`; read from `deps.run_config` at
-# build time so UI-supplied overrides flow through.
 
 
 RESEARCHER_SYSTEM = """\
@@ -371,8 +366,8 @@ def build_researcher(
                 status=QuestionStatus.IN_PROGRESS,
                 parent_question_id=root_question_id,
             ),
-            last_modified_at=datetime.now(UTC),
-            created_at=datetime.now(UTC),
+            last_modified_at=utc_now(),
+            created_at=utc_now(),
         )
         await ctx.deps.memory.create(note)
         analyst_mode: AnalystMode = mode
@@ -402,8 +397,8 @@ async def research_run(deps: Deps, query: str) -> ResearcherReport:
             status=QuestionStatus.IN_PROGRESS,
             parent_question_id=None,
         ),
-        last_modified_at=datetime.now(UTC),
-        created_at=datetime.now(UTC),
+        last_modified_at=utc_now(),
+        created_at=utc_now(),
     )
     await deps.memory.create(root)
 

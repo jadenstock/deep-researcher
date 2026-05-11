@@ -39,11 +39,6 @@ from .tools.notes import (
     update_source_after_reading,
 )
 
-# Hard cap on scout sub-agent dispatches per analyst run. Prompt
-# encourages fewer; this is the backstop so a misbehaving analyst
-# can't runaway-spawn scouts. Default lives in `run_config.py`; read
-# from `deps.run_config` at build time so UI overrides flow through.
-
 logger = logging.getLogger(__name__)
 
 AnalystMode = Literal["explore", "verify", "adversarial"]

@@ -17,21 +17,11 @@ class TaskTier(StrEnum):
     HIGH = "HIGH"
 
 
-class DependencyType(StrEnum):
-    PRODUCES_CONTEXT_FOR = "produces_context_for"
-    COMPARED_AGAINST = "compared_against"
-    TEMPORALLY_FOLLOWS = "temporally_follows"
-    NONE = "none"
-
-
 class NoteType(StrEnum):
     LANDSCAPE = "landscape_note"
     SOURCE = "source_note"
     QUESTION = "question_note"
     SYNTHESIS = "synthesis_note"
-    DECISION = "decision_note"
-    OPEN_QUESTION = "open_question_note"
-    HYPOTHESIS = "hypothesis_note"
 
 
 class QuestionClassification(StrEnum):

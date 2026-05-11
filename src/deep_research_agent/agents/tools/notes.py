@@ -17,6 +17,7 @@ import logging
 from pydantic import BaseModel, Field
 from pydantic_ai import ModelRetry, RunContext
 
+from ..._time import utc_now
 from ...schemas.enums import (
     ClaimType,
     ConfidenceLevel,
@@ -36,17 +37,12 @@ from ...schemas.note import (
 from ...schemas.source import ClaimItem, ReadingEntry
 from ..deps import Deps
 from ..events import current_agent_id, instrumented
-from ..memory import new_note_id, utc_now
+from ..memory import new_note_id
 
 logger = logging.getLogger(__name__)
 
 
 # --- Tool input payloads ----------------------------------------------------
-#
-# pydantic-ai passes tool arguments through the LLM - the more explicit
-# and small the payload shape, the less the model flails. Dedicated
-# input models (with field docstrings) let us document tool semantics
-# in one place.
 
 
 class ClaimInput(BaseModel):
@@ -378,20 +374,8 @@ async def list_source_notes(
 
 
 # --- Final-output tools ----------------------------------------------------
-#
-# These are how agents COMMIT their final work. Replaces structured-
-# output validation on the agent. Moving this to a tool means:
-#
-# 1. Pydantic validates tool args -> invalid args surface as a
-#    ModelRetry with a descriptive error that the model sees as a
-#    tool-call failure and naturally retries within the same turn.
-# 2. The tool creates or updates a durable note on success, so the
-#    work survives a later crash in the conversation.
-# 3. Tool-call events fire in the UI - the user sees the write
-#    attempt land (or fail + retry) in the agent card.
-#
-# Each tool writes to the note graph; the wrapping `*_run` function
-# reconstructs what it needs by reading notes back from memory.
+# Agents COMMIT their final work through these tools. Pydantic-validated
+# args + durable note writes; tool-call events surface in the UI.
 
 
 @instrumented

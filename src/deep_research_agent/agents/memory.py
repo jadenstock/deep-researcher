@@ -13,16 +13,12 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import Iterable
-from datetime import UTC, datetime
 
+from .._time import utc_now
 from ..schemas.enums import NoteType
 from ..schemas.ids import NoteID
 from ..schemas.note import Note, SourceNoteMetadata
 from .events import EventPublisher, NoOpPublisher
-
-
-def utc_now() -> datetime:
-    return datetime.now(UTC)
 
 
 def new_note_id(prefix: str) -> NoteID:
