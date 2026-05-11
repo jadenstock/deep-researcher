@@ -21,16 +21,16 @@ from __future__ import annotations
 import logging
 import uuid
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, ModelRetry, RunContext
 
 from ..agent_factory import make_model
-from ..schemas.enums import AgentRunStatus, AgentType, RoleClass, TaskTier
+from ..schemas.enums import AgentRunStatus, AgentType, NoteType, RoleClass, TaskTier
 from ._run import drive_agent
 from .deps import Deps
-from .schemas import ScoutResult
+from .events import instrumented
+from .schemas import ScoutedSource, ScoutResult
 from .tools.fetch import scout_fetch
 from .tools.notes import (
-    commit_scout_result,
     create_source_note,
     list_source_notes,
 )
@@ -134,7 +134,7 @@ analyst's job. Your job is retrieval grunt work + a first-pass triage.
 """
 
 
-def build_scout(deps: Deps, model_id: str) -> Agent[Deps, str]:
+def build_scout(deps: Deps, model_id: str) -> tuple[Agent[Deps, str], list[ScoutResult]]:
     agent = Agent(
         make_model(model_id, deps.local),
         deps_type=Deps,
@@ -148,8 +148,56 @@ def build_scout(deps: Deps, model_id: str) -> Agent[Deps, str]:
     agent.tool(create_source_note)
     agent.tool(list_source_notes)
     agent.tool(scout_fetch)
-    agent.tool(commit_scout_result)
-    return agent
+
+    outbox: list[ScoutResult] = []
+
+    @agent.tool
+    @instrumented
+    async def commit_scout_result(
+        ctx: RunContext[Deps],
+        sources: list[ScoutedSource],
+        coverage_note: str,
+    ) -> str:
+        """Commit your sourcelist + coverage note for the dispatching analyst.
+
+        TERMINAL tool for the scout sub-agent - call exactly once as the
+        last tool call before ending your turn. Writes the result into
+        the closure-scoped outbox owned by the dispatching `scout_run`
+        call so the analyst that dispatched this scout sees the return.
+
+        Args:
+          sources: List of ScoutedSource entries. Each must reference an
+            existing source_note id (from create_source_note you called
+            earlier). tier_guess is 1..5 or null; relevance_guess is one
+            of 'high' | 'medium' | 'low'; preview is a 2-3 sentence
+            excerpt from scout_fetch (empty if the source was never
+            fetched - e.g. paywall / 404).
+          coverage_note: One paragraph summarizing what you searched,
+            what you found, and where coverage is thin or strong. Tells
+            the analyst whether another scout dispatch on a different
+            angle is worth it.
+        """
+        if not sources and not coverage_note.strip():
+            raise ModelRetry(
+                "commit_scout_result needs either `sources` or a non-empty "
+                "`coverage_note`. If retrieval came up empty, say so in "
+                "coverage_note so the analyst knows."
+            )
+        for s in sources:
+            n = ctx.deps.memory.get(s.source_id)
+            if n is None:
+                raise ModelRetry(
+                    f"source_id {s.source_id!r} in your sources list is not in memory. "
+                    "Only reference source_ids you created via create_source_note."
+                )
+            if n.type != NoteType.SOURCE:
+                raise ModelRetry(
+                    f"source_id {s.source_id!r} is a {n.type.value}, not a source_note."
+                )
+        outbox.append(ScoutResult(sources=list(sources), coverage_note=coverage_note))
+        return f"committed scout result ({len(sources)} sources)"
+
+    return agent, outbox
 
 
 async def scout_run(deps: Deps, request: str) -> ScoutResult:
@@ -161,41 +209,37 @@ async def scout_run(deps: Deps, request: str) -> ScoutResult:
     so the analyst sees a gap rather than a missing value.
     """
     model_id = deps.routing.model_id_for(RoleClass.CHEAP_DETERMINISTIC, TaskTier.MID)
-    agent = build_scout(deps, model_id)
+    agent, outbox = build_scout(deps, model_id)
     agent_id = f"scout-{uuid.uuid4().hex[:8]}"
     logger.info("scout start agent_id=%s model=%s request=%r", agent_id, model_id, request[:160])
-    try:
-        await drive_agent(
-            deps=deps,
-            agent=agent,
-            agent_id=agent_id,
-            agent_type=AgentType.SCOUT,
-            goal=request,
-            tier=TaskTier.MID,
-            role=RoleClass.CHEAP_DETERMINISTIC,
-            model_id=model_id,
-            prompt=f"Scout request: {request}",
+    await drive_agent(
+        deps=deps,
+        agent=agent,
+        agent_id=agent_id,
+        agent_type=AgentType.SCOUT,
+        goal=request,
+        tier=TaskTier.MID,
+        role=RoleClass.CHEAP_DETERMINISTIC,
+        model_id=model_id,
+        prompt=f"Scout request: {request}",
+    )
+
+    if outbox:
+        result = outbox[-1]
+    else:
+        logger.warning("scout agent_id=%s ended without committing", agent_id)
+        result = ScoutResult(
+            sources=[],
+            coverage_note=(
+                "Scout ended without calling commit_scout_result - no sources surfaced."
+            ),
         )
 
-        committed = deps.state.agent_outputs.get(agent_id)
-        if isinstance(committed, ScoutResult):
-            result = committed
-        else:
-            logger.warning("scout agent_id=%s ended without committing", agent_id)
-            result = ScoutResult(
-                sources=[],
-                coverage_note=(
-                    "Scout ended without calling commit_scout_result - no sources surfaced."
-                ),
-            )
-
-        deps.events.on_agent_done(
-            agent_id=agent_id,
-            agent_type=AgentType.SCOUT,
-            status=AgentRunStatus.DONE,
-            verdict=f"{len(result.sources)} sources",
-        )
-        logger.info("scout done agent_id=%s sources=%d", agent_id, len(result.sources))
-        return result
-    finally:
-        deps.state.agent_outputs.pop(agent_id, None)
+    deps.events.on_agent_done(
+        agent_id=agent_id,
+        agent_type=AgentType.SCOUT,
+        status=AgentRunStatus.DONE,
+        verdict=f"{len(result.sources)} sources",
+    )
+    logger.info("scout done agent_id=%s sources=%d", agent_id, len(result.sources))
+    return result

@@ -12,9 +12,9 @@ Flow:
        - answer_question(root_id, ...): commit final report & stop
      The researcher NEVER reads raw source content. Analysts do.
 
-Budget: a per-run cap on analyst dispatches. `deps.state.analyst_budget`
-starts at the cap and decrements on each dispatch; when 0 the
-investigate_question tool refuses.
+Budget: a per-run cap on analyst dispatches. `build_researcher` owns
+a closure-scoped counter that starts at the cap and decrements on
+each dispatch; when 0 the investigate_question tool refuses.
 """
 
 from __future__ import annotations
@@ -30,7 +30,6 @@ from ..agent_factory import make_model
 from ..schemas.enums import (
     AgentRunStatus,
     AgentType,
-    ConfidenceLevel,
     NoteType,
     QuestionClassification,
     QuestionStatus,
@@ -42,10 +41,11 @@ from ..schemas.note import Note, QuestionMetadata, SourceNoteMetadata
 from ._run import drive_agent
 from .analyst import AnalystMode, analyst_run
 from .deps import Deps
+from .events import instrumented
 from .landscape import landscape_run
 from .memory import new_note_id
-from .schemas import QuestionSynthesis, ResearcherReport
-from .tools.notes import answer_question, get_research_state, load_note
+from .schemas import QuestionSynthesis, ResearcherReport, question_synthesis_from_note
+from .tools.notes import answer_question, load_note
 
 logger = logging.getLogger(__name__)
 
@@ -248,7 +248,11 @@ def _render_source_list(deps: Deps, max_rows: int = 80) -> str:
     return "\n".join(lines)
 
 
-def build_researcher(deps: Deps) -> Agent[Deps, str]:
+def build_researcher(
+    deps: Deps,
+    root_question_id: NoteID,
+    analyst_budget_start: int,
+) -> Agent[Deps, str]:
     model_id = deps.routing.model_id_for(RoleClass.GENERATIVE, TaskTier.HIGH)
     agent = Agent(
         make_model(model_id, deps.local),
@@ -261,9 +265,68 @@ def build_researcher(deps: Deps) -> Agent[Deps, str]:
         # stumble kill a long run.
         tool_retries=5,
     )
-    agent.tool(get_research_state)
     agent.tool(load_note)
     agent.tool(answer_question)
+
+    budget = [analyst_budget_start]  # mutable box for closure mutation
+
+    @agent.tool
+    @instrumented
+    async def get_research_state(ctx: RunContext[Deps]) -> dict[str, object]:
+        """Compact snapshot of the note graph for the orchestrator.
+
+        Returns:
+          {
+            "root_question": {...} | None,
+            "questions": [{id, question, status, confidence,
+                           parent_id, n_sources_cited}, ...],
+            "sources_by_tier": {"unclassified": N, "1": N, "2": N, ...},
+            "sources_by_state": {"SCOUTED": N, "FETCHED": N, "ANALYZED": N},
+            "budget": {"analyst_dispatches_remaining": int},
+          }
+
+        This is the ONLY way the researcher should inspect the note graph
+        between rounds - it keeps the researcher's context free of raw
+        source content.
+        """
+        questions = []
+        root_summary: dict[str, object] | None = None
+        for n in ctx.deps.memory.list_by_type(NoteType.QUESTION):
+            meta = n.metadata
+            if not isinstance(meta, QuestionMetadata):
+                continue
+            entry = {
+                "id": n.id,
+                "question": n.description or n.title,
+                "status": meta.status,
+                "confidence": meta.confidence,
+                "parent_id": meta.parent_question_id,
+                "n_sources_cited": len(meta.sources_cited),
+            }
+            if n.id == root_question_id:
+                root_summary = entry
+            else:
+                questions.append(entry)
+
+        sources_by_tier: dict[str, int] = {}
+        sources_by_state: dict[str, int] = {}
+        for n in ctx.deps.memory.list_by_type(NoteType.SOURCE):
+            meta = n.metadata
+            if not isinstance(meta, SourceNoteMetadata):
+                continue
+            tier_key = str(meta.tier.value) if meta.tier is not None else "unclassified"
+            sources_by_tier[tier_key] = sources_by_tier.get(tier_key, 0) + 1
+            sources_by_state[meta.state.value] = sources_by_state.get(meta.state.value, 0) + 1
+
+        return {
+            "root_question": root_summary,
+            "questions": questions,
+            "sources_by_tier": sources_by_tier,
+            "sources_by_state": sources_by_state,
+            "budget": {
+                "analyst_dispatches_remaining": budget[0],
+            },
+        }
 
     @agent.tool
     async def investigate_question(
@@ -288,16 +351,13 @@ def build_researcher(deps: Deps) -> Agent[Deps, str]:
         analyst dispatch budget; refuses if budget is exhausted. All
         three modes draw from the same budget.
         """
-        budget = ctx.deps.state.analyst_budget
-        if budget is not None and budget <= 0:
+        if budget[0] <= 0:
             raise ModelRetry(
                 "analyst dispatch budget exhausted - stop dispatching and commit "
                 "the final report with answer_question(question_id=root_id, ...)."
             )
-        if budget is not None:
-            ctx.deps.state.analyst_budget = budget - 1
+        budget[0] -= 1
 
-        parent_id = ctx.deps.state.root_question_id
         q_id = new_note_id("question")
         note = Note(
             id=q_id,
@@ -308,7 +368,7 @@ def build_researcher(deps: Deps) -> Agent[Deps, str]:
             metadata=QuestionMetadata(
                 classification=QuestionClassification.SYNTHESIS,
                 status=QuestionStatus.IN_PROGRESS,
-                parent_question_id=parent_id,
+                parent_question_id=root_question_id,
             ),
             last_modified_at=datetime.now(UTC),
             created_at=datetime.now(UTC),
@@ -345,14 +405,16 @@ async def research_run(deps: Deps, query: str) -> ResearcherReport:
         created_at=datetime.now(UTC),
     )
     await deps.memory.create(root)
-    deps.state.root_question_id = root_id
-    deps.state.analyst_budget = DEFAULT_ANALYST_BUDGET
 
     # --- 2. Run the landscape agent (blocking).
     brief_markdown = await landscape_run(deps, query)
 
     # --- 3. Build the researcher's opening prompt (query + brief + source list).
-    agent = build_researcher(deps)
+    agent = build_researcher(
+        deps,
+        root_question_id=root_id,
+        analyst_budget_start=DEFAULT_ANALYST_BUDGET,
+    )
     agent_id = f"res-{uuid.uuid4().hex[:8]}"
     model_id = deps.routing.model_id_for(RoleClass.GENERATIVE, TaskTier.HIGH)
     logger.info("researcher start agent_id=%s query=%r", agent_id, query[:200])
@@ -367,31 +429,27 @@ async def research_run(deps: Deps, query: str) -> ResearcherReport:
         "to answer_question."
     )
 
-    try:
-        await drive_agent(
-            deps=deps,
-            agent=agent,
-            agent_id=agent_id,
-            agent_type=AgentType.RESEARCHER,
-            goal=query,
-            tier=TaskTier.HIGH,
-            role=RoleClass.GENERATIVE,
-            model_id=model_id,
-            prompt=opening,
-        )
+    await drive_agent(
+        deps=deps,
+        agent=agent,
+        agent_id=agent_id,
+        agent_type=AgentType.RESEARCHER,
+        goal=query,
+        tier=TaskTier.HIGH,
+        role=RoleClass.GENERATIVE,
+        model_id=model_id,
+        prompt=opening,
+    )
 
-        report = _build_report_from_root(deps, root_id, query)
-        deps.events.on_agent_done(
-            agent_id=agent_id,
-            agent_type=AgentType.RESEARCHER,
-            status=AgentRunStatus.DONE,
-            verdict=f"{len(deps.memory)} notes",
-        )
-        logger.info("researcher done agent_id=%s", agent_id)
-        return report
-    finally:
-        deps.state.root_question_id = None
-        deps.state.analyst_budget = None
+    report = _build_report_from_root(deps, root_id, query)
+    deps.events.on_agent_done(
+        agent_id=agent_id,
+        agent_type=AgentType.RESEARCHER,
+        status=AgentRunStatus.DONE,
+        verdict=f"{len(deps.memory)} notes",
+    )
+    logger.info("researcher done agent_id=%s", agent_id)
+    return report
 
 
 def _build_report_from_root(deps: Deps, root_id: NoteID, query: str) -> ResearcherReport:
@@ -405,19 +463,9 @@ def _build_report_from_root(deps: Deps, root_id: NoteID, query: str) -> Research
     for n in deps.memory.list_by_type(NoteType.QUESTION):
         if n.id == root_id:
             continue
-        meta = n.metadata
-        if not isinstance(meta, QuestionMetadata) or meta.status != QuestionStatus.SYNTHESIZED:
-            continue
-        sub_syntheses.append(
-            QuestionSynthesis(
-                question=n.description or n.title,
-                report=meta.report_markdown or "",
-                confidence=meta.confidence or ConfidenceLevel.LOW,
-                sources_cited=list(meta.sources_cited),
-                disagreements=list(meta.disagreements),
-                open_issues=list(meta.open_issues),
-            )
-        )
+        qs = question_synthesis_from_note(n)
+        if qs is not None:
+            sub_syntheses.append(qs)
 
     if (
         root is not None

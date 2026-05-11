@@ -28,7 +28,6 @@ from ...schemas.enums import (
 )
 from ...schemas.ids import NoteID
 from ...schemas.note import (
-    LandscapeMetadata,
     Link,
     Note,
     QuestionMetadata,
@@ -38,7 +37,6 @@ from ...schemas.source import ClaimItem, ReadingEntry
 from ..deps import Deps
 from ..events import current_agent_id, instrumented
 from ..memory import new_note_id, utc_now
-from ..schemas import QuestionSynthesis, ScoutedSource, ScoutResult
 
 logger = logging.getLogger(__name__)
 
@@ -379,67 +377,6 @@ async def list_source_notes(
     return out
 
 
-@instrumented
-async def get_research_state(ctx: RunContext[Deps]) -> dict[str, object]:
-    """Compact snapshot of the note graph for the orchestrator.
-
-    Returns:
-      {
-        "root_question": {...} | None,
-        "questions": [{id, question, status, confidence,
-                       parent_id, n_sources_cited}, ...],
-        "sources_by_tier": {"unclassified": N, "1": N, "2": N, ...},
-        "sources_by_state": {"SCOUTED": N, "FETCHED": N, "ANALYZED": N},
-        "budget": {"analyst_dispatches_remaining": int | None},
-      }
-
-    This is the ONLY way the researcher should inspect the note graph
-    between rounds - it keeps the researcher's context free of raw
-    source content.
-    """
-    from ...schemas.note import QuestionMetadata, SourceNoteMetadata
-
-    root_id = ctx.deps.state.root_question_id
-    questions = []
-    root_summary: dict[str, object] | None = None
-    for n in ctx.deps.memory.list_by_type(NoteType.QUESTION):
-        meta = n.metadata
-        if not isinstance(meta, QuestionMetadata):
-            continue
-        entry = {
-            "id": n.id,
-            "question": n.description or n.title,
-            "status": meta.status,
-            "confidence": meta.confidence,
-            "parent_id": meta.parent_question_id,
-            "n_sources_cited": len(meta.sources_cited),
-        }
-        if n.id == root_id:
-            root_summary = entry
-        else:
-            questions.append(entry)
-
-    sources_by_tier: dict[str, int] = {}
-    sources_by_state: dict[str, int] = {}
-    for n in ctx.deps.memory.list_by_type(NoteType.SOURCE):
-        meta = n.metadata
-        if not isinstance(meta, SourceNoteMetadata):
-            continue
-        tier_key = str(meta.tier.value) if meta.tier is not None else "unclassified"
-        sources_by_tier[tier_key] = sources_by_tier.get(tier_key, 0) + 1
-        sources_by_state[meta.state.value] = sources_by_state.get(meta.state.value, 0) + 1
-
-    return {
-        "root_question": root_summary,
-        "questions": questions,
-        "sources_by_tier": sources_by_tier,
-        "sources_by_state": sources_by_state,
-        "budget": {
-            "analyst_dispatches_remaining": ctx.deps.state.analyst_budget,
-        },
-    }
-
-
 # --- Final-output tools ----------------------------------------------------
 #
 # These are how agents COMMIT their final work. Replaces structured-
@@ -448,15 +385,13 @@ async def get_research_state(ctx: RunContext[Deps]) -> dict[str, object]:
 # 1. Pydantic validates tool args -> invalid args surface as a
 #    ModelRetry with a descriptive error that the model sees as a
 #    tool-call failure and naturally retries within the same turn.
-# 2. The tool can create a durable synthesis_note on success, so the
+# 2. The tool creates or updates a durable note on success, so the
 #    work survives a later crash in the conversation.
 # 3. Tool-call events fire in the UI - the user sees the write
 #    attempt land (or fail + retry) in the agent card.
 #
-# Each tool stashes its structured payload in
-# `deps.state.agent_outputs[agent_id]` so the wrapping `*_run`
-# function can read the committed data without relying on the
-# agent's stringy final message.
+# Each tool writes to the note graph; the wrapping `*_run` function
+# reconstructs what it needs by reading notes back from memory.
 
 
 @instrumented
@@ -562,74 +497,10 @@ async def answer_question(
         links=[Link(target_id=src, edge_type="cites") for src in (sources_cited or [])],
         metadata=new_meta,
     )
-
-    # Stash so the wrapping *_run function can read the structured
-    # payload without reconstructing from the note.
-
-    qs = QuestionSynthesis(
-        question=existing.description or existing.title,
-        report=report,
-        confidence=confidence_enum,
-        sources_cited=list(sources_cited or []),
-        disagreements=list(disagreements or []),
-        open_issues=list(open_issues or []),
-    )
-    ctx.deps.state.agent_outputs[agent_id] = qs
     return (
         f"answered question {question_id} "
-        f"({confidence_enum} confidence, {len(qs.sources_cited)} sources cited)"
+        f"({confidence_enum} confidence, {len(sources_cited or [])} sources cited)"
     )
-
-
-@instrumented
-async def commit_scout_result(
-    ctx: RunContext[Deps],
-    sources: list[ScoutedSource],
-    coverage_note: str,
-) -> str:
-    """Commit your sourcelist + coverage note for the dispatching analyst.
-
-    TERMINAL tool for the scout sub-agent - call exactly once as the
-    last tool call before ending your turn. Stashes the result in
-    `deps.state.agent_outputs[scout_agent_id]` so the dispatching `scout()` tool
-    returns it to the analyst.
-
-    Args:
-      sources: List of ScoutedSource entries. Each must reference an
-        existing source_note id (from create_source_note you called
-        earlier). tier_guess is 1..5 or null; relevance_guess is one
-        of 'high' | 'medium' | 'low'; preview is a 2-3 sentence
-        excerpt from scout_fetch (empty if the source was never
-        fetched - e.g. paywall / 404).
-      coverage_note: One paragraph summarizing what you searched,
-        what you found, and where coverage is thin or strong. Tells
-        the analyst whether another scout dispatch on a different
-        angle is worth it.
-    """
-    if not sources and not coverage_note.strip():
-        raise ModelRetry(
-            "commit_scout_result needs either `sources` or a non-empty "
-            "`coverage_note`. If retrieval came up empty, say so in "
-            "coverage_note so the analyst knows."
-        )
-
-    # Validate each source_id exists and is a source_note.
-    for s in sources:
-        n = ctx.deps.memory.get(s.source_id)
-        if n is None:
-            raise ModelRetry(
-                f"source_id {s.source_id!r} in your sources list is not in memory. "
-                "Only reference source_ids you created via create_source_note."
-            )
-        if n.type != NoteType.SOURCE:
-            raise ModelRetry(f"source_id {s.source_id!r} is a {n.type.value}, not a source_note.")
-
-    agent_id = current_agent_id() or "anonymous"
-    ctx.deps.state.agent_outputs[agent_id] = ScoutResult(
-        sources=list(sources),
-        coverage_note=coverage_note,
-    )
-    return f"committed scout result ({len(sources)} sources)"
 
 
 @instrumented
@@ -667,21 +538,19 @@ async def write_landscape_brief(
             "the researcher will read. Write a short markdown summary of the terrain."
         )
 
-    agent_id = current_agent_id() or "anonymous"
-    # Stash raw markdown for landscape_run to forward to the researcher.
-    ctx.deps.state.agent_outputs[agent_id] = brief_markdown
-
-    # Durable landscape note.
-    note_id = new_note_id("landscape")
-    note = Note(
-        id=note_id,
-        type=NoteType.LANDSCAPE,
-        title="Landscape brief",
+    existing: Note | None = None
+    for note in ctx.deps.memory.list_by_type(NoteType.LANDSCAPE):
+        existing = note
+        break
+    if existing is None:
+        raise ModelRetry(
+            "no landscape note found in memory - landscape_run should have "
+            "pre-created one. Call write_landscape_brief only from inside the "
+            "landscape agent loop."
+        )
+    await ctx.deps.memory.update(
+        existing.id,
         description=brief_markdown.splitlines()[0][:280] if brief_markdown else "",
         content=brief_markdown,
-        metadata=LandscapeMetadata(raw_query=""),  # query filled by landscape_run
-        last_modified_at=utc_now(),
-        created_at=utc_now(),
     )
-    await ctx.deps.memory.create(note)
-    return f"committed landscape brief as {note_id}"
+    return f"committed landscape brief to {existing.id}"

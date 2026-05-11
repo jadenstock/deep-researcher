@@ -129,22 +129,26 @@ research_run(deps, query)                   # agents/researcher.py
 
 ### Budgets
 
-Budgets are per-run state held in `deps.outputs`:
+Budgets live as closure-scoped counters owned by the agent whose tool
+decrements them:
 
-- `__analyst_budget__` — max analyst dispatches per run (default 8, set in
-  `researcher.py`). Decremented by `investigate_question`; when 0, the tool
-  raises `ModelRetry` asking the researcher to commit.
-- `__scout_budget__` — max scout dispatches per analyst run (default 4, set
-  in `analyst.py`). Decremented by the `scout` tool.
+- Analyst budget — max analyst dispatches per run (default 8, passed into
+  `build_researcher(..., analyst_budget_start=...)`). Decremented by the
+  closure-scoped `investigate_question` tool; when 0, the tool raises
+  `ModelRetry` asking the researcher to commit.
+- Scout budget — max scout dispatches per analyst run (default 4, passed
+  into `build_analyst(..., scout_budget_start=...)`). Decremented by the
+  closure-scoped `scout` tool.
 
 Budgets are backstops. The agents' prompts push them toward doing less than
 the cap.
 
 ### Root-question ID
 
-`deps.outputs["__root_question_id__"]` is set once at the start of a run
-and referenced by `get_research_state` and `investigate_question` so the
-researcher can discover its own root without threading it through prompts.
+The root question id is passed into `build_researcher(..., root_question_id=...)`
+and closed over by the `get_research_state` and `investigate_question`
+tools, so the researcher can discover its own root without threading it
+through prompts and without any shared mutable dict.
 
 ## Tools
 
@@ -164,19 +168,24 @@ Tools live in `agents/tools/`. Every tool is decorated with
 
 ### Terminal tools
 
-Each agent has one *terminal* tool that commits its structured output to
-`deps.outputs[agent_id]` and (where applicable) mutates the note graph:
+Each agent has one *terminal* tool that commits its structured output.
+Where possible, the commit lands on the note graph (the only shared
+mutable surface); scout's output is genuinely ephemeral so it commits
+into a closure-scoped outbox owned by `build_scout` instead.
 
-- landscape → `write_landscape_brief`
-- analyst → `answer_question` (updates assigned QUESTION note)
+- landscape → `write_landscape_brief` (updates the LANDSCAPE note
+  pre-created by `landscape_run`)
+- analyst → `answer_question` (updates assigned QUESTION note; the
+  wrapping `analyst_run` reconstructs `QuestionSynthesis` from the note)
 - researcher → `answer_question` (on root)
-- scout → `commit_scout_result`
+- scout → `commit_scout_result` (closure tool inside `build_scout`; writes
+  into an outbox list that `scout_run` reads after the agent returns)
 
 This pattern — commit via a tool call rather than a structured final
 message — means invalid payloads surface as `ModelRetry` and the model
 naturally retries within the same turn. It also means a durable record
-lands in memory even when the agent's wrapping message stream is truncated
-or crashes afterwards.
+lands in memory (for note-backed commits) even when the agent's wrapping
+message stream is truncated or crashes afterwards.
 
 ## Model routing
 

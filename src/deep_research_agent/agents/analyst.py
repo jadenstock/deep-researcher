@@ -6,8 +6,8 @@ creating it before dispatching the analyst.
 
 Output: the analyst commits its answer by UPDATING the question note
 in place via the `answer_question` tool. The wrapping
-`analyst_run` reads the resulting QuestionSynthesis back from
-`deps.state.agent_outputs` and returns it.
+`analyst_run` reconstructs the resulting QuestionSynthesis from the
+updated QUESTION note and returns it.
 
 Why the caller owns the question_id: it lets the researcher track
 its question tree (open/answered, parent links, dispatch state)
@@ -22,21 +22,22 @@ import logging
 import uuid
 from typing import Literal
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, ModelRetry, RunContext
 
 from ..agent_factory import make_model
 from ..schemas.enums import AgentRunStatus, AgentType, ConfidenceLevel, RoleClass, TaskTier
 from ..schemas.ids import NoteID
 from ._run import drive_agent
 from .deps import Deps
-from .schemas import QuestionSynthesis
+from .events import instrumented
+from .schemas import QuestionSynthesis, ScoutResult, question_synthesis_from_note
+from .scout import scout_run
 from .tools.notes import (
     answer_question,
     list_source_notes,
     load_note,
     update_source_after_reading,
 )
-from .tools.scout_tool import scout
 
 # Hard cap on scout sub-agent dispatches per analyst run. Prompt
 # encourages fewer; this is the backstop so a misbehaving analyst
@@ -230,7 +231,12 @@ def _routing_for_mode(mode: AnalystMode) -> tuple[RoleClass, TaskTier]:
     return RoleClass.JUDGMENT, TaskTier.MID
 
 
-def build_analyst(deps: Deps, mode: AnalystMode, model_id: str) -> Agent[Deps, str]:
+def build_analyst(
+    deps: Deps,
+    mode: AnalystMode,
+    model_id: str,
+    scout_budget_start: int,
+) -> Agent[Deps, str]:
     system_prompt = MODE_FRAMING[mode] + ANALYST_SYSTEM
     agent = Agent(
         make_model(model_id, deps.local),
@@ -239,7 +245,54 @@ def build_analyst(deps: Deps, mode: AnalystMode, model_id: str) -> Agent[Deps, s
         system_prompt=system_prompt,
         tool_retries=5,
     )
-    agent.tool(scout)
+
+    budget = [scout_budget_start]
+
+    @agent.tool
+    @instrumented
+    async def scout(ctx: RunContext[Deps], request: str) -> ScoutResult:
+        """Dispatch a scout sub-agent to retrieve + triage sources for an angle.
+
+        The scout runs search → create_source_note → scout_fetch (skim) in
+        its own internal loop (2-3 rounds). It writes cleaned page content
+        onto source notes' `content` field so you can deep-read via
+        `load_note(source_id)` later. Returns a pre-digested sourcelist +
+        coverage note - you never eat raw SERP results or 404 errors in
+        your own context.
+
+        Run multiple `scout()` calls in parallel in one turn with distinct
+        angles of your assigned question - the analyst framework
+        dispatches them concurrently.
+
+        Args:
+          request: Natural-language description of the angle you want
+            scouted. Be specific: "find methodology critiques of MMLU,
+            especially from 2023-2025" is better than "MMLU". The scout
+            plans its own queries from this request.
+
+        Returns ScoutResult with:
+          - sources: list of ScoutedSource (source_id, url, title,
+            tier_guess, relevance_guess, preview). `preview` is a short
+            excerpt from the scout's skim; full cleaned content lives on
+            `note.content` and is retrievable via `load_note(source_id)`.
+          - coverage_note: one-paragraph summary of what the scout
+            searched and where coverage is thin. Use it to decide whether
+            another scout dispatch on a different angle is warranted.
+
+        Budget: capped at 4 scout dispatches per analyst run. When the
+        budget is exhausted, this tool raises ModelRetry - stop
+        dispatching scouts and commit your answer with the evidence you
+        already have.
+        """
+        if budget[0] <= 0:
+            raise ModelRetry(
+                "scout dispatch budget exhausted (0 remaining). Stop dispatching "
+                "scouts; deep-read the sources you already have and commit your "
+                "answer with answer_question."
+            )
+        budget[0] -= 1
+        return await scout_run(ctx.deps, request)
+
     agent.tool(list_source_notes)
     agent.tool(load_note)
     agent.tool(update_source_after_reading)
@@ -268,7 +321,7 @@ async def analyst_run(
     """
     role, tier = _routing_for_mode(mode)
     model_id = deps.routing.model_id_for(role, tier)
-    agent = build_analyst(deps, mode, model_id)
+    agent = build_analyst(deps, mode, model_id, scout_budget_start=DEFAULT_SCOUT_BUDGET)
     agent_id = f"an-{uuid.uuid4().hex[:8]}"
     logger.info(
         "analyst start agent_id=%s qid=%s mode=%s model=%s q=%r",
@@ -278,63 +331,55 @@ async def analyst_run(
         model_id,
         question[:140],
     )
-    # Per-analyst-run scout dispatch budget. Scouts don't count against
-    # the researcher's analyst budget - independent resource.
-    deps.state.scout_budget = DEFAULT_SCOUT_BUDGET
 
-    try:
-        await drive_agent(
-            deps=deps,
-            agent=agent,
-            agent_id=agent_id,
-            agent_type=AgentType.ANALYST,
-            goal=question,
-            tier=tier,
-            role=role,
-            model_id=model_id,
-            prompt=(
-                f"Your assigned question_id is {question_id}.\n"
-                f"Question: {question}\n"
-                f"You have {DEFAULT_SCOUT_BUDGET} scout dispatches available.\n"
-                "When you commit your answer, pass question_id="
-                f"{question_id} to answer_question."
-            ),
-            mode=mode,
-        )
+    await drive_agent(
+        deps=deps,
+        agent=agent,
+        agent_id=agent_id,
+        agent_type=AgentType.ANALYST,
+        goal=question,
+        tier=tier,
+        role=role,
+        model_id=model_id,
+        prompt=(
+            f"Your assigned question_id is {question_id}.\n"
+            f"Question: {question}\n"
+            f"You have {DEFAULT_SCOUT_BUDGET} scout dispatches available.\n"
+            "When you commit your answer, pass question_id="
+            f"{question_id} to answer_question."
+        ),
+        mode=mode,
+    )
 
-        committed = deps.state.agent_outputs.get(agent_id)
-        if isinstance(committed, QuestionSynthesis):
-            qs = committed
-        else:
-            logger.warning(
-                "analyst agent_id=%s qid=%s ended without committing",
-                agent_id,
-                question_id,
-            )
-            qs = QuestionSynthesis(
-                question=question,
-                report=("_(no report produced - analyst ended without calling answer_question)_"),
-                confidence=ConfidenceLevel.LOW,
-                open_issues=[
-                    "Analyst did not call answer_question before ending its turn.",
-                ],
-            )
-
-        verdict = f"{mode}: {qs.confidence} confidence, {len(qs.sources_cited)} sources cited"
-        deps.events.on_agent_done(
-            agent_id=agent_id,
-            agent_type=AgentType.ANALYST,
-            status=AgentRunStatus.DONE,
-            verdict=verdict,
-        )
-        logger.info(
-            "analyst done agent_id=%s qid=%s confidence=%s sources_cited=%d",
+    note = deps.memory.get(question_id)
+    qs = question_synthesis_from_note(note) if note is not None else None
+    if qs is None:
+        logger.warning(
+            "analyst agent_id=%s qid=%s ended without committing",
             agent_id,
             question_id,
-            qs.confidence,
-            len(qs.sources_cited),
         )
-        return qs
-    finally:
-        deps.state.agent_outputs.pop(agent_id, None)
-        deps.state.scout_budget = None
+        qs = QuestionSynthesis(
+            question=question,
+            report=("_(no report produced - analyst ended without calling answer_question)_"),
+            confidence=ConfidenceLevel.LOW,
+            open_issues=[
+                "Analyst did not call answer_question before ending its turn.",
+            ],
+        )
+
+    verdict = f"{mode}: {qs.confidence} confidence, {len(qs.sources_cited)} sources cited"
+    deps.events.on_agent_done(
+        agent_id=agent_id,
+        agent_type=AgentType.ANALYST,
+        status=AgentRunStatus.DONE,
+        verdict=verdict,
+    )
+    logger.info(
+        "analyst done agent_id=%s qid=%s confidence=%s sources_cited=%d",
+        agent_id,
+        question_id,
+        qs.confidence,
+        len(qs.sources_cited),
+    )
+    return qs

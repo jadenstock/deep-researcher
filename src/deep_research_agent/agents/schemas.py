@@ -12,8 +12,9 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
-from ..schemas.enums import ConfidenceLevel
+from ..schemas.enums import ConfidenceLevel, QuestionStatus
 from ..schemas.ids import NoteID
+from ..schemas.note import Note, QuestionMetadata
 
 if TYPE_CHECKING:
     from .memory import NoteMemory
@@ -93,6 +94,28 @@ class QuestionSynthesis(BaseModel):
     confidence: ConfidenceLevel = Field(
         ...,
         description="One of: 'high', 'medium', 'low'. Reflect source quality + coverage.",
+    )
+
+
+def question_synthesis_from_note(note: Note) -> QuestionSynthesis | None:
+    """Reconstruct a QuestionSynthesis from a SYNTHESIZED QUESTION note.
+
+    Returns None if the note isn't a QUESTION note or hasn't been
+    answered yet (status != SYNTHESIZED). Callers use the None return
+    to trigger a fallback `QuestionSynthesis` with low confidence.
+    """
+    meta = note.metadata
+    if not isinstance(meta, QuestionMetadata):
+        return None
+    if meta.status != QuestionStatus.SYNTHESIZED:
+        return None
+    return QuestionSynthesis(
+        question=note.description or note.title,
+        report=meta.report_markdown or "",
+        confidence=meta.confidence or ConfidenceLevel.LOW,
+        sources_cited=list(meta.sources_cited),
+        disagreements=list(meta.disagreements),
+        open_issues=list(meta.open_issues),
     )
 
 

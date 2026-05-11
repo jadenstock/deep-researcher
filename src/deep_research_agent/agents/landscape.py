@@ -20,8 +20,10 @@ from pydantic_ai import Agent
 
 from ..agent_factory import make_model
 from ..schemas.enums import AgentRunStatus, AgentType, NoteType, RoleClass, TaskTier
+from ..schemas.note import LandscapeMetadata, Note
 from ._run import drive_agent
 from .deps import Deps
+from .memory import new_note_id, utc_now
 from .tools.notes import create_source_note, list_source_notes, write_landscape_brief
 from .tools.search import search_academic, search_web
 
@@ -102,44 +104,55 @@ async def landscape_run(deps: Deps, query: str) -> str:
     where the agent ends without committing, returns a placeholder so
     the researcher can still proceed (with a noted limitation).
     """
+    landscape_id = new_note_id("landscape")
+    landscape_note = Note(
+        id=landscape_id,
+        type=NoteType.LANDSCAPE,
+        title="Landscape brief",
+        description="",
+        content="",
+        metadata=LandscapeMetadata(raw_query=query),
+        last_modified_at=utc_now(),
+        created_at=utc_now(),
+    )
+    await deps.memory.create(landscape_note)
+
     agent = build_landscape_agent(deps)
     agent_id = f"land-{uuid.uuid4().hex[:8]}"
     model_id = deps.routing.model_id_for(RoleClass.GENERATIVE, TaskTier.MID)
     logger.info("landscape start agent_id=%s query=%r", agent_id, query[:200])
-    try:
-        await drive_agent(
-            deps=deps,
-            agent=agent,
-            agent_id=agent_id,
-            agent_type=AgentType.LANDSCAPE,
-            goal=query,
-            tier=TaskTier.MID,
-            role=RoleClass.GENERATIVE,
-            model_id=model_id,
-            prompt=f"Scout the landscape for this query: {query}",
+    await drive_agent(
+        deps=deps,
+        agent=agent,
+        agent_id=agent_id,
+        agent_type=AgentType.LANDSCAPE,
+        goal=query,
+        tier=TaskTier.MID,
+        role=RoleClass.GENERATIVE,
+        model_id=model_id,
+        prompt=f"Scout the landscape for this query: {query}",
+    )
+
+    updated = deps.memory.get(landscape_id)
+    brief_body = updated.content.strip() if updated is not None else ""
+    if updated is not None and brief_body:
+        brief = updated.content
+    else:
+        logger.warning(
+            "landscape agent_id=%s ended without calling write_landscape_brief",
+            agent_id,
+        )
+        brief = (
+            "_(landscape agent ended without producing a brief; "
+            "researcher should proceed with the source list alone)_"
         )
 
-        committed = deps.state.agent_outputs.get(agent_id)
-        if isinstance(committed, str) and committed.strip():
-            brief = committed
-        else:
-            logger.warning(
-                "landscape agent_id=%s ended without calling write_landscape_brief",
-                agent_id,
-            )
-            brief = (
-                "_(landscape agent ended without producing a brief; "
-                "researcher should proceed with the source list alone)_"
-            )
-
-        n_sources = deps.memory.count_by_type(NoteType.SOURCE)
-        deps.events.on_agent_done(
-            agent_id=agent_id,
-            agent_type=AgentType.LANDSCAPE,
-            status=AgentRunStatus.DONE,
-            verdict=f"brief committed, {n_sources} sources scouted",
-        )
-        logger.info("landscape done agent_id=%s sources=%d", agent_id, n_sources)
-        return brief
-    finally:
-        deps.state.agent_outputs.pop(agent_id, None)
+    n_sources = deps.memory.count_by_type(NoteType.SOURCE)
+    deps.events.on_agent_done(
+        agent_id=agent_id,
+        agent_type=AgentType.LANDSCAPE,
+        status=AgentRunStatus.DONE,
+        verdict=f"brief committed, {n_sources} sources scouted",
+    )
+    logger.info("landscape done agent_id=%s sources=%d", agent_id, n_sources)
+    return brief

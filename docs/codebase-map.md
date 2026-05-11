@@ -79,9 +79,10 @@ All agent code and shared runtime state.
 
 - **`deps.py`** — `Deps` dataclass passed to every agent via
   `RunContext[Deps]`. Holds the shared `NoteMemory`, retrieval clients,
-  config, token tracker, event publisher, and a generic `outputs` dict
-  used for per-agent committed payloads and run-scoped state
-  (`__root_question_id__`, `__analyst_budget__`, `__scout_budget__`).
+  config, token tracker, and event publisher. Immutable after
+  construction — run-scoped mutable state (budgets, root-question id)
+  lives in `build_*` closures owned by the agent that consumes it; the
+  note graph is the only shared mutable surface between agents.
 - **`memory.py`** — `NoteMemory`. Async-safe dict of `NoteID → Note`.
   Lock-serialized mutations, lock-free reads, URL-normalized dedup on
   source lookup, publisher callbacks on every create/update.
@@ -108,17 +109,27 @@ setting the `_CURRENT_AGENT_ID` contextvar, emitting `on_agent_start` /
 return values when the agent ends without committing.
 
 - **`researcher.py`** — top-level director. Creates root QUESTION note,
-  runs landscape, builds the researcher agent with
-  `investigate_question` (the dispatch tool), runs the iterative loop,
-  assembles a `ResearcherReport` from the root note.
-- **`landscape.py`** — wide-filter scout pass. 4-round soft cap,
-  terminates on diminishing returns. Commits a markdown brief.
+  runs landscape, builds the researcher agent with closure-scoped
+  `get_research_state` and `investigate_question` tools (the dispatch
+  tool + analyst-budget counter live in the closure), runs the
+  iterative loop, assembles a `ResearcherReport` from the root note.
+- **`landscape.py`** — wide-filter scout pass. Pre-creates the
+  LANDSCAPE note on entry; the agent's `write_landscape_brief` tool
+  updates it in place. 4-round soft cap, terminates on diminishing
+  returns.
 - **`analyst.py`** — investigates one sub-question. `AnalystMode` is
   `explore` | `verify` | `adversarial`; mode selects the system-prompt
   framing block AND the routing `(role, tier)` (explore →
-  generative, verify/adversarial → judgment).
+  generative, verify/adversarial → judgment). Builds with a
+  closure-scoped `scout` tool + scout-budget counter. Commits its
+  answer by updating the assigned QUESTION note in place;
+  `analyst_run` reconstructs `QuestionSynthesis` from the note on
+  return.
 - **`scout.py`** — retrieval + triage sub-agent. Runs on the cheap
-  deterministic tier.
+  deterministic tier. `build_scout` returns `(agent, outbox)` where
+  `outbox` is a closure-owned `list[ScoutResult]` that
+  `commit_scout_result` (registered as a closure tool) writes into;
+  `scout_run` reads the last entry on return.
 
 ### `agents/tools/`
 
@@ -127,18 +138,18 @@ with `@instrumented`.
 
 - **`notes.py`** — note-graph tools. `create_source_note`,
   `update_source_after_reading`, `load_note`, `list_source_notes`,
-  `get_research_state`, plus the three terminal commits:
-  `answer_question`, `commit_scout_result`, `write_landscape_brief`.
-  This is the longest file in the agents layer and the most important
-  one to read when tracing behavior.
+  plus the terminal commits `answer_question` and
+  `write_landscape_brief` (which updates the LANDSCAPE note
+  pre-created by `landscape_run`). This is the longest file in the
+  agents layer and the most important one to read when tracing
+  behavior. Tools that need run-scoped state (`get_research_state`,
+  `investigate_question`, `scout`, `commit_scout_result`) live as
+  closures inside their owning `build_*` function, not here.
 - **`search.py`** — `search_web`, `search_academic`,
   `find_related_papers` (S2 citation traversal).
 - **`fetch.py`** — `fetch_url` (general markdown extract) and
   `scout_fetch` (scout-specific: fetches, extracts, writes to
   `note.content`, classifies `content_kind`, returns a short preview).
-- **`scout_tool.py`** — the `scout(request)` tool given to the
-  analyst. Checks scout budget, calls `scout_run`, returns the
-  `ScoutResult`.
 
 ## `server/`
 

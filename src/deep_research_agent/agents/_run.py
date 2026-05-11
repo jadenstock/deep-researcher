@@ -7,10 +7,11 @@ recording usage, publish `on_agent_done(ABANDONED)` on exception,
 reset the contextvar. `drive_agent` captures that pattern.
 
 The caller remains responsible for reading committed output from
-`deps.state.agent_outputs[agent_id]`, deciding a fallback on "no
-commit", computing a verdict, and publishing `on_agent_done(DONE)` -
-those parts differ per agent and keeping them in the caller makes
-each `*_run` a straight-line read.
+wherever the agent's terminal tool put it (a QUESTION/LANDSCAPE note,
+a closure-owned outbox), deciding a fallback on "no commit",
+computing a verdict, and publishing `on_agent_done(DONE)` - those
+parts differ per agent and keeping them in the caller makes each
+`*_run` a straight-line read.
 """
 
 from __future__ import annotations
