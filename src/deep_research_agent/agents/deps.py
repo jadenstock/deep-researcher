@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import httpx
+
 from ..config import LocalConfig, RoutingConfig
 from ..retrieval.arxiv import ArxivClient
 from ..retrieval.brave import BraveClient
@@ -30,6 +32,7 @@ class Deps:
     arxiv: ArxivClient
     tracker: TokenUsageTracker
     events: EventPublisher
+    http_client: httpx.AsyncClient
     # Per-agent structured outputs keyed on agent_id. The write_*
     # tools (tools/notes.py) populate this when an agent commits its
     # final payload; the *_run wrappers read it after agent.run()
@@ -46,16 +49,36 @@ def build_deps(
     """Assemble Deps from config. Web search is optional - some
     environments only have academic search (S2 + arXiv are
     unauthenticated or key-less). `events` defaults to a no-op; the
-    server passes a publisher that feeds the UI."""
-    brave = BraveClient(local.retrieval.brave_api_key) if local.retrieval.brave_api_key else None
+    server passes a publisher that feeds the UI.
+
+    The returned Deps owns an `http_client` shared across retrieval
+    clients. Callers are responsible for calling `close_deps(deps)` in
+    a finally block to release the connection pool.
+    """
+    # One pooled client per run: avoids TCP+TLS handshake per request
+    # across all retrieval providers (Brave, S2, arXiv, fetcher).
+    http_client = httpx.AsyncClient(limits=httpx.Limits(max_keepalive_connections=20))
+    brave = (
+        BraveClient(http_client, local.retrieval.brave_api_key)
+        if local.retrieval.brave_api_key
+        else None
+    )
     publisher = events or NoOpPublisher()
     return Deps(
         memory=NoteMemory(publisher=publisher),
         local=local,
         routing=routing,
         brave=brave,
-        semantic_scholar=SemanticScholarClient(local.retrieval.semantic_scholar_api_key),
-        arxiv=ArxivClient(),
+        semantic_scholar=SemanticScholarClient(
+            http_client, local.retrieval.semantic_scholar_api_key
+        ),
+        arxiv=ArxivClient(http_client),
         tracker=TokenUsageTracker(),
         events=publisher,
+        http_client=http_client,
     )
+
+
+async def close_deps(deps: Deps) -> None:
+    """Release resources owned by `deps`. Idempotent."""
+    await deps.http_client.aclose()

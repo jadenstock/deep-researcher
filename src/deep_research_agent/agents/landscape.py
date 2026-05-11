@@ -19,7 +19,7 @@ import uuid
 from pydantic_ai import Agent
 
 from ..agent_factory import make_model
-from ..schemas.enums import RoleClass, TaskTier
+from ..schemas.enums import NoteType, RoleClass, TaskTier
 from ._debug import log_run_node
 from ._usage import record_run_usage
 from .deps import Deps
@@ -157,11 +157,7 @@ async def landscape_run(deps: Deps, query: str) -> str:
                 "researcher should proceed with the source list alone)_"
             )
 
-        n_sources = sum(
-            1
-            for n in deps.memory.all()
-            if n.type.value == "source_note"  # avoid extra import
-        )
+        n_sources = deps.memory.count_by_type(NoteType.SOURCE)
         verdict = f"brief committed, {n_sources} sources scouted"
         deps.events.on_agent_done(
             agent_id=agent_id,

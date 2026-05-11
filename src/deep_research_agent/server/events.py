@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import OrderedDict, deque
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -271,7 +272,7 @@ class RunSession:
         self.started_at = datetime.now(UTC)
         self.finished_at: datetime | None = None
         self.finished = False
-        self.history: list[Event] = []
+        self.history: deque[Event] = deque(maxlen=self.HISTORY_CAP)
         self.subscribers: set[asyncio.Queue[Event]] = set()
         # Captured as notes flow by so /api/note can answer without
         # reaching into agent memory from another coroutine.
@@ -287,22 +288,16 @@ class RunSession:
 
     def publish(self, event: Event) -> None:
         self.history.append(event)
-        if len(self.history) > self.HISTORY_CAP:
-            self.history = self.history[-self.HISTORY_CAP :]
-        n_subs = len(self.subscribers)
         for q in self.subscribers:
             try:
                 q.put_nowait(event)
             except asyncio.QueueFull:  # unbounded queue; defensive only
                 logger.warning("subscriber queue full run_id=%s", self.run_id)
-        # Visible at INFO so the user can diagnose a silent UI: if the
-        # server log shows kind=task_started subs=0, the WS isn't
-        # connected yet; kind=... subs>0 means events are being pushed.
-        logger.info(
+        logger.debug(
             "publish run_id=%s kind=%s subs=%d hist=%d",
             self.run_id,
             event.kind,
-            n_subs,
+            len(self.subscribers),
             len(self.history),
         )
 
@@ -316,14 +311,24 @@ class RunSession:
 
 
 class SessionRegistry:
-    """Process-wide registry of active RunSessions."""
+    """Process-wide registry of active RunSessions.
 
-    def __init__(self) -> None:
-        self._sessions: dict[str, RunSession] = {}
+    Caps retained sessions at `max_sessions`; evicts the oldest (by
+    creation order) when full. Long-lived servers would otherwise
+    accumulate every run's event history, notes, and tracker
+    indefinitely.
+    """
+
+    def __init__(self, max_sessions: int = 100) -> None:
+        self._sessions: OrderedDict[str, RunSession] = OrderedDict()
+        self._max_sessions = max_sessions
 
     def create(self, run_id: str, query: str) -> RunSession:
         session = RunSession(run_id, query)
         self._sessions[run_id] = session
+        while len(self._sessions) > self._max_sessions:
+            evicted_id, _ = self._sessions.popitem(last=False)
+            logger.info("session_evicted run_id=%s cap=%d", evicted_id, self._max_sessions)
         return session
 
     def get(self, run_id: str) -> RunSession | None:

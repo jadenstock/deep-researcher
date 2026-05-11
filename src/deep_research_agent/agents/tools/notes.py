@@ -13,7 +13,6 @@ layer on top once we see what the agents actually reach for.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
 
 from pydantic import BaseModel, Field
 from pydantic_ai import ModelRetry, RunContext
@@ -30,14 +29,10 @@ from ...schemas.note import (
 from ...schemas.source import ClaimItem, ReadingEntry
 from ..deps import Deps
 from ..events import current_agent_id, instrumented
-from ..memory import new_note_id
+from ..memory import new_note_id, utc_now
 from ..schemas import QuestionSynthesis, ScoutedSource, ScoutResult
 
 logger = logging.getLogger(__name__)
-
-
-def _now() -> datetime:
-    return datetime.now(UTC)
 
 
 # --- Tool input payloads ----------------------------------------------------
@@ -139,8 +134,8 @@ async def create_source_note(
             pdf_url=pdf_url,
             doi=doi,
         ),
-        last_modified_at=_now(),
-        created_at=_now(),
+        last_modified_at=utc_now(),
+        created_at=utc_now(),
     )
     await ctx.deps.memory.create(note)
     return source_id
@@ -677,8 +672,8 @@ async def write_landscape_brief(
         description=brief_markdown.splitlines()[0][:280] if brief_markdown else "",
         content=brief_markdown,
         metadata=LandscapeMetadata(raw_query=""),  # query filled by landscape_run
-        last_modified_at=_now(),
-        created_at=_now(),
+        last_modified_at=utc_now(),
+        created_at=utc_now(),
     )
     await ctx.deps.memory.create(note)
     return f"committed landscape brief as {note_id}"

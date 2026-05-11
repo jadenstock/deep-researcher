@@ -12,18 +12,19 @@ QUESTION note's content as the report.
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import json
 import logging
-from datetime import UTC, datetime
 from pathlib import Path
 
-from ..agents.deps import build_deps
+from ..agents.deps import build_deps, close_deps
 from ..agents.events import EventPublisher
-from ..agents.memory import NoteMemory, new_note_id
+from ..agents.memory import NoteMemory, new_note_id, utc_now
 from ..agents.researcher import research_run
-from ..agents.schemas import ResearcherReport, compose_report_markdown
+from ..agents.schemas import compose_report_markdown
 from ..config import LocalConfig, RoutingConfig
+from ..observability import silence_noisy_loggers
 from ..schemas.enums import NoteType
 from ..schemas.ids import NoteID
 from ..schemas.note import Note, QuestionMetadata, SynthesisMetadata
@@ -63,10 +64,7 @@ class _RunIdFilter(logging.Filter):
         return _RUN_ID_CTX.get() == self._run_id
 
 
-# Silence noisy third-party libraries once per process; their DEBUG
-# streams drown real errors.
-for _noisy in ("pdfminer", "pypdf", "httpcore", "httpx", "urllib3", "trafilatura"):
-    logging.getLogger(_noisy).setLevel(logging.WARNING)
+silence_noisy_loggers()
 
 
 def _attach_run_log_handler(run_dir: Path, run_id: str) -> logging.FileHandler:
@@ -201,10 +199,6 @@ class SessionPublisher(EventPublisher):
         )
 
 
-def _now() -> datetime:
-    return datetime.now(UTC)
-
-
 def _find_answered_root_question_id(memory: NoteMemory) -> NoteID | None:
     """Return the id of the root QUESTION note if it was answered.
 
@@ -245,8 +239,8 @@ async def _materialize_fallback_report_note(
         description=description[:280],
         content=report_markdown,
         metadata=SynthesisMetadata(pattern="researcher"),
-        last_modified_at=_now(),
-        created_at=_now(),
+        last_modified_at=utc_now(),
+        created_at=utc_now(),
     )
     # Publish directly - we're not going through NoteMemory because
     # this is a fallback artifact, not agent working state. Routing it
@@ -255,25 +249,7 @@ async def _materialize_fallback_report_note(
     return note_id
 
 
-def _build_report_markdown(
-    query: str,
-    report: ResearcherReport | None,
-    memory: NoteMemory,
-) -> str:
-    """Compose the final report markdown.
-
-    Happy path: ResearcherReport present; compose_report_markdown
-    uses its fields (and report_markdown verbatim if the model filled
-    it in).
-
-    Crash path: report is None. compose_report_markdown falls back to
-    answered QUESTION notes (each analyst commits its synthesis onto
-    the QUESTION note it was assigned) plus the source_notes appendix.
-    """
-    return compose_report_markdown(query=query, report=report, memory=memory)
-
-
-def _dump_artifacts(
+async def _dump_artifacts(
     run_dir: Path,
     query: str,
     notes: dict[str, Note],
@@ -283,12 +259,18 @@ def _dump_artifacts(
     """Persist per-run artifacts: report.md, report.json, notes.json."""
     run_dir.mkdir(parents=True, exist_ok=True)
     notes_out = [n.model_dump(mode="json") for n in notes.values()]
-    (run_dir / "notes.json").write_text(json.dumps(notes_out, indent=2, default=str))
+    await asyncio.to_thread(
+        (run_dir / "notes.json").write_text,
+        json.dumps(notes_out, indent=2, default=str),
+    )
     if report_json is not None:
-        (run_dir / "report.json").write_text(json.dumps(report_json, indent=2, default=str))
+        await asyncio.to_thread(
+            (run_dir / "report.json").write_text,
+            json.dumps(report_json, indent=2, default=str),
+        )
     if report_markdown is not None:
         md = f"# Research report\n\n**Query:** {query}\n\n{report_markdown}\n"
-        (run_dir / "report.md").write_text(md)
+        await asyncio.to_thread((run_dir / "report.md").write_text, md)
 
 
 async def run_session(
@@ -329,19 +311,22 @@ async def run_session(
                 "materializing composed report from available notes",
                 session.run_id,
             )
-            fallback_md = _build_report_markdown(session.query, report, deps.memory)
+            fallback_md = compose_report_markdown(
+                query=session.query, report=report, memory=deps.memory
+            )
             report_note_id = await _materialize_fallback_report_note(
                 publisher=publisher,
                 report_markdown=fallback_md,
                 description=f"Fallback report for: {session.query}",
             )
 
-        _dump_artifacts(
+        await _dump_artifacts(
             run_dir=run_dir,
             query=session.query,
             notes={n.id: n for n in deps.memory.all()},
             report_markdown=(
-                report.report_markdown or _build_report_markdown(session.query, report, deps.memory)
+                report.report_markdown
+                or compose_report_markdown(query=session.query, report=report, memory=deps.memory)
             ),
             report_json=report.model_dump(mode="json"),
         )
@@ -370,8 +355,10 @@ async def run_session(
         # the root we can still compose a partial report from the
         # answered sub-question notes.
         try:
-            partial_md = _build_report_markdown(session.query, None, deps.memory)
-            _dump_artifacts(
+            partial_md = compose_report_markdown(
+                query=session.query, report=None, memory=deps.memory
+            )
+            await _dump_artifacts(
                 run_dir=run_dir,
                 query=session.query,
                 notes={n.id: n for n in deps.memory.all()},
@@ -400,14 +387,18 @@ async def run_session(
         # finished. Stored as JSON next to the run artifacts.
         try:
             run_dir.mkdir(parents=True, exist_ok=True)
-            deps.tracker.save_json(run_dir / "token_usage.json")
+            await asyncio.to_thread(deps.tracker.save_json, run_dir / "token_usage.json")
         except Exception:
             logger.exception("token_usage save failed run_id=%s", session.run_id)
         logger.info("run_id=%s %s", session.run_id, deps.tracker.format_table())
+        try:
+            await close_deps(deps)
+        except Exception:
+            logger.exception("close_deps failed run_id=%s", session.run_id)
         try:
             logging.getLogger().removeHandler(run_log_handler)
             run_log_handler.close()
         except Exception:
             logger.exception("run_log detach failed run_id=%s", session.run_id)
-        session.finished_at = _now()
+        session.finished_at = utc_now()
         session.finished = True

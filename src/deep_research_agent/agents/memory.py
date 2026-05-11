@@ -17,11 +17,11 @@ from datetime import UTC, datetime
 
 from ..schemas.enums import NoteType
 from ..schemas.ids import NoteID
-from ..schemas.note import Note
+from ..schemas.note import Note, SourceNoteMetadata
 from .events import EventPublisher, NoOpPublisher
 
 
-def _now() -> datetime:
+def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
@@ -55,10 +55,18 @@ class NoteMemory:
     create/update so a UI layer (or any observer) can react. The
     publisher call is synchronous and happens *after* the lock is
     released so observer work never stalls other mutations.
+
+    Secondary indexes:
+      _by_type: NoteType -> insertion-ordered NoteIDs. Materializes
+        list_by_type in O(matched) instead of O(all notes).
+      _by_source_url: normalized source URL -> NoteID. Makes
+        find_source_by_url O(1).
     """
 
     def __init__(self, publisher: EventPublisher | None = None) -> None:
         self._notes: dict[NoteID, Note] = {}
+        self._by_type: dict[NoteType, list[NoteID]] = {}
+        self._by_source_url: dict[str, NoteID] = {}
         self._lock = asyncio.Lock()
         self._publisher: EventPublisher = publisher or NoOpPublisher()
 
@@ -70,6 +78,9 @@ class NoteMemory:
             if note.id in self._notes:
                 raise ValueError(f"note {note.id} already exists")
             self._notes[note.id] = note
+            self._by_type.setdefault(note.type, []).append(note.id)
+            if isinstance(note.metadata, SourceNoteMetadata):
+                self._by_source_url[_normalize_url(note.metadata.url)] = note.id
         self._publisher.on_note_created(note)
         return note
 
@@ -86,10 +97,18 @@ class NoteMemory:
             merged_fields = {
                 **fields,
                 "version": existing.version + 1,
-                "last_modified_at": _now(),
+                "last_modified_at": utc_now(),
             }
             updated = existing.model_copy(update=merged_fields)
             self._notes[note_id] = updated
+            if isinstance(existing.metadata, SourceNoteMetadata) and isinstance(
+                updated.metadata, SourceNoteMetadata
+            ):
+                old_key = _normalize_url(existing.metadata.url)
+                new_key = _normalize_url(updated.metadata.url)
+                if old_key != new_key:
+                    self._by_source_url.pop(old_key, None)
+                    self._by_source_url[new_key] = note_id
         self._publisher.on_note_replaced(updated)
         return updated
 
@@ -97,7 +116,11 @@ class NoteMemory:
         return self._notes.get(note_id)
 
     def list_by_type(self, note_type: NoteType) -> list[Note]:
-        return [n for n in self._notes.values() if n.type == note_type]
+        ids = self._by_type.get(note_type, ())
+        return [self._notes[nid] for nid in ids]
+
+    def count_by_type(self, note_type: NoteType) -> int:
+        return len(self._by_type.get(note_type, ()))
 
     def find_source_by_url(self, url: str) -> Note | None:
         """Return the existing source note for this URL, or None.
@@ -107,15 +130,10 @@ class NoteMemory:
         identical links from different search providers; not a full
         canonicalizer.
         """
-        from ..schemas.note import SourceNoteMetadata
-
-        needle = _normalize_url(url)
-        for n in self._notes.values():
-            if not isinstance(n.metadata, SourceNoteMetadata):
-                continue
-            if _normalize_url(n.metadata.url) == needle:
-                return n
-        return None
+        note_id = self._by_source_url.get(_normalize_url(url))
+        if note_id is None:
+            return None
+        return self._notes.get(note_id)
 
     def all(self) -> Iterable[Note]:
         return list(self._notes.values())

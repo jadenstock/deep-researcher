@@ -18,26 +18,20 @@ import asyncio
 import json
 import logging
 import sys
-import uuid
-from datetime import UTC, datetime
 from pathlib import Path
 
 from rich.console import Console
 
-from .agents.deps import build_deps
+from .agents.deps import build_deps, close_deps
 from .agents.researcher import research_run
 from .agents.schemas import ResearcherReport, compose_report_markdown
 from .config import load_local_config, load_routing_config
-from .observability import setup_logfire
+from .observability import setup_logfire, silence_noisy_loggers
 from .retrieval import apply_retrieval_rate_limits
+from .run_id import new_run_id
 
 logger = logging.getLogger(__name__)
 console = Console(stderr=True)
-
-
-def _new_run_id() -> str:
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
-    return f"{stamp}-{uuid.uuid4().hex[:8]}"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -100,8 +94,7 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         stream=sys.stderr,
     )
-    for noisy in ("pdfminer", "pypdf", "httpcore", "httpx", "urllib3", "trafilatura"):
-        logging.getLogger(noisy).setLevel(logging.WARNING)
+    silence_noisy_loggers()
 
     if args.command == "research":
         return asyncio.run(_run_research(args))
@@ -131,7 +124,7 @@ async def _run_research(args: argparse.Namespace) -> int:
     setup_logfire(local)
     apply_retrieval_rate_limits(local.retrieval)
 
-    run_id = _new_run_id()
+    run_id = new_run_id()
     run_dir = Path(args.runs_dir) / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -145,19 +138,22 @@ async def _run_research(args: argparse.Namespace) -> int:
 
     report: ResearcherReport | None = None
     failed = False
-    with console.status("[cyan]researcher agent running...", spinner="dots"):
-        try:
-            report = await research_run(deps, args.query)
-        except Exception:
-            logger.exception("research run failed")
-            failed = True
-
-    # Always dump what we have - notes accumulated up to the failure point
-    # are usually the most useful artifact for debugging.
     try:
-        _dump_run(run_dir, args.query, deps, report)
-    except Exception:
-        logger.exception("dump failed")
+        with console.status("[cyan]researcher agent running...", spinner="dots"):
+            try:
+                report = await research_run(deps, args.query)
+            except Exception:
+                logger.exception("research run failed")
+                failed = True
+
+        # Always dump what we have - notes accumulated up to the failure point
+        # are usually the most useful artifact for debugging.
+        try:
+            await _dump_run(run_dir, args.query, deps, report)
+        except Exception:
+            logger.exception("dump failed")
+    finally:
+        await close_deps(deps)
 
     if failed or report is None:
         console.print("[red]run failed - see log for details[/]")
@@ -175,7 +171,7 @@ async def _run_research(args: argparse.Namespace) -> int:
     return 0
 
 
-def _dump_run(
+async def _dump_run(
     run_dir: Path,
     query: str,
     deps,
@@ -191,23 +187,24 @@ def _dump_run(
     (reconstruct from synthesis/source notes) uniformly.
     """
     notes_out = [n.model_dump(mode="json") for n in deps.memory.all()]
-    (run_dir / "notes.json").write_text(json.dumps(notes_out, indent=2, default=str))
+    await asyncio.to_thread(
+        (run_dir / "notes.json").write_text,
+        json.dumps(notes_out, indent=2, default=str),
+    )
 
     if report is not None:
-        (run_dir / "report.json").write_text(
-            json.dumps(report.model_dump(mode="json"), indent=2, default=str)
+        await asyncio.to_thread(
+            (run_dir / "report.json").write_text,
+            json.dumps(report.model_dump(mode="json"), indent=2, default=str),
         )
 
     # Always write report.md - even on failure there's usually
     # something useful from the sub-agents that finished.
     md = compose_report_markdown(query=query, report=report, memory=deps.memory)
-    (run_dir / "report.md").write_text(md)
+    await asyncio.to_thread((run_dir / "report.md").write_text, md)
 
-    # Per-run token accounting. Mirrors the server runner so CLI users
-    # get the same table/JSON. Written last so a failure here doesn't
-    # mask the report artifacts.
     try:
-        deps.tracker.save_json(run_dir / "token_usage.json")
+        await asyncio.to_thread(deps.tracker.save_json, run_dir / "token_usage.json")
     except Exception:
         logger.exception("token_usage save failed")
     logger.info("%s", deps.tracker.format_table())

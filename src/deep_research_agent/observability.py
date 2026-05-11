@@ -22,6 +22,14 @@ logger = logging.getLogger(__name__)
 
 _CONFIGURED = False
 
+_NOISY_LOGGERS = ("pdfminer", "pypdf", "httpcore", "httpx", "urllib3", "trafilatura")
+
+
+def silence_noisy_loggers() -> None:
+    """Pin third-party libraries at WARNING; their DEBUG streams drown real errors."""
+    for name in _NOISY_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
+
 
 def _silence_otel_and_logfire_noise() -> None:
     """Mute OTEL exporter retry errors + logfire's per-export UserWarnings.

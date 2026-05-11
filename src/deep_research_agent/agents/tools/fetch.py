@@ -50,8 +50,7 @@ async def fetch_url(ctx: RunContext[Deps], url: str) -> FetchedContent:
         "404", "pdf extraction failed"). Treat as "source
         unreachable" and move to the next candidate.
     """
-    del ctx  # ctx required by the @instrumented wrapper, not the impl
-    result = await fetch_and_extract(url)
+    result = await fetch_and_extract(url, client=ctx.deps.http_client)
     if result is None:
         return FetchedContent(
             url=url,
@@ -65,9 +64,7 @@ async def fetch_url(ctx: RunContext[Deps], url: str) -> FetchedContent:
     if md and len(md) > MAX_MARKDOWN_CHARS:
         md = md[:MAX_MARKDOWN_CHARS]
         truncated = True
-    reason = None
-    if md is None:
-        reason = f"http_{result.status_code}" if result.status_code >= 400 else "no_main_content"
+    reason = _fetch_failure_reason(result) if md is None else None
     return FetchedContent(
         url=result.url,
         final_url=result.final_url,
@@ -137,7 +134,7 @@ async def scout_fetch(ctx: RunContext[Deps], source_id: NoteID) -> str:
     meta = existing.metadata
     assert isinstance(meta, SourceNoteMetadata)
 
-    primary_result = await fetch_and_extract(meta.url)
+    primary_result = await fetch_and_extract(meta.url, client=ctx.deps.http_client)
     primary_md = primary_result.markdown if primary_result else None
     primary_len = len(primary_md) if primary_md else 0
 
@@ -147,7 +144,7 @@ async def scout_fetch(ctx: RunContext[Deps], source_id: NoteID) -> str:
     fallback_result: FetchResult | None = None
     fallback_md: str | None = None
     if meta.pdf_url and meta.pdf_url != meta.url and primary_len < ABSTRACT_ONLY_THRESHOLD_CHARS:
-        fallback_result = await fetch_and_extract(meta.pdf_url)
+        fallback_result = await fetch_and_extract(meta.pdf_url, client=ctx.deps.http_client)
         fallback_md = fallback_result.markdown if fallback_result else None
 
     # Pick the extraction with more body. Ties go to the primary so we

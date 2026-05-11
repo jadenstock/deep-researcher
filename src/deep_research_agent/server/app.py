@@ -15,8 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import uuid
-from datetime import UTC, datetime
+from dataclasses import dataclass
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -32,6 +31,7 @@ from ..config import (
 )
 from ..observability import setup_logfire
 from ..retrieval import apply_retrieval_rate_limits
+from ..run_id import new_run_id
 from .events import SessionRegistry
 from .runner import run_session
 
@@ -89,28 +89,18 @@ STATIC_DIR = Path(__file__).parent / "static"
 INDEX_HTML = STATIC_DIR / "index.html"
 
 
-def _new_run_id() -> str:
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
-    return f"{stamp}-{uuid.uuid4().hex[:8]}"
-
-
 class RunRequest(BaseModel):
     query: str
 
 
+@dataclass(frozen=True)
 class ServerState:
     """Holds the configs + registry for the lifetime of the server."""
 
-    def __init__(
-        self,
-        routing: RoutingConfig,
-        local: LocalConfig,
-        runs_dir: Path,
-    ) -> None:
-        self.routing = routing
-        self.local = local
-        self.runs_dir = runs_dir
-        self.registry = SessionRegistry()
+    routing: RoutingConfig
+    local: LocalConfig
+    runs_dir: Path
+    registry: SessionRegistry
 
 
 def create_app(
@@ -128,6 +118,7 @@ def create_app(
         routing=routing,
         local=local,
         runs_dir=Path(runs_dir),
+        registry=SessionRegistry(),
     )
 
     app = FastAPI(title="deep-research-agent live UI")
@@ -154,7 +145,7 @@ def create_app(
     async def start_run(body: RunRequest) -> dict[str, str]:
         if not body.query.strip():
             raise HTTPException(status_code=400, detail="query must not be empty")
-        run_id = _new_run_id()
+        run_id = new_run_id()
         session = state.registry.create(run_id, body.query)
         session.task = asyncio.create_task(
             run_session(

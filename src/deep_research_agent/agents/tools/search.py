@@ -18,6 +18,7 @@ from typing import Literal
 
 from pydantic_ai import ModelRetry, RunContext
 
+from ...retrieval.brave import SearchHit
 from ...schemas.enums import NoteType
 from ...schemas.ids import NoteID
 from ...schemas.note import SourceNoteMetadata
@@ -26,6 +27,22 @@ from ..events import instrumented
 from ..schemas import SearchResult
 
 logger = logging.getLogger(__name__)
+
+
+def _hit_to_result(h: SearchHit) -> SearchResult:
+    return SearchResult(
+        title=h.title,
+        url=h.url,
+        snippet=h.snippet,
+        source=h.source,
+        authors=h.authors,
+        venue=h.venue,
+        year=h.year,
+        citation_count=h.citation_count,
+        pdf_url=h.pdf_url,
+        doi=h.doi,
+    )
+
 
 # Extract an arXiv id from any arxiv.org URL (abs / pdf / html). Used as
 # the fallback when a source note has no DOI but a recognizable arXiv
@@ -76,21 +93,7 @@ async def search_web(ctx: RunContext[Deps], query: str, count: int = 8) -> list[
         logger.info("search_web called but no brave_api_key - returning []")
         return []
     hits = await ctx.deps.brave.search(query, count=count)
-    return [
-        SearchResult(
-            title=h.title,
-            url=h.url,
-            snippet=h.snippet,
-            source=h.source,
-            authors=h.authors,
-            venue=h.venue,
-            year=h.year,
-            citation_count=h.citation_count,
-            pdf_url=h.pdf_url,
-            doi=h.doi,
-        )
-        for h in hits
-    ]
+    return [_hit_to_result(h) for h in hits]
 
 
 @instrumented
@@ -132,20 +135,7 @@ async def search_academic(ctx: RunContext[Deps], query: str, limit: int = 6) -> 
         if h.url in seen:
             continue
         seen.add(h.url)
-        deduped.append(
-            SearchResult(
-                title=h.title,
-                url=h.url,
-                snippet=h.snippet,
-                source=h.source,
-                authors=h.authors,
-                venue=h.venue,
-                year=h.year,
-                citation_count=h.citation_count,
-                pdf_url=h.pdf_url,
-                doi=h.doi,
-            )
-        )
+        deduped.append(_hit_to_result(h))
     return deduped
 
 
@@ -202,18 +192,4 @@ async def find_related_papers(
     else:
         hits = await ctx.deps.semantic_scholar.get_references(paper_id, limit=limit)
 
-    return [
-        SearchResult(
-            title=h.title,
-            url=h.url,
-            snippet=h.snippet,
-            source=h.source,
-            authors=h.authors,
-            venue=h.venue,
-            year=h.year,
-            citation_count=h.citation_count,
-            pdf_url=h.pdf_url,
-            doi=h.doi,
-        )
-        for h in hits
-    ]
+    return [_hit_to_result(h) for h in hits]

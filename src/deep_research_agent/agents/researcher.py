@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic_ai import Agent, ModelRetry, RunContext
 
@@ -227,21 +227,18 @@ def _render_source_list(deps: Deps, max_rows: int = 80) -> str:
     The researcher never sees full source content; this is the
     maximal source detail it ever gets.
     """
+    sources = deps.memory.list_by_type(NoteType.SOURCE)
+    if not sources:
+        return "_(no sources scouted)_"
     lines: list[str] = []
-    rows = 0
-    for n in deps.memory.list_by_type(NoteType.SOURCE):
-        if rows >= max_rows:
-            remaining = len(deps.memory.list_by_type(NoteType.SOURCE)) - rows
-            lines.append(f"- _({remaining} more omitted)_")
-            break
-        meta = n.metadata
-        if not isinstance(meta, SourceNoteMetadata):
-            continue
+    for n in sources[:max_rows]:
+        meta = cast(SourceNoteMetadata, n.metadata)
         topics = f" — topics: {', '.join(meta.topics)}" if meta.topics else ""
         snippet = (meta.summary or "").replace("\n", " ")[:160]
         lines.append(f"- [{n.id}] {meta.title[:100]} — {meta.url}{topics} — {snippet}")
-        rows += 1
-    return "\n".join(lines) if lines else "_(no sources scouted)_"
+    if len(sources) > max_rows:
+        lines.append(f"- _({len(sources) - max_rows} more omitted)_")
+    return "\n".join(lines)
 
 
 def build_researcher(deps: Deps) -> Agent[Deps, str]:

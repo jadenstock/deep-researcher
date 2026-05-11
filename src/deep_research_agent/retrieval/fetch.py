@@ -125,7 +125,12 @@ class FetchResult(BaseModel):
     byte_length: int = 0
 
 
-async def fetch_and_extract(url: str, timeout: float = 20.0) -> FetchResult | None:
+async def fetch_and_extract(
+    url: str,
+    *,
+    client: httpx.AsyncClient,
+    timeout: float = 20.0,
+) -> FetchResult | None:
     """Fetch `url` and extract the main content as markdown.
 
     Returns None on connection-level failure. Returns a FetchResult with
@@ -135,12 +140,12 @@ async def fetch_and_extract(url: str, timeout: float = 20.0) -> FetchResult | No
     """
     t_start = time.monotonic()
     try:
-        async with httpx.AsyncClient(
-            timeout=timeout,
+        resp = await client.get(
+            url,
             follow_redirects=True,
             headers=DEFAULT_HEADERS,
-        ) as client:
-            resp = await client.get(url)
+            timeout=timeout,
+        )
     except httpx.HTTPError as exc:
         elapsed_ms = int((time.monotonic() - t_start) * 1000)
         logger.warning("fetch_failed url=%s err=%s elapsed_ms=%d", url, exc, elapsed_ms)

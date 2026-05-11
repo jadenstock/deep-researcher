@@ -21,24 +21,31 @@ logger = logging.getLogger(__name__)
 ARXIV_QUERY_URL = "https://export.arxiv.org/api/query"
 
 _ARXIV_ID_RE = re.compile(r"arxiv\.org/abs/([^/\s?#]+)", re.IGNORECASE)
+_ARXIV_VERSION_SUFFIX_RE = re.compile(r"v\d+$")
 
 
-def _arxiv_html_url(abs_url: str) -> str | None:
-    """Map an arXiv abs URL to its HTML rendering. Returns None if the
-    URL doesn't parse - callers should fall back to the abs URL.
+def arxiv_html_url_from_id(arxiv_id: str) -> str:
+    """Build the arXiv HTML rendering URL for a paper id.
 
+    Strips the optional version suffix (e.g. "2401.12345v2" ->
+    "2401.12345") so we land on the latest version's HTML rendering.
     arXiv serves native HTML at arxiv.org/html/{id} for papers with
     LaTeX source (~70-80% of recent submissions). For papers without
     HTML, the URL 302s back to the abstract - the fetcher handles
     that path fine.
     """
+    normalized = _ARXIV_VERSION_SUFFIX_RE.sub("", arxiv_id)
+    return f"https://arxiv.org/html/{normalized}"
+
+
+def _arxiv_html_url(abs_url: str) -> str | None:
+    """Map an arXiv abs URL to its HTML rendering. Returns None if the
+    URL doesn't parse - callers should fall back to the abs URL.
+    """
     m = _ARXIV_ID_RE.search(abs_url)
     if not m:
         return None
-    # Strip the optional version suffix (e.g. "2401.12345v2" -> "2401.12345")
-    # so we land on the latest version's HTML rendering.
-    arxiv_id = re.sub(r"v\d+$", "", m.group(1))
-    return f"https://arxiv.org/html/{arxiv_id}"
+    return arxiv_html_url_from_id(m.group(1))
 
 
 # arXiv's public endpoint guideline is 1 req / 3s.
@@ -117,7 +124,8 @@ def _parse_feed(xml_text: str) -> list[SearchHit]:
 
 
 class ArxivClient:
-    def __init__(self, timeout: float = 15.0) -> None:
+    def __init__(self, client: httpx.AsyncClient, timeout: float = 15.0) -> None:
+        self._client = client
         self._timeout = timeout
 
     async def search(self, query: str, limit: int = 5) -> list[SearchHit]:
@@ -134,8 +142,7 @@ class ArxivClient:
         }
         await _arxiv_bucket().acquire()
         try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                resp = await client.get(ARXIV_QUERY_URL, params=params)
+            resp = await self._client.get(ARXIV_QUERY_URL, params=params, timeout=self._timeout)
         except httpx.HTTPError as exc:
             logger.warning("arxiv_search_failed query=%r err=%s", query[:120], exc)
             return []
