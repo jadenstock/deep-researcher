@@ -6,9 +6,7 @@ then iteratively dispatches **analyst** sub-agents (which in turn dispatch
 **scouts**) against focused sub-questions. Every finding traces back to a
 verbatim quote on a typed source note.
 
-The whole system is built on [pydantic-ai](https://ai.pydantic.dev/). Each
-agent is a real tool-using loop — no hand-coded orchestration state machine.
-Agents talk to each other only through a shared, async-safe **note graph**.
+The whole system is built on [pydantic-ai](https://ai.pydantic.dev/). Agents talk to each other only through a shared, async-safe **note graph**.
 
 ## What this gets you
 
