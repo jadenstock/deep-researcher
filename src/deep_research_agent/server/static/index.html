@@ -56,11 +56,6 @@
   }
   button:hover { filter: brightness(1.05); }
   button:disabled { opacity: 0.5; cursor: default; }
-  #runs-select {
-    background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
-    padding: 7px 10px; border-radius: 6px; font-size: 12px; max-width: 260px;
-  }
-  #runs-select:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
 
   /* Top-level view tabs: Live (graph + sidebars) vs Report (full-page markdown). */
   .tabs {
@@ -89,10 +84,13 @@
   #status.ok { color: var(--ok); }
   #status.err { color: var(--err); }
   #debug {
+    position: absolute; right: 12px; bottom: 12px;
     font-family: ui-monospace, Menlo, monospace;
     font-size: 10px; color: var(--muted);
-    padding: 4px 8px; background: var(--panel-2);
+    padding: 3px 7px; background: var(--panel-2);
     border-radius: 4px; border: 1px solid var(--border);
+    pointer-events: none;
+    z-index: 5;
   }
   #debug.err { color: var(--err); }
   #tokens {
@@ -476,6 +474,46 @@
   }
   #report-view .report-meta[open] summary { margin-bottom: 8px; }
 
+  /* History view — list of past completed runs persisted to runs/ on disk. */
+  #history-view { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+  #history-view[hidden] { display: none !important; }
+  #history-view {
+    overflow-y: auto; background: var(--bg);
+    padding: 32px 24px 80px;
+  }
+  #history-view .history-container {
+    max-width: 960px; margin: 0 auto;
+  }
+  #history-view h1 {
+    font-size: 22px; font-weight: 700; margin: 0 0 4px;
+  }
+  #history-view .history-sub {
+    color: var(--muted); font-size: 12px;
+    margin-bottom: 24px;
+  }
+  #history-view .history-empty {
+    color: var(--muted); font-style: italic; text-align: center; padding: 40px 0;
+  }
+  #history-view .history-row {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 6px; padding: 14px 16px; margin-bottom: 8px;
+    cursor: pointer; transition: border-color 0.12s, background 0.12s;
+    display: flex; gap: 16px; align-items: center;
+  }
+  #history-view .history-row:hover {
+    border-color: var(--accent); background: var(--panel-2);
+  }
+  #history-view .history-row .q {
+    flex: 1; min-width: 0;
+    font-size: 14px; color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #history-view .history-row .meta {
+    color: var(--muted); font-size: 11px;
+    font-family: ui-monospace, Menlo, monospace;
+    flex-shrink: 0;
+  }
+
   /* Summary view — end-of-run debrief: tokens, counts, duration. */
   #summary-view { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
   #summary-view[hidden] { display: none !important; }
@@ -592,6 +630,17 @@
     padding: 6px 8px; font-family: ui-monospace, Menlo, monospace; font-size: 11px;
     color: var(--muted); margin-bottom: 12px; white-space: pre-wrap;
   }
+  #details .meta summary {
+    cursor: pointer; color: var(--muted);
+    font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+    list-style: none;
+  }
+  #details .meta summary::-webkit-details-marker { display: none; }
+  #details .meta summary::before {
+    content: "▸ "; display: inline-block; transition: transform 0.12s;
+  }
+  #details .meta[open] summary::before { content: "▾ "; }
+  #details .meta[open] summary { margin-bottom: 6px; }
   #details .body { color: var(--text); }
   #details .body p { margin: 0 0 10px; }
   #details .body code {
@@ -605,15 +654,12 @@
   <h1>dra <span>·</span> live</h1>
   <input id="query" placeholder="Ask a research question…" autocomplete="off" />
   <button id="go">Run</button>
-  <select id="runs-select" title="Reconnect to a past run from this server session">
-    <option value="">past runs…</option>
-  </select>
   <div class="tabs" role="tablist">
-    <button class="tab active" id="tab-live" data-view="live" role="tab">Live</button>
+    <button class="tab active" id="tab-graph" data-view="live" role="tab">Graph</button>
     <button class="tab" id="tab-report" data-view="report" role="tab" hidden>Report</button>
     <button class="tab" id="tab-summary" data-view="summary" role="tab" hidden>Summary</button>
+    <button class="tab" id="tab-history" data-view="history" role="tab">History</button>
   </div>
-  <div id="debug" title="events received · nodes in graph · layout engine">evt=0 · nodes=0 · layout=?</div>
   <div id="tokens" title="Total tokens used by this run (hover for per-model breakdown)"><span class="label">tokens:</span> <span class="n" id="tokens-in">0</span> in / <span class="n" id="tokens-out">0</span> out</div>
   <div id="status">idle</div>
 </header>
@@ -638,6 +684,7 @@
   </aside>
   <div class="resizer-v" data-resize="cols" data-side="left"></div>
   <div id="graph"></div>
+  <div id="debug" title="Nodes currently in the graph">nodes=0</div>
   <div id="graph-controls">
     <label title="Hide SCOUTED source candidates — URLs that were never fetched or analyzed.">
       <input type="checkbox" id="toggle-hide-scouted" />
@@ -662,6 +709,13 @@
     <div id="summary-content"><div class="summary-empty">Summary appears when the run finishes.</div></div>
   </div>
 </section>
+<section id="history-view" hidden>
+  <div class="history-container">
+    <h1>Past runs</h1>
+    <div class="history-sub">Click a run to load its graph, report, and summary.</div>
+    <div id="history-list"><div class="history-empty">Loading…</div></div>
+  </div>
+</section>
 <div id="completion-banner" hidden>
   <span class="banner-text" id="banner-text"></span>
   <a class="banner-link" id="banner-link">See summary</a>
@@ -679,11 +733,14 @@
   const liveView = document.getElementById("live-view");
   const reportView = document.getElementById("report-view");
   const reportContent = document.getElementById("report-content");
-  const tabLive = document.getElementById("tab-live");
+  const tabGraph = document.getElementById("tab-graph");
   const tabReport = document.getElementById("tab-report");
   const tabSummary = document.getElementById("tab-summary");
+  const tabHistory = document.getElementById("tab-history");
   const summaryView = document.getElementById("summary-view");
   const summaryContent = document.getElementById("summary-content");
+  const historyView = document.getElementById("history-view");
+  const historyListEl = document.getElementById("history-list");
   const bannerEl = document.getElementById("completion-banner");
   const bannerTextEl = document.getElementById("banner-text");
   const bannerLinkEl = document.getElementById("banner-link");
@@ -751,26 +808,29 @@
   }
   function updateDebug(extra) {
     const nodeCount = cy ? cy.nodes().length : 0;
-    const engine = colaAvailable ? "cola" : "cose";
-    debugEl.textContent = `evt=${eventCount} · nodes=${nodeCount} · layout=${engine}${extra ? " · " + extra : ""}`;
+    debugEl.textContent = `nodes=${nodeCount}${extra ? " · " + extra : ""}`;
   }
 
   function switchView(view) {
     liveView.hidden = view !== "live";
     reportView.hidden = view !== "report";
     summaryView.hidden = view !== "summary";
-    tabLive.classList.toggle("active", view === "live");
+    historyView.hidden = view !== "history";
+    tabGraph.classList.toggle("active", view === "live");
     tabReport.classList.toggle("active", view === "report");
     tabSummary.classList.toggle("active", view === "summary");
+    tabHistory.classList.toggle("active", view === "history");
     // Cytoscape needs a resize + relayout kick when the graph container
     // transitions from hidden to visible — it caches container dims.
     if (view === "live") {
       setTimeout(() => { try { cy.resize(); cy.fit(undefined, 40); } catch {} }, 0);
     }
+    if (view === "history") loadHistory();
   }
-  tabLive.addEventListener("click", () => switchView("live"));
+  tabGraph.addEventListener("click", () => switchView("live"));
   tabReport.addEventListener("click", () => switchView("report"));
   tabSummary.addEventListener("click", () => switchView("summary"));
+  tabHistory.addEventListener("click", () => switchView("history"));
 
   // Verification decision_notes (subtype "verification") get their own
   // visual treatment so checked claims stand out from AIMS / final-report
@@ -982,7 +1042,12 @@
   let runIsTerminal = false;
   const RECONNECT_MAX_ATTEMPTS = 10;
   const RUN_ID_STORAGE_KEY = "dra:currentRunId";
-  const runsSelectEl = document.getElementById("runs-select");
+
+  // When viewing a historical run, /api/note/{run_id}/{note_id} 404s
+  // (the session isn't in the live registry). notes.json is already
+  // fetched in bulk by loadHistoricalRun, so stash each note here keyed
+  // by id and have loadNoteDetails consult this cache first.
+  let historicalNotesById = null;
 
   // Initial debug readout so we can see layout engine + graph state before
   // any events arrive.
@@ -1155,6 +1220,10 @@
 
   async function loadNoteDetails(noteId) {
     if (!currentRunId) return;
+    if (historicalNotesById && historicalNotesById.has(noteId)) {
+      renderNote(historicalNotesById.get(noteId));
+      return;
+    }
     detailsEl.innerHTML = `<div class="placeholder">Loading ${noteId}…</div>`;
     try {
       const res = await fetch(`/api/note/${currentRunId}/${noteId}`);
@@ -1172,7 +1241,7 @@
     detailsEl.innerHTML = `
       <h3>${escape(note.title)}</h3>
       <div class="subtitle">${note.type} · v${note.version} · ${note.id}</div>
-      <div class="meta">${escape(meta)}</div>
+      <details class="meta"><summary>metadata</summary>${escape(meta)}</details>
       <div class="body">${body}</div>
     `;
   }
@@ -1730,7 +1799,6 @@
         setStatus("done", "ok");
         goBtn.disabled = false;
         runIsTerminal = true;
-        refreshRunsDropdown(currentRunId);
         if (data.report_note_id) {
           lastReportNoteId = data.report_note_id;
           tabReport.hidden = false;
@@ -1767,7 +1835,6 @@
         setStatus("failed", "err");
         goBtn.disabled = false;
         runIsTerminal = true;
-        refreshRunsDropdown(currentRunId);
         break;
     }
   }
@@ -1816,8 +1883,8 @@
     currentRunId = run_id;
     runIsTerminal = false;
     reconnectAttempts = 0;
+    historicalNotesById = null;
     saveRunId(run_id);
-    refreshRunsDropdown(run_id);
     connect(run_id);
   }
 
@@ -1900,51 +1967,149 @@
     reconnectAttempts = 0;
     runIsTerminal = false;
     currentRunId = runId;
+    historicalNotesById = null;
     saveRunId(runId);
     resetUiForRun();
     setStatus("reconnecting…");
     connect(runId);
   }
 
-  async function refreshRunsDropdown(selectedRunId = null) {
-    let runs = [];
+  // --- History tab: browse completed runs persisted to disk -----------------
+
+  function fmtHistoryTimestamp(iso) {
     try {
-      const res = await fetch("/api/runs");
-      if (res.ok) runs = (await res.json()).runs || [];
-    } catch { return; }
-    // Newest first.
-    runs.sort((a, b) => (b.started_at || "").localeCompare(a.started_at || ""));
-    const optionFor = r => {
-      const q = (r.query || "").slice(0, 40) || "(no query)";
-      const t = r.started_at ? new Date(r.started_at).toLocaleTimeString() : "";
-      const done = r.finished ? "✓" : "·";
-      return `<option value="${r.run_id}">${done} ${q} — ${t}</option>`;
-    };
-    runsSelectEl.innerHTML =
-      `<option value="">past runs…</option>` + runs.map(optionFor).join("");
-    const wanted = selectedRunId || currentRunId;
-    if (wanted && runs.some(r => r.run_id === wanted)) {
-      runsSelectEl.value = wanted;
-    }
+      const d = new Date(iso);
+      const datePart = d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+      const timePart = d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+      return `${datePart} ${timePart}`;
+    } catch { return iso || ""; }
   }
 
-  runsSelectEl.addEventListener("change", () => {
-    const runId = runsSelectEl.value;
-    if (runId && runId !== currentRunId) reconnectToRun(runId);
-  });
+  async function loadHistory() {
+    historyListEl.innerHTML = `<div class="history-empty">Loading…</div>`;
+    let runs = [];
+    try {
+      const res = await fetch("/api/history");
+      if (!res.ok) throw new Error(`${res.status}`);
+      runs = (await res.json()).runs || [];
+    } catch (err) {
+      historyListEl.innerHTML = `<div class="history-empty">Failed to load: ${escape(String(err))}</div>`;
+      return;
+    }
+    if (runs.length === 0) {
+      historyListEl.innerHTML = `<div class="history-empty">No completed runs on disk yet.</div>`;
+      return;
+    }
+    historyListEl.innerHTML = runs.map(r => {
+      const q = (r.query || "(no query)").trim();
+      const t = fmtHistoryTimestamp(r.started_at);
+      return `<div class="history-row" data-run-id="${escape(r.run_id)}">
+        <div class="q">${escape(q)}</div>
+        <div class="meta">${escape(t)}</div>
+        <div class="meta">${escape(r.run_id)}</div>
+      </div>`;
+    }).join("");
+    historyListEl.querySelectorAll(".history-row").forEach(row => {
+      row.addEventListener("click", () => loadHistoricalRun(row.dataset.runId));
+    });
+  }
 
-  // On page load: populate the dropdown, then try to reconnect to whatever
-  // run the user was last on (if the server still has it in its registry).
+  async function loadHistoricalRun(runId) {
+    if (!runId) return;
+    // Tear down any live WebSocket and reset UI state. Set terminal so
+    // onclose doesn't trigger the reconnect backoff loop.
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    runIsTerminal = true;
+    if (ws) { try { ws.close(); } catch {} ws = null; }
+    resetUiForRun();
+    currentRunId = runId;
+    saveRunId(runId);
+    setStatus("loading history…");
+
+    let notes;
+    try {
+      const res = await fetch(`/api/history/${runId}/notes`);
+      if (!res.ok) throw new Error(`${res.status}`);
+      notes = await res.json();
+    } catch (err) {
+      setStatus(`history load failed: ${err}`, "err");
+      return;
+    }
+
+    // Populate note cache so node-click overlays resolve locally.
+    historicalNotesById = new Map(notes.map(n => [n.id, n]));
+
+    // Two-pass graph build: first add every node without edges, then
+    // re-call with real links so back-edges (target already exists) resolve.
+    for (const n of notes) {
+      addOrUpdateNode({ ...extractNodeData(n), links: [] });
+    }
+    for (const n of notes) {
+      addOrUpdateNode(extractNodeData(n));
+    }
+
+    // Summary tab
+    try {
+      const res = await fetch(`/api/history/${runId}/summary`);
+      if (res.ok) {
+        renderSummary(await res.json());
+        tabSummary.hidden = false;
+      }
+    } catch {}
+
+    // Report tab — serve report.md directly, render via marked.
+    try {
+      const res = await fetch(`/api/history/${runId}/report`);
+      if (res.ok) {
+        const md = await res.text();
+        reportContent.innerHTML = `
+          <div class="report-head">
+            <h1>Report</h1>
+            <div class="sub">${escape(runId)}</div>
+          </div>
+          <div class="report-body">${marked.parse(md)}</div>
+        `;
+        tabReport.hidden = false;
+        tabReport.classList.add("has-report");
+      }
+    } catch {}
+
+    setStatus("history loaded");
+    switchView("report");
+  }
+
+  // Reduce a full Note JSON to the fields addOrUpdateNode needs to render
+  // one graph node. Mirrors the payload shape that the live event stream
+  // sends in note_created / note_replaced events.
+  function extractNodeData(n) {
+    const md = n.metadata || {};
+    return {
+      id: n.id,
+      type: n.type,
+      title: n.title,
+      subtype: md.category || md.classification || null,
+      state: md.state || null,
+      links: n.links || [],
+    };
+  }
+
+  // On page load: try to reconnect to whatever run the user was last on
+  // (if the server still has it in its registry — disk history is the
+  // History tab's job, not this path).
   (async () => {
-    await refreshRunsDropdown();
     const saved = loadSavedRunId();
     if (!saved) return;
-    // Only auto-reconnect if the server still knows about this run.
-    const known = Array.from(runsSelectEl.options).some(o => o.value === saved);
+    let known = false;
+    try {
+      const res = await fetch("/api/runs");
+      if (res.ok) {
+        const runs = (await res.json()).runs || [];
+        known = runs.some(r => r.run_id === saved);
+      }
+    } catch { return; }
     if (known) {
       reconnectToRun(saved);
     } else {
-      // Server has forgotten it (restart) - drop the stale pointer.
       clearSavedRunId();
     }
   })();

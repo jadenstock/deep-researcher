@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -33,6 +33,7 @@ from ..observability import setup_logfire
 from ..retrieval import apply_retrieval_rate_limits
 from ..run_id import new_run_id
 from ..schemas.enums import QuestionStatus
+from . import history
 from .events import SessionRegistry
 from .runner import run_session
 
@@ -172,6 +173,32 @@ def create_app(
                 for s in state.registry.all()
             ]
         }
+
+    @app.get("/api/history")
+    async def list_history() -> dict[str, list[dict]]:
+        """Completed runs persisted under runs_dir, newest first."""
+        return {"runs": history.list_history(state.runs_dir)}
+
+    @app.get("/api/history/{run_id}/notes")
+    async def history_notes(run_id: str) -> list[dict]:
+        notes = history.read_notes(state.runs_dir, run_id)
+        if notes is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        return notes
+
+    @app.get("/api/history/{run_id}/report", response_class=PlainTextResponse)
+    async def history_report(run_id: str) -> PlainTextResponse:
+        md = history.read_report_md(state.runs_dir, run_id)
+        if md is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        return PlainTextResponse(md, media_type="text/markdown; charset=utf-8")
+
+    @app.get("/api/history/{run_id}/summary")
+    async def history_summary(run_id: str) -> dict:
+        summary = history.summarize(state.runs_dir, run_id)
+        if summary is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        return summary
 
     @app.get("/api/note/{run_id}/{note_id}")
     async def get_note(run_id: str, note_id: str) -> dict:
