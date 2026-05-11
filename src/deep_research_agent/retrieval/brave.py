@@ -58,10 +58,6 @@ class SearchHit(BaseModel):
     pdf_url: str | None = None
 
 
-class BraveSearchError(RuntimeError):
-    """Brave API returned a non-2xx response."""
-
-
 class BraveClient:
     def __init__(self, client: httpx.AsyncClient, api_key: str, timeout: float = 15.0) -> None:
         self._client = client
@@ -71,10 +67,11 @@ class BraveClient:
     async def search(self, query: str, count: int = 10) -> list[SearchHit]:
         """Return up to `count` web results for `query`.
 
-        Retries on 429 (see retrieval._http.request_with_429_retry);
-        other 4xx/5xx raise BraveSearchError immediately - retrying a
-        403 won't help, and retrying a 500 is debatable but not worth
-        the complexity for v0.
+        Returns [] on any terminal failure (transport error, exhausted
+        429 retries, or other 4xx/5xx). Web search is additive; a
+        single provider blip should not kill the run. Retries on 429
+        and transient transport errors happen inside
+        request_with_429_retry.
         """
         headers = {
             "Accept": "application/json",
@@ -84,16 +81,20 @@ class BraveClient:
         params = {"q": query, "count": min(count, 20)}
         logger.debug("brave_search_start query=%r count=%d", query[:160], params["count"])
         t0 = time.monotonic()
-        resp = await request_with_429_retry(
-            self._client,
-            BRAVE_SEARCH_URL,
-            params=params,
-            headers=headers,
-            bucket=_brave_bucket(),
-            log_label="brave",
-            log_key=f"query={query[:160]!r}",
-            timeout=self._timeout,
-        )
+        try:
+            resp = await request_with_429_retry(
+                self._client,
+                BRAVE_SEARCH_URL,
+                params=params,
+                headers=headers,
+                bucket=_brave_bucket(),
+                log_label="brave",
+                log_key=f"query={query[:160]!r}",
+                timeout=self._timeout,
+            )
+        except httpx.HTTPError as exc:
+            logger.warning("brave_search_failed query=%r err=%s", query[:160], exc)
+            return []
         elapsed_ms = int((time.monotonic() - t0) * 1000)
         if resp.status_code >= 400:
             # Surface rate-limit hints on terminal 429 (exhausted
@@ -112,7 +113,7 @@ class BraveClient:
                 elapsed_ms,
                 resp.text[:200],
             )
-            raise BraveSearchError(f"Brave search {resp.status_code}: {resp.text[:200]}")
+            return []
         data = resp.json()
         results = data.get("web", {}).get("results", []) or []
         hits = [

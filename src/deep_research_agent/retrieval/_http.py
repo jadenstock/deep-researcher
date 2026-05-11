@@ -21,6 +21,13 @@ MAX_429_RETRIES = 3
 MAX_429_TOTAL_WAIT_S = 20.0
 DEFAULT_429_BACKOFF_S = 2.0
 
+# Transient transport errors (DNS blips, reset connections, read
+# timeouts) get their own short retry budget, independent of the 429
+# budget: a flaky network moment shouldn't eat into the 429 cap, and a
+# rate-limited provider shouldn't consume transport retries.
+MAX_TRANSPORT_RETRIES = 2
+DEFAULT_TRANSPORT_BACKOFF_S = 1.0
+
 
 def parse_retry_after(value: str | None) -> float | None:
     """Parse a Retry-After header value in seconds.
@@ -37,6 +44,42 @@ def parse_retry_after(value: str | None) -> float | None:
         return None
 
 
+async def _get_with_transport_retry(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    params: dict,
+    headers: dict,
+    timeout: float,
+    log_label: str,
+    log_key: str,
+) -> httpx.Response:
+    """GET `url` retrying on transient transport errors.
+
+    Covers DNS failures, connection resets, read timeouts - anything
+    that inherits from httpx.TransportError. Non-2xx responses are
+    returned untouched (retry policy for those lives one layer up).
+    """
+    attempt = 0
+    while True:
+        try:
+            return await client.get(url, headers=headers, params=params, timeout=timeout)
+        except httpx.TransportError as exc:
+            if attempt >= MAX_TRANSPORT_RETRIES:
+                raise
+            backoff = DEFAULT_TRANSPORT_BACKOFF_S * (2**attempt)
+            logger.info(
+                "%s_transport_retry attempt=%d wait_s=%.1f err=%s %s",
+                log_label,
+                attempt + 1,
+                backoff,
+                exc,
+                log_key,
+            )
+            await asyncio.sleep(backoff)
+            attempt += 1
+
+
 async def request_with_429_retry(
     client: httpx.AsyncClient,
     url: str,
@@ -50,16 +93,26 @@ async def request_with_429_retry(
 ) -> httpx.Response:
     """GET `url` under `bucket`, retrying on 429 up to MAX_429_RETRIES.
 
-    Returns the final response. Non-2xx responses (including a
-    terminal 429 after retries exhausted or wait-cap hit) are
-    returned to the caller for provider-specific error shaping;
-    connection errors propagate as httpx.HTTPError.
+    Transient transport errors (DNS blips, resets, timeouts) get a
+    short inner retry via _get_with_transport_retry before they're
+    allowed to propagate. Non-2xx responses (including a terminal 429
+    after retries exhausted or wait-cap hit) are returned to the
+    caller for provider-specific error shaping; terminal transport
+    errors propagate as httpx.HTTPError.
     """
     total_wait = 0.0
     attempt = 0
     while True:
         await bucket.acquire()
-        resp = await client.get(url, headers=headers, params=params, timeout=timeout)
+        resp = await _get_with_transport_retry(
+            client,
+            url,
+            headers=headers,
+            params=params,
+            timeout=timeout,
+            log_label=log_label,
+            log_key=log_key,
+        )
         if resp.status_code == 429 and attempt < MAX_429_RETRIES:
             retry_after = parse_retry_after(resp.headers.get("retry-after"))
             backoff = DEFAULT_429_BACKOFF_S * (2**attempt)

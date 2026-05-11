@@ -12,7 +12,7 @@ async wrapper around one external provider:
 from typing import TYPE_CHECKING
 
 from .arxiv import ArxivClient, set_arxiv_min_interval
-from .brave import BraveClient, BraveSearchError, SearchHit, set_brave_min_interval
+from .brave import BraveClient, SearchHit, set_brave_min_interval
 from .fetch import FetchResult, fetch_and_extract
 from .semantic_scholar import SemanticScholarClient, set_s2_min_interval
 
@@ -37,7 +37,6 @@ def apply_retrieval_rate_limits(keys: "RetrievalKeys") -> None:
 __all__ = [
     "ArxivClient",
     "BraveClient",
-    "BraveSearchError",
     "FetchResult",
     "SearchHit",
     "SemanticScholarClient",
