@@ -1,0 +1,94 @@
+{
+  "run_id": "20260512T161326-beb66b9b",
+  "query": "What are the best task and memory management systems for multi-agent, multi-use case, deep research systems? We are imagining using a central orchestrator agent which maintains long running context and steers the task towards completion. It delegates work to sub-agents. There are a variety of tools to fetch external and internal data through apis and sql queries. The final output is a report and optionally datasets. Files are also permitted for input.",
+  "finished": true,
+  "started_at": "2026-05-12T16:13:26.269181+00:00",
+  "finished_at": "2026-05-12T16:44:11.073450+00:00",
+  "duration_s": 1844.804269,
+  "report_note_id": "report-e110a2172162",
+  "tokens": {
+    "per_model": {
+      "anthropic/claude-sonnet-4-6": {
+        "calls": 8,
+        "input_tokens": 5084078,
+        "output_tokens": 104349,
+        "total_tokens": 5188427,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "tool_calls": 224,
+        "by_task_type": {
+          "LANDSCAPE": 1,
+          "ANALYST": 7
+        }
+      },
+      "anthropic/claude-haiku-4-5": {
+        "calls": 31,
+        "input_tokens": 8304141,
+        "output_tokens": 179621,
+        "total_tokens": 8483762,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "tool_calls": 935,
+        "by_task_type": {
+          "SCOUT": 31
+        }
+      },
+      "openai/gpt-5.4": {
+        "calls": 2,
+        "input_tokens": 133660,
+        "output_tokens": 575,
+        "total_tokens": 134235,
+        "cache_read_tokens": 6912,
+        "cache_write_tokens": 0,
+        "tool_calls": 4,
+        "by_task_type": {
+          "ANALYST": 2
+        }
+      },
+      "anthropic/claude-opus-4-7": {
+        "calls": 1,
+        "input_tokens": 88201,
+        "output_tokens": 3437,
+        "total_tokens": 91638,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "tool_calls": 6,
+        "by_task_type": {
+          "RESEARCHER": 1
+        }
+      }
+    },
+    "grand_totals": {
+      "calls": 42,
+      "input_tokens": 13610080,
+      "output_tokens": 287982,
+      "total_tokens": 13898062,
+      "cache_read_tokens": 6912,
+      "cache_write_tokens": 0,
+      "tool_calls": 1169,
+      "by_task_type": {
+        "LANDSCAPE": 1,
+        "ANALYST": 9,
+        "SCOUT": 31,
+        "RESEARCHER": 1
+      }
+    }
+  },
+  "notes_by_type": {
+    "question_note": 10,
+    "landscape_note": 1,
+    "source_note": 421
+  },
+  "sources_by_state": {
+    "FETCHED": 184,
+    "ANALYZED": 44,
+    "SCOUTED": 193
+  },
+  "questions_by_status": {
+    "OPEN": 0,
+    "IN_PROGRESS": 4,
+    "SYNTHESIZED": 6
+  },
+  "tasks": 0,
+  "notes_total": 432
+}

@@ -46,6 +46,38 @@ users.
 - **Hosted agent runner.** Replace the local `asyncio` orchestrator
   with a proper job runner — durable state, retries, queueing,
   per-run isolation.
+- **Admission control and job queue.** `POST /api/run` currently
+  spawns a background task immediately, with no backpressure. A
+  hosted deployment needs a queue in front of run execution with a
+  configurable concurrency cap and a per-user in-flight limit so one
+  caller can't monopolize workers.
+- **Distributed retrieval rate limits.** Today every run in a
+  process shares one in-memory token bucket per provider (Brave,
+  Semantic Scholar, arXiv), so concurrent runs serialize behind each
+  other and the bucket resets whenever the process restarts. Scale-
+  out needs these moved to a shared store (e.g. a Redis token
+  bucket) so the budget tracks the provider's real limit, not one
+  process's view of it.
+- **Stateless API tier and durable event bus.** `SessionRegistry`
+  and the per-run event history live in process memory today, so
+  restarts drop live WebSockets and sessions can't be shared between
+  workers. Pushing the event stream to a durable log (Redis Streams,
+  Kafka, etc.) lets the API tier be stateless and lets the UI
+  reconnect across deploys.
+- **Per-run hard ceilings.** Wall-clock, total tokens, and tool-call
+  count aren't bounded right now; a single runaway run can exhaust
+  the provider rate limit or spend budget for everyone. The
+  per-run `RunConfig` budgets should be enforced as hard caps
+  (kill-switch) rather than advisory targets.
+- **Auth and tenancy.** No authentication on run endpoints today,
+  and history/summary/note endpoints are readable by anyone with a
+  run id. A hosted deployment needs auth, per-user scoping on those
+  endpoints, and per-user spend caps on the token tracker.
+- **Separate UI deployment.** The static UI is served from the same
+  uvicorn process as the API today. Splitting the UI onto a CDN
+  with a defined HTTP + WebSocket contract to the backend lets the
+  two evolve independently and removes a failure mode where the
+  static asset is down because the API is restarting.
 - **Scalable web interface.** Move off single-process Streamlit to
   something that survives many concurrent sessions.
 - **Scalable model hosting.** Routing, rate-limit handling,
@@ -99,8 +131,13 @@ Expands the kinds of questions the system can actually answer.
   message ordering to maximize cached-token reuse across turns.
 - **Cheaper-model routing.** Identify which sub-tasks can be
   demoted to smaller/cheaper models without quality loss.
-- **More parallelism.** Find more work that can fan out rather
-  than run serially.
+- **More parallelism.** The agent tree runs sequentially today:
+  researcher awaits one analyst, which awaits one scout, which
+  awaits one tool call. Fanning out independent sub-questions (or
+  enabling parallel tool calls inside an agent) would cut single-
+  run latency, but it multiplies per-run upstream pressure on LLM
+  and retrieval providers — so it should land after the rate-limit
+  and budget work in §2, not before.
 
 ---
 

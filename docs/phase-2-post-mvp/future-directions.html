@@ -73,6 +73,12 @@
     <li><strong>Hosted note memory.</strong> Move the in-memory note graph to a hosted store so notes survive restarts and can be shared across workers.</li>
     <li><strong>RAG over notes.</strong> Retrieval over the note corpus so the note system can scale <em>within</em> a run (larger working set than fits in context) and <em>across</em> runs (reuse prior research).</li>
     <li><strong>Hosted agent runner.</strong> Replace the local <code>asyncio</code> orchestrator with a proper job runner — durable state, retries, queueing, per-run isolation.</li>
+    <li><strong>Admission control and job queue.</strong> <code>POST /api/run</code> currently spawns a background task immediately, with no backpressure. A hosted deployment needs a queue in front of run execution with a configurable concurrency cap and a per-user in-flight limit so one caller can't monopolize workers.</li>
+    <li><strong>Distributed retrieval rate limits.</strong> Today every run in a process shares one in-memory token bucket per provider (Brave, Semantic Scholar, arXiv), so concurrent runs serialize behind each other and the bucket resets whenever the process restarts. Scale-out needs these moved to a shared store (e.g. a Redis token bucket) so the budget tracks the provider's real limit, not one process's view of it.</li>
+    <li><strong>Stateless API tier and durable event bus.</strong> <code>SessionRegistry</code> and the per-run event history live in process memory today, so restarts drop live WebSockets and sessions can't be shared between workers. Pushing the event stream to a durable log (Redis Streams, Kafka, etc.) lets the API tier be stateless and lets the UI reconnect across deploys.</li>
+    <li><strong>Per-run hard ceilings.</strong> Wall-clock, total tokens, and tool-call count aren't bounded right now; a single runaway run can exhaust the provider rate limit or spend budget for everyone. The per-run <code>RunConfig</code> budgets should be enforced as hard caps (kill-switch) rather than advisory targets.</li>
+    <li><strong>Auth and tenancy.</strong> No authentication on run endpoints today, and history/summary/note endpoints are readable by anyone with a run id. A hosted deployment needs auth, per-user scoping on those endpoints, and per-user spend caps on the token tracker.</li>
+    <li><strong>Separate UI deployment.</strong> The static UI is served from the same uvicorn process as the API today. Splitting the UI onto a CDN with a defined HTTP + WebSocket contract to the backend lets the two evolve independently and removes a failure mode where the static asset is down because the API is restarting.</li>
     <li><strong>Scalable web interface.</strong> Move off single-process Streamlit to something that survives many concurrent sessions.</li>
     <li><strong>Scalable model hosting.</strong> Routing, rate-limit handling, failover, and cost controls at a level appropriate for multi-user load rather than one user's keys.</li>
     <li><strong>Observability.</strong> Real structured logging and trace export (per-run, per-agent, per-tool-call) so we can debug and cost-account production runs.</li>
@@ -100,7 +106,7 @@
   <ul>
     <li><strong>Context management for cache hits.</strong> Structure prompts and message ordering to maximize cached-token reuse across turns.</li>
     <li><strong>Cheaper-model routing.</strong> Identify which sub-tasks can be demoted to smaller/cheaper models without quality loss.</li>
-    <li><strong>More parallelism.</strong> Find more work that can fan out rather than run serially.</li>
+    <li><strong>More parallelism.</strong> The agent tree runs sequentially today: researcher awaits one analyst, which awaits one scout, which awaits one tool call. Fanning out independent sub-questions (or enabling parallel tool calls inside an agent) would cut single-run latency, but it multiplies per-run upstream pressure on LLM and retrieval providers — so it should land after the rate-limit and budget work in §2, not before.</li>
   </ul>
 
   <h2>6. Data sources and extraction</h2>
