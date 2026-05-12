@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
+from typing import Annotated
 
 from pydantic import BaseModel, Field
 from pydantic_ai import ModelRetry, RunContext
@@ -38,6 +39,7 @@ from ...schemas.source import ClaimItem, ReadingEntry
 from ..deps import Deps
 from ..events import current_agent_id, instrumented
 from ..memory import new_note_id
+from . import JsonListOK
 
 logger = logging.getLogger(__name__)
 
@@ -153,7 +155,7 @@ async def update_source_after_reading(
     peer_reviewed: bool,
     summary: str,
     relevance_note: str,
-    claims: list[ClaimInput] | None = None,
+    claims: Annotated[list[ClaimInput], JsonListOK] | None = None,
 ) -> str:
     """Record what you learned after reading a source for your question.
 
@@ -196,10 +198,24 @@ async def update_source_after_reading(
       relevance_note: One sentence on why this source matters FOR
         YOUR QUESTION specifically. Lives on your reading entry; does
         not overwrite other analysts' relevance notes.
-      claims: List of 3-6 key claims you extracted from the source
-        for your question. Each claim MUST include a verbatim quote.
-        Never paraphrase a quote - if you can't find one, drop the
-        claim. Pass an empty list if the source was unhelpful for
+      claims: A native JSON ARRAY of claim objects (NOT a JSON-
+        encoded string — pass `[{...}, {...}]`, not `"[{...}]"`).
+        3-6 entries typically. Each object has these keys:
+          - text (str, required): paraphrased statement of the claim.
+          - quote (str, required, non-empty): VERBATIM excerpt from
+            the source that supports `text`. Never paraphrase the
+            quote — if you can't find a supporting excerpt, drop the
+            claim entirely.
+          - page_or_section (str | null): optional section heading
+            or page reference.
+        Example shape (shape only — use your real values):
+          [
+            {"text": "...",
+             "quote": "...",
+             "page_or_section": "Section 3.2"},
+            {"text": "...", "quote": "...", "page_or_section": null}
+          ]
+        Pass an empty array `[]` if the source was unhelpful for
         your angle.
 
     Returns a one-line confirmation string. Raises ModelRetry with a
@@ -300,17 +316,24 @@ async def load_note(ctx: RunContext[Deps], note_id: NoteID) -> dict[str, object]
 
     Use this to re-read a source note (with its extracted claims +
     summary) when composing a synthesis, or to inspect a question
-    note created by another agent. Returns {"error": ...} if the
-    note isn't in memory - check the id and try again.
+    note created by another agent.
 
     Args:
       note_id: NoteID to load. Any note type (source / question /
         landscape / etc.) - the returned dict includes the note's
         type-specific metadata.
+
+    Raises ModelRetry if `note_id` is not in memory - call
+    `list_source_notes()` to see valid source ids, or check the id you
+    were passed in your opening message.
     """
     note = ctx.deps.memory.get(note_id)
     if note is None:
-        return {"error": f"note {note_id} not found"}
+        raise ModelRetry(
+            f"note {note_id!r} not in memory. "
+            "Call list_source_notes() to see valid source ids, or "
+            "check the note id you were given in your opening message."
+        )
     return note.model_dump(mode="json")
 
 

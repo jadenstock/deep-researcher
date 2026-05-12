@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic_ai import Agent, ModelRetry, RunContext
 
@@ -31,6 +31,7 @@ from ._run import drive_agent
 from .deps import Deps
 from .events import instrumented
 from .schemas import ScoutedSource, ScoutResult, SearchResult
+from .tools import JsonListOK
 from .tools.fetch import scout_fetch
 from .tools.notes import (
     create_source_note,
@@ -256,7 +257,7 @@ def build_scout(
     @instrumented
     async def commit_scout_result(
         ctx: RunContext[Deps],
-        sources: list[ScoutedSource],
+        sources: Annotated[list[ScoutedSource], JsonListOK],
         coverage_note: str,
     ) -> str:
         """Commit your sourcelist + coverage note for the dispatching analyst.
@@ -267,16 +268,33 @@ def build_scout(
         call so the analyst that dispatched this scout sees the return.
 
         Args:
-          sources: List of ScoutedSource entries. Each must reference an
-            existing source_note id (from create_source_note you called
-            earlier). tier_guess is 1..5 or null; relevance_guess is one
-            of 'high' | 'medium' | 'low'; preview is a 2-3 sentence
-            excerpt from scout_fetch (empty if the source was never
-            fetched - e.g. paywall / 404).
-          coverage_note: One paragraph summarizing what you searched,
-            what you found, and where coverage is thin or strong. Tells
-            the analyst whether another scout dispatch on a different
-            angle is worth it.
+          sources: A native JSON ARRAY of source objects (NOT a JSON-
+            encoded string — pass `[{...}, {...}]`, not `"[{...}]"`).
+            Each object has these keys:
+              - source_id (str, required): NoteID returned earlier by
+                create_source_note. Must exist in memory.
+              - url (str, required): source URL (copy from the note).
+              - title (str, required): source title (copy from the note).
+              - tier_guess (int 1..5 | null): first-pass tier — 1 peer-
+                reviewed strong venue, 2 preprint, 3 reputable industry,
+                4 community, 5 low-quality. null if unsure.
+              - relevance_guess (str): 'high' | 'medium' | 'low'.
+              - preview (str): 2-3 sentence excerpt from scout_fetch.
+                Empty string if the source was never fetched (paywall / 404).
+            Example shape (shape only — use your real values):
+              [
+                {"source_id": "source-abc123",
+                 "url": "https://...",
+                 "title": "...",
+                 "tier_guess": 2,
+                 "relevance_guess": "high",
+                 "preview": "..."}
+              ]
+            Cap at ~10 entries — pick the strongest if you have more.
+          coverage_note: REQUIRED, non-empty string. One paragraph
+            summarizing what you searched, what you found, and where
+            coverage is thin or strong. Tells the analyst whether
+            another scout dispatch on a different angle is worth it.
         """
         if not sources and not coverage_note.strip():
             raise ModelRetry(
