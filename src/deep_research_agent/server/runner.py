@@ -15,9 +15,9 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 
-from .._time import utc_now
 from ..agents.deps import build_deps, close_deps
 from ..agents.events import EventPublisher
 from ..agents.memory import NoteMemory, new_note_id
@@ -241,8 +241,8 @@ async def _materialize_fallback_report_note(
         description=description[:280],
         content=report_markdown,
         metadata=SynthesisMetadata(pattern="researcher"),
-        last_modified_at=utc_now(),
-        created_at=utc_now(),
+        last_modified_at=datetime.now(UTC),
+        created_at=datetime.now(UTC),
     )
     # Publish directly - we're not going through NoteMemory because
     # this is a fallback artifact, not agent working state. Routing it
@@ -294,7 +294,7 @@ async def _dump_success(
         run_id=session.run_id,
         query=session.query,
         started_at=session.started_at,
-        finished_at=utc_now(),
+        finished_at=datetime.now(UTC),
         report_note_id=report_note_id,
         notes=deps.memory.all(),
         tokens=deps.tracker.to_dict(),
@@ -326,7 +326,7 @@ async def _dump_failure(
         run_id=session.run_id,
         query=session.query,
         started_at=session.started_at,
-        finished_at=utc_now(),
+        finished_at=datetime.now(UTC),
         report_note_id=partial_note_id,
         notes=deps.memory.all(),
         tokens=deps.tracker.to_dict(),
@@ -364,7 +364,7 @@ async def _finalize(
         run_log_handler.close()
     except Exception:
         logger.exception("run_log detach failed run_id=%s", session.run_id)
-    session.finished_at = utc_now()
+    session.finished_at = datetime.now(UTC)
     session.finished = True
 
 

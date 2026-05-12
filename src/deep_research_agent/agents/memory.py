@@ -13,8 +13,8 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import Iterable
+from datetime import UTC, datetime
 
-from .._time import utc_now
 from ..schemas.enums import NoteType
 from ..schemas.ids import NoteID
 from ..schemas.note import Note, SourceNoteMetadata
@@ -93,7 +93,7 @@ class NoteMemory:
             merged_fields = {
                 **fields,
                 "version": existing.version + 1,
-                "last_modified_at": utc_now(),
+                "last_modified_at": datetime.now(UTC),
             }
             updated = existing.model_copy(update=merged_fields)
             self._notes[note_id] = updated

@@ -13,11 +13,11 @@ layer on top once we see what the agents actually reach for.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 
 from pydantic import BaseModel, Field
 from pydantic_ai import ModelRetry, RunContext
 
-from ..._time import utc_now
 from ...schemas.enums import (
     ClaimType,
     ConfidenceLevel,
@@ -136,8 +136,8 @@ async def create_source_note(
             pdf_url=pdf_url,
             doi=doi,
         ),
-        last_modified_at=utc_now(),
-        created_at=utc_now(),
+        last_modified_at=datetime.now(UTC),
+        created_at=datetime.now(UTC),
     )
     await ctx.deps.memory.create(note)
     return source_id

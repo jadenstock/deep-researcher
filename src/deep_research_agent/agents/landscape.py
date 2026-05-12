@@ -15,10 +15,10 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import UTC, datetime
 
 from pydantic_ai import Agent
 
-from .._time import utc_now
 from ..agent_factory import make_model
 from ..schemas.enums import AgentRunStatus, AgentType, NoteType, RoleClass, TaskTier
 from ..schemas.note import LandscapeMetadata, Note
@@ -113,8 +113,8 @@ async def landscape_run(deps: Deps, query: str) -> str:
         description="",
         content="",
         metadata=LandscapeMetadata(raw_query=query),
-        last_modified_at=utc_now(),
-        created_at=utc_now(),
+        last_modified_at=datetime.now(UTC),
+        created_at=datetime.now(UTC),
     )
     await deps.memory.create(landscape_note)
 

@@ -8,12 +8,11 @@ as analysts read it for one or more questions.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from .._time import utc_now
 from .enums import ClaimType, SourceState, Tier, VerificationStatus
 
 # Classification of how much of a source we actually retrieved. Set by
@@ -52,7 +51,7 @@ class ReadingEntry(BaseModel):
 
     by_agent_id: str
     for_question_id: str  # NoteID of the question this reading was done for
-    read_at: datetime = Field(default_factory=utc_now)
+    read_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     claims: list[ClaimItem] = Field(default_factory=list)
     relevance_note: str = ""
 

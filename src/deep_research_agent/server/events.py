@@ -23,12 +23,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import OrderedDict, deque
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from .._time import utc_now
 from ..schemas.note import Note
 
 logger = logging.getLogger(__name__)
@@ -108,7 +107,7 @@ class Event(BaseModel):
         "run_done",
         "run_failed",
     ]
-    at: datetime = Field(default_factory=utc_now)
+    at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     data: dict[str, Any]
 
 
@@ -137,7 +136,7 @@ def event_agent_started(
         role=role,
         model_id=model_id,
         mode=mode,
-        started_at=utc_now(),
+        started_at=datetime.now(UTC),
     )
     return Event(kind="task_started", data=summary.model_dump(mode="json"))
 
@@ -264,7 +263,7 @@ class RunSession:
     def __init__(self, run_id: str, query: str) -> None:
         self.run_id = run_id
         self.query = query
-        self.started_at = utc_now()
+        self.started_at = datetime.now(UTC)
         self.finished_at: datetime | None = None
         self.finished = False
         self.history: deque[Event] = deque(maxlen=self.HISTORY_CAP)

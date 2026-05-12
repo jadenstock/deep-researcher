@@ -17,11 +17,11 @@ import argparse
 import asyncio
 import logging
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 from rich.console import Console
 
-from ._time import utc_now
 from .agents.deps import build_deps, close_deps
 from .agents.researcher import research_run
 from .agents.schemas import ResearcherReport, compose_report_markdown
@@ -125,7 +125,7 @@ async def _run_research(args: argparse.Namespace) -> int:
     apply_retrieval_rate_limits(local.retrieval)
 
     run_id = new_run_id()
-    started_at = utc_now()
+    started_at = datetime.now(UTC)
     run_dir = Path(args.runs_dir) / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -189,7 +189,7 @@ async def _dump_run(
         run_id=run_id,
         query=query,
         started_at=started_at,
-        finished_at=utc_now(),
+        finished_at=datetime.now(UTC),
         report_note_id=None,
         notes=deps.memory.all(),
         tokens=deps.tracker.to_dict(),
