@@ -2,7 +2,9 @@
 /design/
 
 # Per-run outputs + Obsidian vaults
-/runs/
+# Not gitignoreing for now so others may pull runs to have pre-populated history and example reports.
+# /runs/
+/runs/*/*.log
 
 # macOS
 .DS_Store
