@@ -642,6 +642,29 @@
     font-family: ui-monospace, Menlo, monospace;
     flex-shrink: 0;
   }
+  /* Pinned "running now" row — the currently-active live run that the user
+     clicked away from. Sits at the top of the history list until the run
+     finishes or the user switches back to it. */
+  #history-view .history-row.live-pinned {
+    border-color: var(--accent);
+    background: var(--panel-2);
+  }
+  #history-view .history-row.live-pinned::before {
+    content: "";
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    margin-right: 4px;
+    flex-shrink: 0;
+    animation: live-pulse 1.4s ease-in-out infinite;
+    box-shadow: 0 0 0 0 var(--accent);
+  }
+  @keyframes live-pulse {
+    0%   { opacity: 1;   transform: scale(1);   box-shadow: 0 0 0 0 rgba(100, 200, 255, 0.6); }
+    70%  { opacity: 0.6; transform: scale(1.1); box-shadow: 0 0 0 6px rgba(100, 200, 255, 0); }
+    100% { opacity: 1;   transform: scale(1);   box-shadow: 0 0 0 0 rgba(100, 200, 255, 0); }
+  }
 
   /* Summary view — end-of-run debrief: tokens, counts, duration. */
   #summary-view { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
@@ -1185,6 +1208,20 @@
   let runIsTerminal = false;
   const RECONNECT_MAX_ATTEMPTS = 10;
   const RUN_ID_STORAGE_KEY = "dra:currentRunId";
+
+  // "Active live run" tracking — the run the user most recently kicked off
+  // via startRun(). Distinct from `currentRunId` (the viewed run), so the
+  // user can click away to a historical run while their live run keeps
+  // streaming on the server. A lightweight `bgWs` watches for terminal
+  // events when the active live run is not the viewed run, so the pinned
+  // badge in the history list can clear itself when the run finishes in
+  // the background.
+  let activeLiveRunId = null;
+  let activeLiveRunQuery = null;
+  let bgWs = null;
+  let bgReconnectAttempts = 0;
+  let bgReconnectTimer = null;
+  const BG_RECONNECT_MAX_ATTEMPTS = 4;
 
   // When viewing a historical run, /api/note/{run_id}/{note_id} 404s
   // (the session isn't in the live registry). notes.json is already
@@ -2020,6 +2057,12 @@
         setStatus("done", "ok");
         goBtn.disabled = false;
         runIsTerminal = true;
+        if (activeLiveRunId && activeLiveRunId === currentRunId) {
+          activeLiveRunId = null;
+          activeLiveRunQuery = null;
+          closeBgWs();
+          refreshLiveRunBadge();
+        }
         if (data.report_note_id) {
           lastReportNoteId = data.report_note_id;
           tabReport.hidden = false;
@@ -2056,6 +2099,12 @@
         setStatus("failed", "err");
         goBtn.disabled = false;
         runIsTerminal = true;
+        if (activeLiveRunId && activeLiveRunId === currentRunId) {
+          activeLiveRunId = null;
+          activeLiveRunQuery = null;
+          closeBgWs();
+          refreshLiveRunBadge();
+        }
         break;
     }
   }
@@ -2063,6 +2112,9 @@
   async function startRun() {
     const query = queryInput.value.trim();
     if (!query) return;
+    // The user is starting a new run; per the "just the one most recently
+    // launched" rule, drop any prior background-tracked live run.
+    closeBgWs();
     if (ws) { try { ws.close(); } catch {} }
     activityEl.innerHTML = "";
     detailsEl.innerHTML = `<div class="placeholder">Running…</div>`;
@@ -2107,11 +2159,100 @@
     }
     const { run_id } = await res.json();
     currentRunId = run_id;
+    activeLiveRunId = run_id;
+    activeLiveRunQuery = query;
     runIsTerminal = false;
     reconnectAttempts = 0;
     historicalNotesById = null;
     saveRunId(run_id);
+    refreshLiveRunBadge();
     connect(run_id);
+  }
+
+  function closeBgWs() {
+    if (bgReconnectTimer) { clearTimeout(bgReconnectTimer); bgReconnectTimer = null; }
+    if (bgWs) { try { bgWs.close(); } catch {} bgWs = null; }
+    bgReconnectAttempts = 0;
+  }
+
+  // Open a secondary WS solely to watch for terminal events on the active
+  // live run while the user is viewing something else. We intentionally
+  // do not render any events from this stream — when the user switches
+  // back, the main `ws` will reconnect and the server's replay buffer
+  // rebuilds the view.
+  function connectBg(runId) {
+    closeBgWs();
+    if (!runId) return;
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const sock = new WebSocket(`${proto}://${location.host}/api/ws/${runId}`);
+    bgWs = sock;
+    sock.onopen = () => { bgReconnectAttempts = 0; };
+    sock.onmessage = e => {
+      // activeLiveRunId may have been cleared (user switched back, or run
+      // finished on the main ws first). If so, ignore stale messages.
+      if (sock !== bgWs) return;
+      let evt;
+      try { evt = JSON.parse(e.data); } catch { return; }
+      const kind = evt && evt.kind;
+      if (kind === "run_done" || kind === "run_failed") {
+        const runIdWasActive = activeLiveRunId;
+        activeLiveRunId = null;
+        activeLiveRunQuery = null;
+        closeBgWs();
+        refreshLiveRunBadge();
+        // If the viewed run is History tab (not this run), nothing else
+        // to do. If the user is viewing an unrelated live run, same.
+        void runIdWasActive;
+      }
+    };
+    sock.onerror = () => { /* onclose handles retry */ };
+    sock.onclose = () => {
+      if (sock !== bgWs) return;          // superseded by a newer bgWs
+      if (!activeLiveRunId) return;        // run already marked terminal
+      if (bgReconnectAttempts >= BG_RECONNECT_MAX_ATTEMPTS) {
+        // Give up quietly. The user can still click the pinned row to
+        // try a full reconnect on the main ws.
+        return;
+      }
+      const delayMs = Math.min(1000 * Math.pow(2, bgReconnectAttempts), 8000);
+      bgReconnectAttempts++;
+      bgReconnectTimer = setTimeout(() => {
+        if (activeLiveRunId) connectBg(activeLiveRunId);
+      }, delayMs);
+    };
+  }
+
+  // Render (or remove) the pinned "running now" row at the top of the
+  // history list. Safe to call at any time — idempotent.
+  function refreshLiveRunBadge() {
+    if (!historyListEl) return;
+    const existing = historyListEl.querySelector(".history-row.live-pinned");
+    const shouldShow = activeLiveRunId && activeLiveRunId !== currentRunId;
+    if (!shouldShow) {
+      if (existing) existing.remove();
+      return;
+    }
+    const q = (activeLiveRunQuery || "(running)").trim();
+    const idShort = activeLiveRunId.slice(0, 16);
+    if (existing) {
+      existing.dataset.runId = activeLiveRunId;
+      existing.querySelector(".q").textContent = q;
+      existing.querySelector(".meta").textContent = `running now · ${idShort}`;
+      return;
+    }
+    const row = document.createElement("div");
+    row.className = "history-row live-pinned";
+    row.dataset.runId = activeLiveRunId;
+    row.innerHTML = `<div class="q"></div><div class="meta"></div>`;
+    row.querySelector(".q").textContent = q;
+    row.querySelector(".meta").textContent = `running now · ${idShort}`;
+    row.addEventListener("click", () => {
+      if (activeLiveRunId) reconnectToRun(activeLiveRunId);
+    });
+    // Remove the "Loading…" / empty placeholder if present.
+    const empty = historyListEl.querySelector(".history-empty");
+    if (empty) empty.remove();
+    historyListEl.prepend(row);
   }
 
   function connect(runId) {
@@ -2195,6 +2336,13 @@
     currentRunId = runId;
     historicalNotesById = null;
     saveRunId(runId);
+    // Returning to the active live run — main ws will subscribe, so the
+    // background watcher is no longer needed. If returning to some other
+    // live run, leave bgWs alone: it's still watching activeLiveRunId.
+    if (activeLiveRunId && activeLiveRunId === runId) {
+      closeBgWs();
+    }
+    refreshLiveRunBadge();
     resetUiForRun();
     setStatus("reconnecting…");
     connect(runId);
@@ -2238,6 +2386,9 @@
     historyListEl.querySelectorAll(".history-row").forEach(row => {
       row.addEventListener("click", () => loadHistoricalRun(row.dataset.runId));
     });
+    // Re-attach the "running now" row after the list was re-rendered from
+    // /api/history (which wiped innerHTML above).
+    refreshLiveRunBadge();
   }
 
   async function loadHistoricalRun(runId) {
@@ -2250,6 +2401,14 @@
     resetUiForRun();
     currentRunId = runId;
     saveRunId(runId);
+    // If we're leaving an active live run for a historical one, spin up
+    // the background WS so we notice when the live run finishes.
+    if (activeLiveRunId && activeLiveRunId !== runId) {
+      connectBg(activeLiveRunId);
+    } else {
+      closeBgWs();
+    }
+    refreshLiveRunBadge();
     setStatus("loading history…");
 
     let notes;
