@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Budget ablation — synthetic-data query, 2026-05-11</title>
+<style>
+  :root {
+    --bg: #fafaf7;
+    --panel: #ffffff;
+    --panel-2: #f3f1ea;
+    --border: #e5e3dc;
+    --border-strong: #c9c6ba;
+    --text: #1a1a1a;
+    --muted: #6b6b6b;
+    --accent: #2f9e5e;        /* green — peak / positive */
+    --accent-2: #7c5ed1;       /* purple — secondary */
+    --warn: #b5741d;           /* orange — caution */
+    --bad: #b03838;            /* red — regression / bind */
+    --run1: #2b4b8c;
+    --run2: #2f9e5e;
+    --run3: #b5741d;
+  }
+  * { box-sizing: border-box; }
+  html, body { background: var(--bg); color: var(--text);
+    font: 14px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+    margin: 0; padding: 0; }
+  a { color: var(--accent-2); }
+  code { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 12.5px;
+    background: var(--panel-2); padding: 1px 5px; border-radius: 3px; }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 32px 28px 120px; }
+  header.page { border-bottom: 1px solid var(--border); padding-bottom: 18px; margin-bottom: 28px; }
+  h1 { margin: 0 0 6px; font-size: 26px; font-weight: 650; letter-spacing: -0.01em; }
+  header.page .q { color: var(--muted); font-size: 13.5px; max-width: 900px; }
+  header.page .meta { color: var(--muted); font-size: 12px; margin-top: 10px; }
+  h2 { font-size: 18px; margin: 38px 0 14px; font-weight: 600; letter-spacing: -0.005em; }
+  h3 { font-size: 15px; margin: 22px 0 10px; font-weight: 600; color: var(--text); }
+  p { margin: 8px 0 12px; }
+
+  .section-sub { color: var(--muted); font-size: 13px; margin-top: -6px; }
+
+  /* Summary cards */
+  .runs { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+  .run-card { background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px 16px 14px; }
+.run-card.peak { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .run-card .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--muted); }
+  .run-card .label.r1 { color: var(--run1); }
+  .run-card .label.r2 { color: var(--run2); }
+  .run-card .label.r3 { color: var(--run3); }
+  .run-card h3 { margin: 4px 0 6px; font-size: 16px; }
+  .run-card .budget { font-family: "SF Mono", Menlo, monospace; font-size: 15px;
+    color: var(--text); margin-bottom: 10px; }
+  .run-card .sub { color: var(--muted); font-size: 12.5px; margin: 0 0 10px; }
+  .run-card .peakbadge { display: inline-block; background: var(--accent);
+    color: #ffffff; font-size: 10.5px; font-weight: 700; letter-spacing: 0.05em;
+    padding: 2px 8px; border-radius: 10px; margin-left: 6px; vertical-align: middle; }
+.run-card button:hover { background: #ebe9e1; border-color: var(--accent); }
+
+  /* Slider-control explainer */
+  .sliders { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; margin-top: 14px; }
+  .slider-card { background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 16px; }
+  .slider-card h4 { margin: 0 0 4px; font-size: 14px; }
+  .slider-card .who { color: var(--accent-2); font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 8px; }
+  .slider-card .gates { font-size: 12.5px; color: var(--muted); }
+  .slider-card .vals { font-family: "SF Mono", Menlo, monospace; font-size: 12.5px;
+    margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+  .slider-card .vals .row { display: flex; justify-content: space-between; padding: 2px 0; }
+  .slider-card .vals .bind { color: var(--warn); }
+
+  /* Headline finding */
+  .finding { margin: 28px 0 0; padding: 18px 20px;
+    background: linear-gradient(90deg, rgba(47,158,94,0.10), rgba(47,158,94,0.02));
+    border: 1px solid rgba(47,158,94,0.30); border-left: 3px solid var(--accent);
+    border-radius: 8px; }
+  .finding .kicker { color: var(--accent); text-transform: uppercase;
+    font-size: 11px; letter-spacing: 0.09em; font-weight: 700; }
+  .finding p { font-size: 15px; margin: 6px 0 0; }
+
+  /* Mechanism callout */
+  .mech { margin: 16px 0; padding: 16px 18px;
+    background: rgba(124,94,209,0.06);
+    border: 1px solid rgba(124,94,209,0.25); border-left: 3px solid var(--accent-2);
+    border-radius: 8px; }
+  .mech .kicker { color: var(--accent-2); text-transform: uppercase;
+    font-size: 11px; letter-spacing: 0.09em; font-weight: 700; margin-bottom: 4px; }
+  .mech pre { margin: 8px 0 0; background: var(--panel-2); padding: 10px 12px;
+    border-radius: 6px; font-size: 12.5px; overflow-x: auto; border: 1px solid var(--border); }
+  .mech cite { color: var(--muted); font-style: normal; font-size: 11.5px;
+    display: block; margin-top: 4px; }
+
+  /* Stats table */
+  table { border-collapse: collapse; width: 100%;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    overflow: hidden; font-size: 13px; }
+  th, td { padding: 9px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+  th { background: var(--panel-2); color: var(--muted); font-weight: 600;
+    font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em; }
+  td.num { text-align: right; font-family: "SF Mono", Menlo, monospace; font-size: 12.5px; }
+  tr:last-child td { border-bottom: none; }
+  td.peak { color: var(--accent); font-weight: 600; }
+  td.regress { color: var(--warn); }
+  td.bind { color: var(--bad); font-weight: 600; }
+
+  /* Mini bar visualization */
+  .bar-row { display: grid; grid-template-columns: 180px 1fr 1fr 1fr;
+    align-items: center; gap: 10px; padding: 6px 0; font-size: 12.5px; }
+  .bar-row .label { color: var(--muted); }
+  .bar-cell { position: relative; height: 22px; background: var(--panel-2);
+    border-radius: 4px; overflow: hidden; }
+  .bar-cell .fill { position: absolute; inset: 0 auto 0 0; }
+  .bar-cell .fill.r1 { background: var(--run1); opacity: 0.75; }
+  .bar-cell .fill.r2 { background: var(--run2); opacity: 0.85; }
+  .bar-cell .fill.r3 { background: var(--run3); opacity: 0.75; }
+  .bar-cell .val { position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+    font-family: "SF Mono", Menlo, monospace; font-size: 11.5px; color: var(--text); }
+  .bars-header { display: grid; grid-template-columns: 180px 1fr 1fr 1fr;
+    gap: 10px; font-size: 11px; color: var(--muted); text-transform: uppercase;
+    letter-spacing: 0.06em; padding: 4px 0 6px; border-bottom: 1px solid var(--border);
+    margin-bottom: 6px; }
+
+  /* Hit/miss grid */
+  .hitmiss { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px;
+    margin-top: 12px; }
+  .hitmiss .col { background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 16px; }
+  .hitmiss .col h4 { margin: 0 0 4px; font-size: 14px; }
+  .hitmiss .col .sub { color: var(--muted); font-size: 11.5px;
+    text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 10px; }
+  .hitmiss ul { margin: 0 0 14px; padding-left: 18px; }
+  .hitmiss li { margin: 4px 0; font-size: 12.5px; line-height: 1.45; }
+  .hitmiss .hits li::marker { color: var(--accent); }
+  .hitmiss .misses li::marker { color: var(--bad); }
+  .hitmiss .sect { color: var(--muted); text-transform: uppercase;
+    font-size: 10.5px; letter-spacing: 0.08em; margin-top: 2px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="page">
+  <h1>Budget ablation — synthetic-data query</h1>
+  <div class="q">One query, three runs, three slider settings. Same prompt, same day (2026-05-11). How much does the UI budget actually buy?</div>
+  <div class="meta">Query: <em>"What are the real-world risks and benefits of using synthetic data to train or fine-tune large language models? Focus on data quality, bias, and evaluation."</em></div>
+</header>
+
+<section>
+  <h2>The three runs</h2>
+  <p class="section-sub">Sliders read as <code>analyst_budget / scout_budget_per_analyst / scout_search_budget</code>. Click a card to open the full report.</p>
+  <div class="runs">
+    <div class="run-card" data-run="run1">
+      <div class="label r1">Run 1 · default</div>
+      <h3>Baseline</h3>
+      <div class="budget">8 / 4 / 8</div>
+      <p class="sub">229 sources · 26 cited · 3,456 words · 11.1M tokens</p>
+    </div>
+    <div class="run-card peak" data-run="run2">
+      <div class="label r2">Run 2 · middle <span class="peakbadge">Peak</span></div>
+      <h3>Raised</h3>
+      <div class="budget">12 / 6 / 16</div>
+      <p class="sub">263 sources · 55 cited · 3,783 words · 16.8M tokens</p>
+    </div>
+    <div class="run-card" data-run="run3">
+      <div class="label r3">Run 3 · max sliders</div>
+      <h3>Full</h3>
+      <div class="budget">16 / 8 / 20</div>
+      <p class="sub">412 sources · 44 cited · 3,119 words · 22.9M tokens</p>
+    </div>
+  </div>
+
+  <div class="finding">
+    <div class="kicker">Headline finding</div>
+    <p><strong>Run 2 is the peak on every output-quality metric we can compute.</strong> Report citations, tier-1 cited sources, peer-reviewed cited sources, and word count all rise Run 1 → Run 2 and fall Run 2 → Run 3. Maxing the sliders produced a <em>shorter</em> report with <em>fewer</em> tier-1 citations than the middle setting — for ~2× the tokens of baseline.</p>
+  </div>
+</section>
+
+<section>
+  <h2>What the three sliders actually control</h2>
+  <p class="section-sub">These are the three knobs exposed in the UI settings panel. They compose multiplicatively as a theoretical ceiling on total search calls — but the <em>actual</em> consumption is set by the prompts, not the caps.</p>
+
+  <div class="sliders">
+    <div class="slider-card">
+      <h4>analyst_budget</h4>
+      <div class="who">Researcher (Opus) enforces</div>
+      <div class="gates">Gates <code>investigate_question</code>. Max sub-questions the researcher can dispatch. All three modes (<code>explore</code>, <code>verify</code>, <code>adversarial</code>) draw from the same pool.</div>
+      <div class="vals">
+        <div class="row"><span>Run 1 cap</span><span>8 → used 6 (75%)</span></div>
+        <div class="row"><span>Run 2 cap</span><span>12 → used 7 (58%)</span></div>
+        <div class="row"><span>Run 3 cap</span><span>16 → used 7 (44%)</span></div>
+      </div>
+    </div>
+    <div class="slider-card">
+      <h4>scout_budget_per_analyst</h4>
+      <div class="who">Analyst (Sonnet/GPT-5) enforces</div>
+      <div class="gates">Gates <code>scout(request=...)</code>. Max scout sub-agents each analyst can spawn to retrieve sources for its sub-question.</div>
+      <div class="vals">
+        <div class="row"><span>Run 1 cap</span><span>4 × 6 analysts = 24 → used 13</span></div>
+        <div class="row"><span>Run 2 cap</span><span>6 × 7 = 42 → used 31</span></div>
+        <div class="row"><span>Run 3 cap</span><span>8 × 7 = 56 → used 29</span></div>
+      </div>
+    </div>
+    <div class="slider-card" style="border-color: var(--warn);">
+      <h4>scout_search_budget</h4>
+      <div class="who" style="color: var(--warn);">Scout (Haiku) enforces</div>
+      <div class="gates">Gates <code>search_web</code> + <code>search_academic</code> + <code>find_related_papers</code>. Shared cap on all search-tool calls within one scout. Does NOT include <code>create_source_note</code>, <code>scout_fetch</code>, or <code>list_source_notes</code> — those are free.</div>
+      <div class="vals">
+        <div class="row"><span>Run 1 cap=8</span><span>0 exhaustions (non-binding)</span></div>
+        <div class="row bind"><span>Run 2 cap=16</span><span>19 exhaustions (binding!)</span></div>
+        <div class="row"><span>Run 3 cap=20</span><span>0 exhaustions (non-binding)</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Why raising budgets doesn't scale — two prompt ceilings</h2>
+  <p class="section-sub">Two literal lines in the agent prompts explicitly tell the agents to stop spending budget before they hit the cap. These are the real throughput limits.</p>
+
+  <div class="mech">
+    <div class="kicker">Researcher ceiling</div>
+    <pre>"Never call `investigate_question` just because budget is left over.
+Stop when the report won't improve."</pre>
+    <cite>Effect: researcher tops out at 6–7 sub-questions on a 4-axis prompt. analyst_budget past ~8 is dead weight.</cite>
+  </div>
+
+  <div class="mech">
+    <div class="kicker">Analyst ceiling</div>
+    <pre>"Don't over-investigate. 4–8 deep-read sources beats 20 half-skimmed ones."</pre>
+    <cite>Effect: ANALYZED/analyst is 5.5 → 6.0 → 6.1 across all three runs. Each analyst deep-reads ~6 sources regardless of how many are in the graph.</cite>
+  </div>
+
+  <p>Because <code>ANALYZED = analyst_count × ~6</code>, and <code>analyst_count</code> tops out at 6–7, the evidence base of the final report is hard-capped at roughly <strong>42–56 deep-read sources</strong>. All three runs sit in this band (33 / 42 / 43) regardless of total budget. Raising scout_* sliders adds SCOUTED notes but none of them get analyzed — they become untiered cruft.</p>
+</section>
+
+<section>
+  <h2>Per-scout productivity — where the cap actually bites</h2>
+  <p class="section-sub">The <code>scout_search_budget</code> slider is the one that has empirical grip. At the default of 16, scouts in Run 2 got cut off in the middle of their search arc.</p>
+
+  <table>
+    <thead>
+      <tr><th>Metric</th><th class="num">Run 1 (cap=8)</th><th class="num">Run 2 (cap=16)</th><th class="num">Run 3 (cap=20)</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Distinct scouts dispatched</td><td class="num">13</td><td class="num">31</td><td class="num">29</td></tr>
+      <tr><td>Total source_notes created</td><td class="num">229</td><td class="num">263</td><td class="num">412</td></tr>
+      <tr><td><strong>Sources / scout</strong></td><td class="num">17.6</td><td class="num bind">8.5</td><td class="num">14.2</td></tr>
+      <tr><td>Haiku tool_calls / scout</td><td class="num">47.1</td><td class="num bind">24.5</td><td class="num">37.9</td></tr>
+      <tr><td><code>search budget exhausted</code> fires</td><td class="num">0</td><td class="num bind">19</td><td class="num">0</td></tr>
+    </tbody>
+  </table>
+
+  <p>Run 2's scouts produced roughly <em>half</em> the sources per dispatch of Run 1 or Run 3. Combined with 19 "budget exhausted" errors, the story is: scouts in Run 2 wanted to do more than 16 searches per dispatch, and were cut off. Run 2 compensated by dispatching more total scouts (31) — which is why Run 2's report is still the highest-quality — but the cap was costing per-scout completeness.</p>
+
+  <p>Raising the cap to 20 in Run 3 closed this gap: 0 exhaustions, per-scout output back up to 14.2. Counter-intuitively, Run 3 dispatched <em>fewer</em> scouts than Run 2 (29 vs 31) because each scout returned more sources, so the analyst's "enough coverage" heuristic kicked in sooner.</p>
+</section>
+
+<section>
+  <h2>The ANALYZED bottleneck — where the evidence actually lives</h2>
+
+  <table>
+    <thead>
+      <tr><th>Metric</th><th class="num">Run 1</th><th class="num">Run 2</th><th class="num">Run 3</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>source_notes total</td><td class="num">229</td><td class="num">263</td><td class="num">412</td></tr>
+      <tr><td>ANALYZED</td><td class="num">33 (14%)</td><td class="num peak">42 (16%)</td><td class="num regress">43 (10%)</td></tr>
+      <tr><td>ANALYZED per analyst</td><td class="num">5.5</td><td class="num">6.0</td><td class="num">6.1</td></tr>
+      <tr><td>Tier-1 sources in graph</td><td class="num">8</td><td class="num peak">10</td><td class="num regress">4</td></tr>
+      <tr><td>Peer-reviewed sources in graph</td><td class="num">9</td><td class="num peak">13</td><td class="num regress">4</td></tr>
+      <tr><td>Sources <em>cited</em> in report</td><td class="num">26</td><td class="num peak">55</td><td class="num">44</td></tr>
+    </tbody>
+  </table>
+
+  <p>Run 3 has <strong>56% more source_notes than Run 2</strong> but only <strong>one more ANALYZED source</strong>. The extra 149 source_notes enter the graph as SCOUTED with no tier, no peer-reviewed flag, no claims extracted — because the analyst prompt caps deep-reads at 4–8. Those fields are only populated by <code>update_source_after_reading</code>, which runs inside the analyst, which is capped.</p>
+
+  <p>That's why Run 3's tier-1 and peer-reviewed counts <em>drop</em>: the analyst picks ~6 sources per sub-question from a much bigger candidate pool, and with 412 candidates vs. 263 the probability of landing on any specific high-tier source is actually lower. The wider scout funnel dilutes the quality mix instead of improving it.</p>
+</section>
+
+<section>
+  <h2>Orthogonal finding: Run 2 bypassed cross-family routing</h2>
+  <p class="section-sub">Extracted from <code>run.log</code> — each analyst's dispatch <code>mode</code>.</p>
+
+  <table>
+    <thead>
+      <tr><th>Mode</th><th class="num">Run 1</th><th class="num">Run 2</th><th class="num">Run 3</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>explore</code> (Sonnet)</td><td class="num">4</td><td class="num bind">7</td><td class="num">6</td></tr>
+      <tr><td><code>verify</code> (GPT judgment family)</td><td class="num">1</td><td class="num bind">0</td><td class="num">0</td></tr>
+      <tr><td><code>adversarial</code> (GPT judgment family)</td><td class="num">1</td><td class="num bind">0</td><td class="num">1</td></tr>
+    </tbody>
+  </table>
+
+  <p><strong>Run 2 dispatched all 7 investigations in <code>explore</code> mode</strong> — zero verify, zero adversarial — even though two of its sub-questions were literally titled <code>[adversarial] Steelman the position that...</code>. ADR-0008 says the model challenging a claim should come from a different family than the model that produced it, and <code>verify</code>/<code>adversarial</code> modes route to the GPT family for exactly that reason. Run 2 bypassed this entirely — the steelman questions ran on the same family as the original explores.</p>
+
+  <p>Notable: Run 2 still produced the highest-quality report on every output-quality metric, despite skipping the cross-family discipline. This argues that <strong>decomposition shape + per-analyst source depth dominate cross-family judgment</strong> for report quality on this query. The routing-discipline bug is orthogonal to the budget story — worth fixing, but not what's moving the numbers.</p>
+</section>
+
+<section>
+  <h2>At a glance
+    <span class="legend">
+      <span><i class="r1"></i>Run 1 (8/4/8)</span>
+      <span><i class="r2"></i>Run 2 (12/6/16)</span>
+      <span><i class="r3"></i>Run 3 (16/8/20)</span>
+    </span>
+  </h2>
+
+  <div class="bars-header">
+    <div></div><div>Run 1</div><div>Run 2</div><div>Run 3</div>
+  </div>
+  <div id="bars">
+    <div class="bar-row">
+      <div class="label">source_notes</div>
+      <div class="bar-cell"><div class="fill r1" style="width:55.6%"></div><div class="val">229</div></div>
+      <div class="bar-cell"><div class="fill r2" style="width:63.8%"></div><div class="val">263</div></div>
+      <div class="bar-cell"><div class="fill r3" style="width:100.0%"></div><div class="val">412</div></div>
+    </div>
+    <div class="bar-row">
+      <div class="label">Sources cited in report</div>
+      <div class="bar-cell"><div class="fill r1" style="width:47.3%"></div><div class="val">26</div></div>
+      <div class="bar-cell"><div class="fill r2" style="width:100.0%"></div><div class="val">55</div></div>
+      <div class="bar-cell"><div class="fill r3" style="width:80.0%"></div><div class="val">44</div></div>
+    </div>
+    <div class="bar-row">
+      <div class="label">ANALYZED sources</div>
+      <div class="bar-cell"><div class="fill r1" style="width:76.7%"></div><div class="val">33</div></div>
+      <div class="bar-cell"><div class="fill r2" style="width:97.7%"></div><div class="val">42</div></div>
+      <div class="bar-cell"><div class="fill r3" style="width:100.0%"></div><div class="val">43</div></div>
+    </div>
+    <div class="bar-row">
+      <div class="label">Tier-1 sources</div>
+      <div class="bar-cell"><div class="fill r1" style="width:80.0%"></div><div class="val">8</div></div>
+      <div class="bar-cell"><div class="fill r2" style="width:100.0%"></div><div class="val">10</div></div>
+      <div class="bar-cell"><div class="fill r3" style="width:40.0%"></div><div class="val">4</div></div>
+    </div>
+    <div class="bar-row">
+      <div class="label">Peer-reviewed sources</div>
+      <div class="bar-cell"><div class="fill r1" style="width:69.2%"></div><div class="val">9</div></div>
+      <div class="bar-cell"><div class="fill r2" style="width:100.0%"></div><div class="val">13</div></div>
+      <div class="bar-cell"><div class="fill r3" style="width:30.8%"></div><div class="val">4</div></div>
+    </div>
+    <div class="bar-row">
+      <div class="label">Sources / scout</div>
+      <div class="bar-cell"><div class="fill r1" style="width:100.0%"></div><div class="val">17.6</div></div>
+      <div class="bar-cell"><div class="fill r2" style="width:48.3%"></div><div class="val">8.5</div></div>
+      <div class="bar-cell"><div class="fill r3" style="width:80.7%"></div><div class="val">14.2</div></div>
+    </div>
+    <div class="bar-row">
+      <div class="label">Search exhaustions</div>
+      <div class="bar-cell"><div class="fill r1" style="width:0.0%"></div><div class="val">0</div></div>
+      <div class="bar-cell"><div class="fill r2" style="width:100.0%"></div><div class="val">19</div></div>
+      <div class="bar-cell"><div class="fill r3" style="width:0.0%"></div><div class="val">0</div></div>
+    </div>
+    <div class="bar-row">
+      <div class="label">Report word count</div>
+      <div class="bar-cell"><div class="fill r1" style="width:91.4%"></div><div class="val">3,456</div></div>
+      <div class="bar-cell"><div class="fill r2" style="width:100.0%"></div><div class="val">3,783</div></div>
+      <div class="bar-cell"><div class="fill r3" style="width:82.4%"></div><div class="val">3,119</div></div>
+    </div>
+    <div class="bar-row">
+      <div class="label">Total tokens (M)</div>
+      <div class="bar-cell"><div class="fill r1" style="width:48.4%"></div><div class="val">11.06</div></div>
+      <div class="bar-cell"><div class="fill r2" style="width:73.3%"></div><div class="val">16.75</div></div>
+      <div class="bar-cell"><div class="fill r3" style="width:100.0%"></div><div class="val">22.86</div></div>
+    </div>
+  </div>
+  <p class="caveat">Bars are scaled per-row so the longest value fills the cell — useful for seeing direction and relative magnitude, not for cross-metric comparison.</p>
+</section>
+
+<section>
+  <h2>What each report hit — and what it missed</h2>
+  <p class="section-sub">Each run investigated a different 5th/6th/7th sub-question set. None of the three reports is a superset of another — they're qualitatively different, not progressively better.</p>
+  <div class="hitmiss">
+
+    <div class="col">
+      <h4 style="color: var(--run1);">Run 1 · 8/4/8</h4>
+      <div class="sub">Tight and disciplined; narrowest scope</div>
+      <div class="sect">Picked up</div>
+      <ul class="hits">
+        <li><strong>Explicit verification dispatch</strong> for the preference-leakage claim — the one report that treats single-source numbers with meta-methodological rigor.</li>
+        <li><strong>Knowledge-collapse three-stage framework</strong> — including Stage B "valley of dangerous competence" (fluent + format-correct + factually wrong).</li>
+        <li><strong>Position-bias disagreement</strong> is surfaced explicitly (two studies disagree).</li>
+        <li><strong>Verbosity-bias inversion</strong> (modern judges prefer concise).</li>
+        <li>A tight <strong>"five non-negotiables"</strong> practitioner checklist.</li>
+        <li><strong>Proper cross-family routing</strong>: 1 verify + 1 adversarial routed to GPT-5.4.</li>
+      </ul>
+      <div class="sect">Missed</div>
+      <ul class="misses">
+        <li>Domain-specific risks (medical, legal, finance).</li>
+        <li>Medical data poisoning attack (0.001% tokens → harm).</li>
+        <li>PII leakage / training-data extraction.</li>
+        <li>Regulatory surface (EU AI Act, FDA).</li>
+        <li>Fairness-aware synthetic generators as mitigation.</li>
+        <li>Privacy-specific defenses and MIA results.</li>
+      </ul>
+    </div>
+
+    <div class="col" style="border-color: var(--run2);">
+      <h4 style="color: var(--run2);">Run 2 · 12/6/16</h4>
+      <div class="sub">Broadest; highest citation density</div>
+      <div class="sect">Picked up</div>
+      <ul class="hits">
+        <li><strong>Nature Medicine 2024 medical poisoning attack</strong> — 0.001% of training tokens → clinically harmful outputs; benchmarks fail to detect; only knowledge-graph filtering works.</li>
+        <li><strong>Neural phishing / PII extraction</strong> across Pythia, GPT-2, Falcon, LLaMA-2.</li>
+        <li><strong>DPO-as-bias-amplifier</strong> at Qwen3-32B / Llama-3.3-70B — "the only training regime where a model can become meaningfully more biased while still appearing functional."</li>
+        <li><strong>Fairness-aware generators</strong>: MCRAGE, FairFinGAN, SMA — when synthetic data reduces bias vs. biased real baseline.</li>
+        <li>16-row <strong>cross-cutting mitigations matrix</strong> with validated/partial/refuted tagging.</li>
+        <li>Broadest regulatory footprint (EU AI Act, GDPR, FDA silence).</li>
+      </ul>
+      <div class="sect">Missed</div>
+      <ul class="misses">
+        <li>No dedicated preference-leakage verification step.</li>
+        <li>Position-bias contradiction not engaged.</li>
+        <li>Does not quantify the per-model-size safe fine-tuning ratio (410M vs. 12B).</li>
+        <li><strong>Skipped all verify / adversarial modes</strong> — the steelmans ran on the same model family as the explores, bypassing ADR-0008 cross-family discipline.</li>
+      </ul>
+    </div>
+
+    <div class="col">
+      <h4 style="color: var(--run3);">Run 3 · 16/8/20</h4>
+      <div class="sub">Dense privacy + governance; regressions elsewhere</div>
+      <div class="sect">Picked up</div>
+      <ul class="hits">
+        <li><strong>JP Morgan Six Levels of Privacy</strong> — the clearest operational framework in any of the three reports.</li>
+        <li><strong>DCR Delusion</strong> — standard Distance-to-Closest-Record privacy proxies have <em>no</em> correlation with actual MIA vulnerability.</li>
+        <li><strong>Quantified MIA numbers</strong>: 97.8% AUC full FT, &gt;80% LoRA without DP; 3.9% → 73.1% PII extraction under adversarial attack.</li>
+        <li><strong>UniLeak layer-level attacks</strong>; Google DP-SGD + LoRA production case.</li>
+        <li><strong>Equilibrium-bias dynamics</strong> — bias converges to a generator-inherent fixed point rather than monotonically amplifying.</li>
+        <li><strong>Precise mixing-ratio scaling</strong> (410M safe to 15%; 12B safe to 27%) with task sensitivity ordering.</li>
+        <li><strong>EU AI Act compliance specifics</strong>: August 2, 2025 / 2026 / 2027 dates; €10M or 2% global turnover penalties.</li>
+      </ul>
+      <div class="sect">Missed (regressions)</div>
+      <ul class="misses">
+        <li><strong>Medical data poisoning</strong> — the single most load-bearing safety finding from Run 2 — is gone.</li>
+        <li><strong>DPO-as-bias-amplifier</strong> is gone.</li>
+        <li><strong>MCRAGE / FairFinGAN / SMA</strong> fairness generators are gone.</li>
+        <li>No explicit <strong>verification dispatch</strong> for any contested claim.</li>
+        <li>Fewer peer-reviewed sources cited (4) than Run 2 (13).</li>
+        <li>Shortest report overall despite highest cost.</li>
+      </ul>
+    </div>
+
+  </div>
+</section>
+
+<section>
+  <h2>Interpretation &amp; implications</h2>
+  <h3>The behavioral model</h3>
+  <ol>
+    <li><strong><code>analyst_budget</code> is non-binding on a 4-axis prompt.</strong> The researcher decomposes into 6–7 sub-questions and stops. Raising the cap from 8 → 12 → 16 adds 0–1 actual investigations.</li>
+    <li><strong><code>scout_budget_per_analyst</code> is non-binding once the corpus is full.</strong> Analysts stop dispatching scouts when <code>list_source_notes</code> looks "enough." Larger per-scout yields actively <em>reduce</em> scout dispatches.</li>
+    <li><strong><code>scout_search_budget</code> is the one slider with real empirical grip.</strong> At 8 it's over-provisioned. At 16 it's under-provisioned (19 exhaustions in Run 2). At 20 it's sufficient. This slider controls how complete an individual scout's search arc can be.</li>
+    <li><strong>The ANALYZED stage is the bottleneck on report evidence</strong>, bounded by <code>analysts × 4–8 deep reads</code> ≈ 42–56 under the current prompts. Extra scout output never becomes evidence.</li>
+    <li><strong>Decomposition shape dominates everything</strong>: the 5th/6th/7th sub-question choice matters more than any slider. Planner's decomposition is high-variance across reruns, and that variance drowns out the budget effect.</li>
+  </ol>
+
+  <h3>What this means for the code</h3>
+  <ul>
+    <li>Don't raise <code>scout_search_budget</code> past 20 without also raising the analyst's "4–8 deep-reads" ceiling — otherwise extra scouting just inflates SCOUTED counts without improving the evidence base.</li>
+    <li><code>analyst_budget</code> past ~8 is dead weight on a 4-axis prompt. The UI should either hide the top of that slider or couple it to a planner-depth knob that actually changes decomposition.</li>
+    <li>Run 2's all-<code>explore</code> behavior is an independent bug. When the researcher labels a question <code>[adversarial]</code> or <code>[verify]</code> in its title, it should also pass the matching <code>mode</code> to <code>investigate_question</code>.</li>
+    <li>Decomposition stability is a better thing to measure and optimize than budget utilization. A planner that reliably emits a <code>verify</code> question for single-source claims would make Run 1's methodological discipline the default.</li>
+  </ul>
+
+  <h3>What changed as a result</h3>
+  <p>Default slider values in <code>run_config.py</code> updated from <code>8 / 4 / 8</code> to <code>12 / 6 / 16</code> (Run 2's settings). The UI reads these via <code>GET /api/config/defaults</code>, so the slider preselect will now land on the best-performing configuration observed. Note: <code>analyst_budget=12</code> and <code>scout_budget_per_analyst=6</code> are over-specified for what the prompts actually consume — only <code>scout_search_budget=16</code> has a real effect, and even that was empirically under-provisioned (19 exhaustions). Raising only the search budget to 20 would likely match Run 2's output at ~70% of Run 3's cost.</p>
+
+  <div class="caveat"><strong>Caveats.</strong> n=1 per configuration. Analyst-model routing bounced across runs (GPT-5.4 × 2 / Sonnet only / GPT-5.5 × 1) in ways not attributable to budget. Same seed/query throughout — can't distinguish "budget helped" from "this query's decomposition converged at Run 2." All three reports are plausible; differences are in scope, methodological discipline, and citation density, not correctness.</div>
+</section>
+
+</div>
+
+</body>
+</html>

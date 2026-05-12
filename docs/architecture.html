@@ -1,0 +1,1400 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Deep Research Agent — Architecture</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    --bg: #fafaf7;
+    --panel: #ffffff;
+    --ink: #1a1a1a;
+    --muted: #6b6b6b;
+    --rule: #e5e3dc;
+    --rule-strong: #c9c6ba;
+    --accent: #2b4b8c;
+    --code-bg: #f3f1ea;
+    --landscape: #0f766e;
+    --researcher: #4c1d95;
+    --analyst: #b45309;
+    --scout: #475569;
+    --state-bg: #fef7e6;
+    --state-border: #e6c265;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Helvetica, Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.55;
+  }
+  .wrap {
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 48px 32px 96px;
+  }
+  h1 {
+    font-size: 28px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    margin: 0 0 4px;
+  }
+  .sub {
+    color: var(--muted);
+    margin-bottom: 36px;
+    font-size: 14px;
+  }
+  h2 {
+    font-size: 18px;
+    font-weight: 600;
+    margin: 48px 0 12px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--rule);
+    letter-spacing: -0.005em;
+  }
+  h3 {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 20px 0 8px;
+  }
+  h4 {
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    margin: 18px 0 6px;
+  }
+  p { margin: 0 0 10px; }
+  code {
+    font-family: "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 13px;
+    background: var(--code-bg);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+  pre {
+    font-family: "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 12.5px;
+    background: var(--code-bg);
+    padding: 12px 14px;
+    border-radius: 6px;
+    overflow-x: auto;
+    line-height: 1.5;
+  }
+  .ref {
+    color: var(--muted);
+    font-family: "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 12px;
+  }
+  ul, ol { margin: 6px 0 10px 22px; padding: 0; }
+  li { margin: 2px 0; }
+
+  /* Pipeline diagram */
+  .pipeline {
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 28px 24px;
+    margin: 18px 0 12px;
+  }
+  .pipeline svg { display: block; width: 100%; height: auto; }
+  .diagram-legend {
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+    font-size: 12.5px;
+    color: var(--muted);
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px dashed var(--rule);
+  }
+  .swatch {
+    display: inline-block;
+    width: 10px; height: 10px;
+    border-radius: 2px;
+    vertical-align: middle;
+    margin-right: 6px;
+  }
+
+  /* Agent cards with progressive disclosure */
+  details.agent {
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-left-width: 4px;
+    border-radius: 6px;
+    margin: 10px 0;
+    padding: 0;
+    overflow: hidden;
+  }
+  details.agent[data-a="landscape"]  { border-left-color: var(--landscape); }
+  details.agent[data-a="researcher"] { border-left-color: var(--researcher); }
+  details.agent[data-a="analyst"]    { border-left-color: var(--analyst); }
+  details.agent[data-a="scout"]      { border-left-color: var(--scout); }
+
+  details.agent > summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 14px 18px;
+    display: grid;
+    grid-template-columns: 24px 1fr auto;
+    gap: 10px;
+    align-items: center;
+  }
+  details.agent > summary::-webkit-details-marker { display: none; }
+  details.agent > summary:hover { background: #fbfaf5; }
+  .caret {
+    display: inline-block;
+    transition: transform 0.15s ease;
+    color: var(--muted);
+    font-size: 12px;
+  }
+  details[open] > summary .caret { transform: rotate(90deg); }
+
+  .agent-title {
+    font-weight: 600;
+    font-size: 15px;
+  }
+  .agent-tag {
+    display: inline-block;
+    font-size: 11px;
+    font-family: "SF Mono", Menlo, Monaco, Consolas, monospace;
+    padding: 2px 7px;
+    border-radius: 3px;
+    background: var(--code-bg);
+    color: var(--muted);
+    margin-left: 10px;
+    vertical-align: middle;
+  }
+  .agent-kicker {
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 400;
+    margin-left: 10px;
+  }
+  .agent-body {
+    padding: 6px 18px 18px;
+    border-top: 1px solid var(--rule);
+  }
+
+  /* Mini-diagrams inside agent cards */
+  .mini-diagram {
+    background: #fdfcf7;
+    border: 1px solid var(--rule);
+    border-radius: 5px;
+    padding: 14px 10px 8px;
+    margin: 8px 0 14px;
+  }
+  .mini-diagram svg { display: block; width: 100%; height: auto; }
+  .mini-caption {
+    font-size: 11.5px;
+    color: var(--muted);
+    text-align: center;
+    margin-top: 4px;
+    font-style: italic;
+  }
+
+  /* Nested details for deeper dives */
+  details.nested {
+    border: 1px dashed var(--rule-strong);
+    border-radius: 5px;
+    padding: 0;
+    margin: 12px 0;
+    background: #fcfbf6;
+  }
+  details.nested > summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 10px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  details.nested > summary::-webkit-details-marker { display: none; }
+  details.nested > summary::before {
+    content: "▸";
+    display: inline-block;
+    margin-right: 8px;
+    transition: transform 0.15s;
+    font-size: 10px;
+  }
+  details.nested[open] > summary::before { transform: rotate(90deg); }
+  details.nested > .inner {
+    padding: 4px 14px 14px;
+    border-top: 1px dashed var(--rule-strong);
+  }
+
+  /* Key-value grid */
+  .kv {
+    display: grid;
+    grid-template-columns: 140px 1fr;
+    gap: 4px 16px;
+    margin: 8px 0 14px;
+    font-size: 13.5px;
+  }
+  .kv dt {
+    color: var(--muted);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding-top: 2px;
+  }
+  .kv dd { margin: 0; }
+
+  /* State machine boxes */
+  .states {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin: 8px 0 14px;
+    font-size: 13px;
+  }
+  .state {
+    display: inline-block;
+    padding: 4px 10px;
+    border: 1px solid var(--state-border);
+    background: var(--state-bg);
+    border-radius: 3px;
+    font-family: "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 12px;
+  }
+  .arrow { color: var(--muted); font-size: 14px; }
+
+  /* Tables */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 10px 0 16px;
+    font-size: 13px;
+  }
+  th, td {
+    text-align: left;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  th {
+    background: var(--code-bg);
+    font-weight: 600;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+  }
+
+  .tool-pill {
+    display: inline-block;
+    font-family: "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 12px;
+    background: var(--code-bg);
+    border: 1px solid var(--rule);
+    padding: 2px 8px;
+    border-radius: 12px;
+    margin: 2px 4px 2px 0;
+  }
+  .tool-pill.terminal {
+    background: #fff4d6;
+    border-color: var(--state-border);
+    font-weight: 600;
+  }
+
+  .banner {
+    background: #fcf8e8;
+    border: 1px solid var(--state-border);
+    border-radius: 5px;
+    padding: 10px 14px;
+    font-size: 13px;
+    margin: 10px 0;
+  }
+
+  .toolbar {
+    display: flex;
+    gap: 8px;
+    margin: 0 0 16px;
+    font-size: 12.5px;
+  }
+  .toolbar button {
+    font: inherit;
+    cursor: pointer;
+    background: var(--panel);
+    border: 1px solid var(--rule-strong);
+    color: var(--ink);
+    padding: 5px 12px;
+    border-radius: 4px;
+  }
+  .toolbar button:hover { background: #f0ece0; }
+
+  footer {
+    margin-top: 60px;
+    padding-top: 20px;
+    border-top: 1px solid var(--rule);
+    color: var(--muted);
+    font-size: 12px;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Deep Research Agent — Architecture</h1>
+<div class="sub">
+  A precise specification of the agent architecture, sourced from
+  <code>src/deep_research_agent/</code>. Click any panel to expand.
+</div>
+
+<div class="toolbar">
+  <button id="expand-all">Expand all</button>
+  <button id="collapse-all">Collapse all</button>
+</div>
+
+<!-- ======================================================= -->
+<h2>Pipeline at a glance</h2>
+
+<div class="pipeline">
+  <svg viewBox="0 0 900 340" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Pipeline diagram">
+    <defs>
+      <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="#6b6b6b"/>
+      </marker>
+    </defs>
+
+    <!-- user query -->
+    <rect x="20" y="140" width="110" height="48" rx="6" fill="#ffffff" stroke="#c9c6ba"/>
+    <text x="75" y="162" text-anchor="middle" font-size="13" font-family="-apple-system, sans-serif" fill="#1a1a1a" font-weight="600">User query</text>
+    <text x="75" y="178" text-anchor="middle" font-size="11" font-family="-apple-system, sans-serif" fill="#6b6b6b">cli.py / server</text>
+
+    <!-- Landscape -->
+    <rect x="170" y="40" width="150" height="60" rx="6" fill="#ffffff" stroke="#0f766e" stroke-width="2"/>
+    <text x="245" y="62" text-anchor="middle" font-size="13" font-weight="700" font-family="-apple-system, sans-serif" fill="#0f766e">Landscape</text>
+    <text x="245" y="80" text-anchor="middle" font-size="11" font-family="-apple-system, sans-serif" fill="#6b6b6b">wide scouting</text>
+    <text x="245" y="93" text-anchor="middle" font-size="10" font-family="SF Mono, monospace" fill="#6b6b6b">GEN · MID</text>
+
+    <!-- Researcher -->
+    <rect x="170" y="230" width="150" height="60" rx="6" fill="#ffffff" stroke="#4c1d95" stroke-width="2"/>
+    <text x="245" y="252" text-anchor="middle" font-size="13" font-weight="700" font-family="-apple-system, sans-serif" fill="#4c1d95">Researcher</text>
+    <text x="245" y="270" text-anchor="middle" font-size="11" font-family="-apple-system, sans-serif" fill="#6b6b6b">orchestrator</text>
+    <text x="245" y="283" text-anchor="middle" font-size="10" font-family="SF Mono, monospace" fill="#6b6b6b">GEN · HIGH</text>
+
+    <!-- Analyst (stack) -->
+    <rect x="430" y="248" width="150" height="60" rx="6" fill="#ffffff" stroke="#b45309" stroke-width="2"/>
+    <rect x="424" y="242" width="150" height="60" rx="6" fill="#ffffff" stroke="#b45309" stroke-width="2"/>
+    <rect x="418" y="236" width="150" height="60" rx="6" fill="#ffffff" stroke="#b45309" stroke-width="2"/>
+    <text x="493" y="258" text-anchor="middle" font-size="13" font-weight="700" font-family="-apple-system, sans-serif" fill="#b45309">Analyst × N</text>
+    <text x="493" y="276" text-anchor="middle" font-size="11" font-family="-apple-system, sans-serif" fill="#6b6b6b">one per sub-question</text>
+    <text x="493" y="289" text-anchor="middle" font-size="10" font-family="SF Mono, monospace" fill="#6b6b6b">GEN/JUDG · MID</text>
+
+    <!-- Scout (stack) -->
+    <rect x="680" y="248" width="150" height="60" rx="6" fill="#ffffff" stroke="#475569" stroke-width="2"/>
+    <rect x="674" y="242" width="150" height="60" rx="6" fill="#ffffff" stroke="#475569" stroke-width="2"/>
+    <rect x="668" y="236" width="150" height="60" rx="6" fill="#ffffff" stroke="#475569" stroke-width="2"/>
+    <text x="743" y="258" text-anchor="middle" font-size="13" font-weight="700" font-family="-apple-system, sans-serif" fill="#475569">Scout × N</text>
+    <text x="743" y="276" text-anchor="middle" font-size="11" font-family="-apple-system, sans-serif" fill="#6b6b6b">retrieval grunts</text>
+    <text x="743" y="289" text-anchor="middle" font-size="10" font-family="SF Mono, monospace" fill="#6b6b6b">CHEAP · MID</text>
+
+    <!-- Note graph (shared state) -->
+    <rect x="370" y="40" width="310" height="80" rx="6" fill="#fef7e6" stroke="#e6c265" stroke-dasharray="4 3"/>
+    <text x="525" y="62" text-anchor="middle" font-size="13" font-weight="700" font-family="-apple-system, sans-serif" fill="#8a6200">NoteMemory — the graph</text>
+    <text x="525" y="82" text-anchor="middle" font-size="11" font-family="SF Mono, monospace" fill="#6b6b6b">LANDSCAPE · QUESTION × N · SOURCE × M</text>
+    <text x="525" y="100" text-anchor="middle" font-size="11" font-family="-apple-system, sans-serif" fill="#6b6b6b">the only shared mutable state</text>
+
+    <!-- arrows -->
+    <line x1="130" y1="160" x2="170" y2="85" stroke="#6b6b6b" marker-end="url(#arrow)"/>
+    <line x1="130" y1="170" x2="170" y2="255" stroke="#6b6b6b" marker-end="url(#arrow)"/>
+    <line x1="320" y1="260" x2="418" y2="268" stroke="#6b6b6b" marker-end="url(#arrow)"/>
+    <line x1="580" y1="268" x2="668" y2="268" stroke="#6b6b6b" marker-end="url(#arrow)"/>
+
+    <!-- writes to memory -->
+    <line x1="245" y1="100" x2="370" y2="80" stroke="#8a6200" stroke-dasharray="3 3" marker-end="url(#arrow)"/>
+    <line x1="320" y1="240" x2="430" y2="120" stroke="#8a6200" stroke-dasharray="3 3" marker-end="url(#arrow)"/>
+    <line x1="493" y1="236" x2="540" y2="120" stroke="#8a6200" stroke-dasharray="3 3" marker-end="url(#arrow)"/>
+    <line x1="743" y1="236" x2="640" y2="120" stroke="#8a6200" stroke-dasharray="3 3" marker-end="url(#arrow)"/>
+
+    <!-- labels -->
+    <text x="150" y="112" font-size="10" fill="#6b6b6b" font-family="-apple-system, sans-serif">① landscape</text>
+    <text x="148" y="210" font-size="10" fill="#6b6b6b" font-family="-apple-system, sans-serif">② researcher</text>
+    <text x="345" y="258" font-size="10" fill="#6b6b6b" font-family="-apple-system, sans-serif">investigate_question</text>
+    <text x="600" y="258" font-size="10" fill="#6b6b6b" font-family="-apple-system, sans-serif">scout</text>
+  </svg>
+
+  <div class="diagram-legend">
+    <span><span class="swatch" style="background:var(--landscape)"></span>Landscape — wide-filter recon</span>
+    <span><span class="swatch" style="background:var(--researcher)"></span>Researcher — plans &amp; reviews</span>
+    <span><span class="swatch" style="background:var(--analyst)"></span>Analyst — investigates a sub-question</span>
+    <span><span class="swatch" style="background:var(--scout)"></span>Scout — search, triage, skim</span>
+    <span><span class="swatch" style="background:var(--state-bg);border:1px solid var(--state-border)"></span>Shared memory (notes)</span>
+  </div>
+</div>
+
+<p>
+  Entry point <code>research_run(deps, query)</code> in <code>researcher.py:383</code> runs the whole pipeline.
+  Landscape blocks first; the researcher then dispatches up to 8 analyst calls; each analyst may dispatch up to
+  4 scout calls in parallel. <strong>All coordination happens through the NoteMemory graph</strong> — there is no
+  RunState, no <code>agent_outputs</code> dict, no message passing between agents outside of tool args.
+</p>
+
+<!-- ======================================================= -->
+<h2>What each level sees</h2>
+
+<p>
+  The hierarchy is also an <strong>information filter</strong>. Each layer upward
+  hides the raw source text that the layer below wrestled with — so the researcher
+  can plan without drowning in document content, and the analyst can investigate
+  without running its own searches.
+</p>
+
+<div class="pipeline">
+  <svg viewBox="0 0 860 320" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Information filtering across agent layers">
+    <defs>
+      <marker id="arrow-info" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="#8a6200"/>
+      </marker>
+    </defs>
+
+    <!-- Researcher layer -->
+    <rect x="40" y="30" width="780" height="70" rx="6" fill="#ffffff" stroke="#4c1d95" stroke-width="2"/>
+    <text x="60" y="55" font-size="13" font-weight="700" fill="#4c1d95" font-family="-apple-system, sans-serif">Researcher</text>
+    <text x="60" y="73" font-size="11" fill="#6b6b6b" font-family="-apple-system, sans-serif">plans, dispatches, reviews</text>
+    <text x="430" y="55" font-size="12" font-weight="600" fill="#1a1a1a" font-family="-apple-system, sans-serif">Sees:</text>
+    <text x="430" y="73" font-size="11" fill="#6b6b6b" font-family="SF Mono, monospace">landscape brief · question states · analyst syntheses</text>
+    <text x="430" y="90" font-size="10.5" fill="#9b2c2c" font-family="SF Mono, monospace">never: raw source content</text>
+
+    <!-- Analyst layer -->
+    <rect x="40" y="130" width="780" height="70" rx="6" fill="#ffffff" stroke="#b45309" stroke-width="2"/>
+    <text x="60" y="155" font-size="13" font-weight="700" fill="#b45309" font-family="-apple-system, sans-serif">Analyst</text>
+    <text x="60" y="173" font-size="11" fill="#6b6b6b" font-family="-apple-system, sans-serif">investigates one sub-question</text>
+    <text x="430" y="155" font-size="12" font-weight="600" fill="#1a1a1a" font-family="-apple-system, sans-serif">Sees:</text>
+    <text x="430" y="173" font-size="11" fill="#6b6b6b" font-family="SF Mono, monospace">full source content · reading history · scout previews</text>
+    <text x="430" y="190" font-size="10.5" fill="#9b2c2c" font-family="SF Mono, monospace">never: issues search queries directly</text>
+
+    <!-- Scout layer -->
+    <rect x="40" y="230" width="780" height="70" rx="6" fill="#ffffff" stroke="#475569" stroke-width="2"/>
+    <text x="60" y="255" font-size="13" font-weight="700" fill="#475569" font-family="-apple-system, sans-serif">Scout</text>
+    <text x="60" y="273" font-size="11" fill="#6b6b6b" font-family="-apple-system, sans-serif">search, triage, skim</text>
+    <text x="430" y="255" font-size="12" font-weight="600" fill="#1a1a1a" font-family="-apple-system, sans-serif">Sees:</text>
+    <text x="430" y="273" font-size="11" fill="#6b6b6b" font-family="SF Mono, monospace">search hits · skim excerpts · url/title metadata</text>
+    <text x="430" y="290" font-size="10.5" fill="#9b2c2c" font-family="SF Mono, monospace">never: extracts claims or reads deeply</text>
+
+    <!-- Up arrows (what flows up) -->
+    <line x1="250" y1="230" x2="250" y2="200" stroke="#8a6200" stroke-width="1.5" marker-end="url(#arrow-info)"/>
+    <text x="258" y="218" font-size="10" fill="#8a6200" font-family="SF Mono, monospace">ScoutResult</text>
+
+    <line x1="250" y1="130" x2="250" y2="100" stroke="#8a6200" stroke-width="1.5" marker-end="url(#arrow-info)"/>
+    <text x="258" y="118" font-size="10" fill="#8a6200" font-family="SF Mono, monospace">QuestionSynthesis</text>
+
+    <!-- Down arrows (what flows down) -->
+    <line x1="700" y1="100" x2="700" y2="130" stroke="#6b6b6b" stroke-width="1.5" marker-end="url(#arrow-info)"/>
+    <text x="620" y="118" font-size="10" fill="#6b6b6b" font-family="SF Mono, monospace">question · mode</text>
+
+    <line x1="700" y1="200" x2="700" y2="230" stroke="#6b6b6b" stroke-width="1.5" marker-end="url(#arrow-info)"/>
+    <text x="640" y="218" font-size="10" fill="#6b6b6b" font-family="SF Mono, monospace">angle request</text>
+  </svg>
+  <div class="mini-caption">What flows up (amber) is synthesized; what flows down (grey) is scoped instruction.</div>
+</div>
+
+<!-- ======================================================= -->
+<h2>The four agents</h2>
+
+<p class="sub" style="margin-bottom:8px">
+  Each agent is a PydanticAI tool-using loop driven by <code>drive_agent()</code>
+  (<code class="ref">agents/_run.py:30-86</code>), which instruments agent lifecycle events,
+  scopes a <code>_CURRENT_AGENT_ID</code> contextvar, and records token usage.
+</p>
+
+<!-- LANDSCAPE -->
+<details class="agent" data-a="landscape">
+  <summary>
+    <span class="caret">▸</span>
+    <span>
+      <span class="agent-title" style="color:var(--landscape)">① Landscape</span>
+      <span class="agent-tag">GENERATIVE · MID</span>
+      <span class="agent-kicker">wide-filter recon → landscape brief + seeded SCOUTED sources</span>
+    </span>
+    <span class="ref">landscape.py:100-158</span>
+  </summary>
+  <div class="agent-body">
+    <dl class="kv">
+      <dt>Role</dt>
+      <dd>Maps the terrain around the query before any decomposition happens. Surveys what exists, where the consensus lies, where the contested ground is, and what the tier distribution looks like. Seeds the shared corpus.</dd>
+
+      <dt>When</dt>
+      <dd>Blocking call at the top of <code>research_run</code> (<code class="ref">researcher.py:410</code>). Runs exactly once per run, before the researcher starts.</dd>
+
+      <dt>Inputs</dt>
+      <dd>User query string only. System prompt <code>LANDSCAPE_SYSTEM</code> (<code class="ref">landscape.py:33-80</code>) steers "search broad, triage by topic, commit a brief."</dd>
+
+      <dt>Outputs</dt>
+      <dd>
+        <strong>Markdown brief</strong> committed to the LANDSCAPE note via the terminal tool
+        <code>write_landscape_brief</code>. <strong>Side effect:</strong> 10–20+ <code>SCOUTED</code> SOURCE
+        notes dropped into <code>deps.memory</code> (URL-deduplicated, not yet fetched).
+      </dd>
+
+      <dt>Budget</dt>
+      <dd>~4 search rounds, prompt-enforced. No hard counter.</dd>
+
+      <dt>Terminal tool</dt>
+      <dd><span class="tool-pill terminal">write_landscape_brief</span></dd>
+
+      <dt>Tools</dt>
+      <dd>
+        <span class="tool-pill">search_web</span>
+        <span class="tool-pill">search_academic</span>
+        <span class="tool-pill">create_source_note</span>
+        <span class="tool-pill">list_source_notes</span>
+        <span class="tool-pill terminal">write_landscape_brief</span>
+      </dd>
+    </dl>
+
+    <div class="mini-diagram">
+      <svg viewBox="0 0 760 220" xmlns="http://www.w3.org/2000/svg" role="img">
+        <defs>
+          <marker id="arr-ls" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#6b6b6b"/>
+          </marker>
+        </defs>
+
+        <!-- Query -->
+        <rect x="10" y="90" width="90" height="40" rx="5" fill="#ffffff" stroke="#c9c6ba"/>
+        <text x="55" y="115" text-anchor="middle" font-size="12" font-family="-apple-system, sans-serif" fill="#1a1a1a" font-weight="600">query</text>
+
+        <!-- Parallel search tool fan-out -->
+        <rect x="180" y="20" width="160" height="32" rx="4" fill="#e6f4f1" stroke="#0f766e"/>
+        <text x="260" y="40" text-anchor="middle" font-size="11" font-family="SF Mono, monospace" fill="#0f766e">search_web (varied Q)</text>
+
+        <rect x="180" y="62" width="160" height="32" rx="4" fill="#e6f4f1" stroke="#0f766e"/>
+        <text x="260" y="82" text-anchor="middle" font-size="11" font-family="SF Mono, monospace" fill="#0f766e">search_web (varied Q)</text>
+
+        <rect x="180" y="104" width="160" height="32" rx="4" fill="#e6f4f1" stroke="#0f766e"/>
+        <text x="260" y="124" text-anchor="middle" font-size="11" font-family="SF Mono, monospace" fill="#0f766e">search_academic</text>
+
+        <rect x="180" y="146" width="160" height="32" rx="4" fill="#e6f4f1" stroke="#0f766e"/>
+        <text x="260" y="166" text-anchor="middle" font-size="11" font-family="SF Mono, monospace" fill="#0f766e">search_academic</text>
+
+        <text x="260" y="200" text-anchor="middle" font-size="11" fill="#6b6b6b" font-family="-apple-system, sans-serif" font-style="italic">~4 rounds, parallel</text>
+
+        <!-- Funnel into create_source_note -->
+        <rect x="400" y="80" width="160" height="58" rx="5" fill="#ffffff" stroke="#0f766e" stroke-width="1.5"/>
+        <text x="480" y="103" text-anchor="middle" font-size="12" font-family="SF Mono, monospace" fill="#0f766e" font-weight="600">create_source_note</text>
+        <text x="480" y="120" text-anchor="middle" font-size="10" font-family="-apple-system, sans-serif" fill="#6b6b6b">× 10–20</text>
+        <text x="480" y="133" text-anchor="middle" font-size="10" font-family="-apple-system, sans-serif" fill="#6b6b6b">(URL-deduped)</text>
+
+        <rect x="400" y="150" width="160" height="34" rx="5" fill="#fdfcf7" stroke="#c9c6ba" stroke-dasharray="3 2"/>
+        <text x="480" y="171" text-anchor="middle" font-size="11" font-family="SF Mono, monospace" fill="#6b6b6b">list_source_notes</text>
+
+        <!-- Terminal -->
+        <rect x="620" y="90" width="130" height="40" rx="5" fill="#fff4d6" stroke="#e6c265" stroke-width="1.5"/>
+        <text x="685" y="108" text-anchor="middle" font-size="11" font-family="SF Mono, monospace" fill="#8a6200" font-weight="700">write_landscape</text>
+        <text x="685" y="122" text-anchor="middle" font-size="11" font-family="SF Mono, monospace" fill="#8a6200" font-weight="700">_brief</text>
+
+        <!-- arrows -->
+        <line x1="100" y1="110" x2="180" y2="36"  stroke="#6b6b6b" marker-end="url(#arr-ls)"/>
+        <line x1="100" y1="110" x2="180" y2="78"  stroke="#6b6b6b" marker-end="url(#arr-ls)"/>
+        <line x1="100" y1="110" x2="180" y2="120" stroke="#6b6b6b" marker-end="url(#arr-ls)"/>
+        <line x1="100" y1="110" x2="180" y2="162" stroke="#6b6b6b" marker-end="url(#arr-ls)"/>
+
+        <line x1="340" y1="36"  x2="400" y2="100" stroke="#6b6b6b" marker-end="url(#arr-ls)"/>
+        <line x1="340" y1="78"  x2="400" y2="108" stroke="#6b6b6b" marker-end="url(#arr-ls)"/>
+        <line x1="340" y1="120" x2="400" y2="116" stroke="#6b6b6b" marker-end="url(#arr-ls)"/>
+        <line x1="340" y1="162" x2="400" y2="130" stroke="#6b6b6b" marker-end="url(#arr-ls)"/>
+
+        <line x1="560" y1="110" x2="620" y2="110" stroke="#6b6b6b" marker-end="url(#arr-ls)"/>
+        <line x1="560" y1="165" x2="610" y2="125" stroke="#6b6b6b" stroke-dasharray="3 2" marker-end="url(#arr-ls)"/>
+      </svg>
+      <div class="mini-caption">Fan-out of parallel searches → deduped source notes → terminal brief commit.</div>
+    </div>
+
+    <details class="nested">
+      <summary>Strategy &amp; prompt shape</summary>
+      <div class="inner">
+        <p>
+          Single <code>agent.iter()</code> loop. The system prompt tells the model to run
+          parallel searches with varied query formulations, create source notes for every
+          candidate (dedup is automatic via URL normalization), consult
+          <code>list_source_notes</code> to spot coverage gaps, and only then call
+          <code>write_landscape_brief</code> with a short markdown report covering
+          themes, positions, key sources, under-covered areas, and tier distribution.
+        </p>
+        <p>
+          The brief is stored on the LANDSCAPE note's <code>content</code> field, and its
+          structured fields (themes, positions, under_covered_areas, tier_distribution,
+          peer_review_fraction) live in <code>LandscapeMetadata</code>.
+        </p>
+      </div>
+    </details>
+  </div>
+</details>
+
+<!-- RESEARCHER -->
+<details class="agent" data-a="researcher">
+  <summary>
+    <span class="caret">▸</span>
+    <span>
+      <span class="agent-title" style="color:var(--researcher)">② Researcher</span>
+      <span class="agent-tag">GENERATIVE · HIGH</span>
+      <span class="agent-kicker">plans sub-questions, dispatches analysts, writes the final report</span>
+    </span>
+    <span class="ref">researcher.py:383-452</span>
+  </summary>
+  <div class="agent-body">
+    <dl class="kv">
+      <dt>Role</dt>
+      <dd>
+        The orchestrator. Decomposes the query into sub-questions, classifies each
+        one, dispatches analysts in <em>explore</em> / <em>verify</em> / <em>adversarial</em>
+        mode, reviews the synthesized answers, and commits the final report.
+      </dd>
+
+      <dt>When</dt>
+      <dd>After landscape completes. Invoked once per run.</dd>
+
+      <dt>Inputs</dt>
+      <dd>
+        Opening prompt (<code class="ref">researcher.py:423-429</code>) bundles: the query,
+        the landscape brief, and a compact source list capped at 80. Never receives raw
+        source content.
+      </dd>
+
+      <dt>Outputs</dt>
+      <dd>
+        <code>ResearcherReport</code> with <code>report_markdown</code>,
+        <code>questions_investigated</code> (list of <code>QuestionSynthesis</code>), and
+        <code>limitations</code>. Committed by setting the <strong>root QUESTION</strong>
+        note to <code>SYNTHESIZED</code>.
+      </dd>
+
+      <dt>Budget</dt>
+      <dd><code>DEFAULT_ANALYST_BUDGET = 8</code> (<code class="ref">researcher.py:54</code>). Exhaustion raises <code>ModelRetry</code>.</dd>
+
+      <dt>Terminal tool</dt>
+      <dd><span class="tool-pill terminal">answer_question</span> (on the root question)</dd>
+
+      <dt>Tools</dt>
+      <dd>
+        <span class="tool-pill">get_research_state</span>
+        <span class="tool-pill">investigate_question</span>
+        <span class="tool-pill">load_note</span>
+        <span class="tool-pill terminal">answer_question</span>
+      </dd>
+    </dl>
+
+    <div class="mini-diagram">
+      <svg viewBox="0 0 760 260" xmlns="http://www.w3.org/2000/svg" role="img">
+        <defs>
+          <marker id="arr-rs" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#6b6b6b"/>
+          </marker>
+          <marker id="arr-rs-loop" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#4c1d95"/>
+          </marker>
+        </defs>
+
+        <!-- query + landscape brief input -->
+        <rect x="10" y="110" width="110" height="50" rx="5" fill="#ffffff" stroke="#c9c6ba"/>
+        <text x="65" y="130" text-anchor="middle" font-size="11" font-family="-apple-system, sans-serif" fill="#1a1a1a" font-weight="600">query +</text>
+        <text x="65" y="146" text-anchor="middle" font-size="11" font-family="-apple-system, sans-serif" fill="#1a1a1a" font-weight="600">brief</text>
+
+        <!-- plan/classify -->
+        <rect x="160" y="110" width="130" height="50" rx="5" fill="#f3edf9" stroke="#4c1d95"/>
+        <text x="225" y="130" text-anchor="middle" font-size="11" font-family="-apple-system, sans-serif" fill="#4c1d95" font-weight="700">classify</text>
+        <text x="225" y="146" text-anchor="middle" font-size="10" font-family="-apple-system, sans-serif" fill="#6b6b6b">lookup/synthesis/…</text>
+
+        <!-- get_research_state -->
+        <rect x="330" y="40" width="150" height="38" rx="5" fill="#fdfcf7" stroke="#c9c6ba" stroke-dasharray="3 2"/>
+        <text x="405" y="64" text-anchor="middle" font-size="11" font-family="SF Mono, monospace" fill="#6b6b6b">get_research_state</text>
+
+        <!-- investigate_question -->
+        <rect x="330" y="120" width="150" height="56" rx="5" fill="#f3edf9" stroke="#4c1d95" stroke-width="1.5"/>
+        <text x="405" y="140" text-anchor="middle" font-size="11" font-family="SF Mono, monospace" fill="#4c1d95" font-weight="700">investigate_question</text>
+        <text x="405" y="156" text-anchor="middle" font-size="10" font-family="-apple-system, sans-serif" fill="#6b6b6b">mode: explore /</text>
+        <text x="405" y="169" text-anchor="middle" font-size="10" font-family="-apple-system, sans-serif" fill="#6b6b6b">verify / adversarial</text>
+
+        <!-- Analyst box -->
+        <rect x="535" y="120" width="110" height="56" rx="5" fill="#fff2e0" stroke="#b45309" stroke-width="1.5"/>
+        <text x="590" y="140" text-anchor="middle" font-size="12" font-family="-apple-system, sans-serif" fill="#b45309" font-weight="700">Analyst</text>
+        <text x="590" y="156" text-anchor="middle" font-size="10" font-family="-apple-system, sans-serif" fill="#6b6b6b">writes</text>
+        <text x="590" y="169" text-anchor="middle" font-size="10" font-family="SF Mono, monospace" fill="#6b6b6b">QUESTION note</text>
+
+        <!-- load_note / review -->
+        <rect x="330" y="198" width="150" height="38" rx="5" fill="#fdfcf7" stroke="#c9c6ba" stroke-dasharray="3 2"/>
+        <text x="405" y="221" text-anchor="middle" font-size="11" font-family="SF Mono, monospace" fill="#6b6b6b">load_note (review)</text>
+
+        <!-- Terminal -->
+        <rect x="665" y="40" width="90" height="56" rx="5" fill="#fff4d6" stroke="#e6c265" stroke-width="1.5"/>
+        <text x="710" y="60" text-anchor="middle" font-size="11" font-family="SF Mono, monospace" fill="#8a6200" font-weight="700">answer_</text>
+        <text x="710" y="74" text-anchor="middle" font-size="11" font-family="SF Mono, monospace" fill="#8a6200" font-weight="700">question</text>
+        <text x="710" y="88" text-anchor="middle" font-size="10" font-family="-apple-system, sans-serif" fill="#8a6200">(root)</text>
+
+        <!-- arrows -->
+        <line x1="120" y1="135" x2="160" y2="135" stroke="#6b6b6b" marker-end="url(#arr-rs)"/>
+        <line x1="290" y1="135" x2="330" y2="148" stroke="#6b6b6b" marker-end="url(#arr-rs)"/>
+        <line x1="290" y1="125" x2="330" y2="60"  stroke="#6b6b6b" stroke-dasharray="3 2" marker-end="url(#arr-rs)"/>
+
+        <line x1="480" y1="148" x2="535" y2="148" stroke="#6b6b6b" marker-end="url(#arr-rs)"/>
+
+        <!-- Loop-back: analyst → load_note → back to classify -->
+        <path d="M 590 176 Q 590 217 480 217" fill="none" stroke="#4c1d95" stroke-width="1.5" marker-end="url(#arr-rs-loop)"/>
+        <path d="M 330 217 Q 225 217 225 160" fill="none" stroke="#4c1d95" stroke-width="1.5" marker-end="url(#arr-rs-loop)"/>
+        <text x="360" y="232" font-size="10.5" font-style="italic" fill="#4c1d95" font-family="-apple-system, sans-serif">loop until budget = 0 or audit passes</text>
+
+        <!-- Final commit -->
+        <path d="M 480 128 Q 620 128 665 75" fill="none" stroke="#6b6b6b" stroke-dasharray="4 2" marker-end="url(#arr-rs)"/>
+        <text x="580" y="110" font-size="10" fill="#6b6b6b" font-style="italic" font-family="-apple-system, sans-serif">after 5-check audit</text>
+
+        <!-- budget label -->
+        <rect x="10" y="200" width="110" height="36" rx="4" fill="#fdfcf7" stroke="#c9c6ba"/>
+        <text x="65" y="220" text-anchor="middle" font-size="11" font-family="-apple-system, sans-serif" fill="#6b6b6b">budget</text>
+        <text x="65" y="233" text-anchor="middle" font-size="11" font-family="SF Mono, monospace" fill="#4c1d95" font-weight="700">8 analysts</text>
+      </svg>
+      <div class="mini-caption">Iterative dispatch loop: classify → investigate → review → repeat. Terminal exit once audit passes or budget is exhausted.</div>
+    </div>
+
+    <details class="nested">
+      <summary>Strategy &amp; prompt shape</summary>
+      <div class="inner">
+        <p>
+          <code>RESEARCHER_SYSTEM</code> (<code class="ref">researcher.py:57-227</code>) enforces
+          four disciplines:
+        </p>
+        <ol>
+          <li><strong>Classify before dispatching.</strong> Each sub-question is tagged
+            <em>lookup</em> / <em>synthesis</em> / <em>contested</em> / <em>sparse</em>
+            — this is persisted on the QUESTION note via <code>QuestionClassification</code>.</li>
+          <li><strong>Mode selection.</strong> <em>explore</em> for fresh investigation,
+            <em>verify</em> for an independent re-check of load-bearing claims,
+            <em>adversarial</em> for a counter-case. Verify/adversarial run on a
+            different model family than explore.</li>
+          <li><strong>Budget discipline.</strong> Only verify/adversarial-dispatch
+            claims that are load-bearing; don't burn the budget cross-checking everything.</li>
+          <li><strong>5-check pre-commit audit</strong> before calling
+            <code>answer_question</code>: sufficiency, source grounding, thin-spot scan,
+            contradiction, direction.</li>
+        </ol>
+      </div>
+    </details>
+
+    <details class="nested">
+      <summary>Tool semantics</summary>
+      <div class="inner">
+        <ul>
+          <li><code>get_research_state()</code> — snapshot of every question (status + confidence), sources grouped by tier and state, remaining analyst budget.</li>
+          <li><code>investigate_question(question, mode)</code> — creates a child QUESTION note, dispatches an analyst under <code>drive_agent</code>, decrements the budget.</li>
+          <li><code>load_note(note_id)</code> — re-reads a <strong>QUESTION</strong> note's synthesis. Researcher deliberately never loads SOURCE notes; it only sees what analysts synthesized.</li>
+          <li><code>answer_question(...)</code> — terminal; writes <code>report_markdown</code>, <code>confidence</code>, <code>sources_cited</code>, <code>disagreements</code>, <code>open_issues</code> into the root question and returns.</li>
+        </ul>
+      </div>
+    </details>
+  </div>
+</details>
+
+<!-- ANALYST -->
+<details class="agent" data-a="analyst">
+  <summary>
+    <span class="caret">▸</span>
+    <span>
+      <span class="agent-title" style="color:var(--analyst)">③ Analyst</span>
+      <span class="agent-tag">GEN · MID (explore) / JUDG · MID (verify · adversarial)</span>
+      <span class="agent-kicker">one per sub-question — scouts, deep-reads, extracts claims, commits synthesis</span>
+    </span>
+    <span class="ref">analyst.py:303-385</span>
+  </summary>
+  <div class="agent-body">
+    <dl class="kv">
+      <dt>Role</dt>
+      <dd>
+        Investigates exactly one QUESTION note. Fans out scouts to build a candidate
+        source pool, deep-reads the promising ones (never searches directly), extracts
+        verbatim-quoted claims, and commits a structured synthesis.
+      </dd>
+
+      <dt>When</dt>
+      <dd>
+        Dispatched by the researcher through <code>investigate_question(...)</code>
+        (<code class="ref">researcher.py:361-375</code>). The researcher can run up to 8
+        analysts; PydanticAI allows concurrent dispatches to run in parallel on a single
+        asyncio loop.
+      </dd>
+
+      <dt>Inputs</dt>
+      <dd>
+        <code>question_id</code> (NoteID the researcher pre-created),
+        <code>question</code> text, and <code>mode</code> ∈ {explore, verify, adversarial}.
+      </dd>
+
+      <dt>Outputs</dt>
+      <dd>
+        Updates the QUESTION note in place via <code>answer_question</code>. Returns a
+        <code>QuestionSynthesis</code> rebuilt from the updated note's metadata.
+      </dd>
+
+      <dt>Budget</dt>
+      <dd><code>DEFAULT_SCOUT_BUDGET = 4</code> (<code class="ref">analyst.py:45</code>).</dd>
+
+      <dt>Terminal tool</dt>
+      <dd><span class="tool-pill terminal">answer_question</span></dd>
+
+      <dt>Tools</dt>
+      <dd>
+        <span class="tool-pill">list_source_notes</span>
+        <span class="tool-pill">scout</span>
+        <span class="tool-pill">load_note</span>
+        <span class="tool-pill">update_source_after_reading</span>
+        <span class="tool-pill terminal">answer_question</span>
+      </dd>
+    </dl>
+
+    <div class="mini-diagram">
+      <svg viewBox="0 0 760 290" xmlns="http://www.w3.org/2000/svg" role="img">
+        <defs>
+          <marker id="arr-an" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#6b6b6b"/>
+          </marker>
+        </defs>
+
+        <!-- question in -->
+        <rect x="10" y="130" width="105" height="46" rx="5" fill="#ffffff" stroke="#c9c6ba"/>
+        <text x="62" y="150" text-anchor="middle" font-size="12" font-family="-apple-system, sans-serif" fill="#1a1a1a" font-weight="600">question</text>
+        <text x="62" y="166" text-anchor="middle" font-size="10" font-family="-apple-system, sans-serif" fill="#6b6b6b">+ mode</text>
+
+        <!-- list_source_notes -->
+        <rect x="150" y="60" width="150" height="32" rx="4" fill="#fdfcf7" stroke="#c9c6ba" stroke-dasharray="3 2"/>
+        <text x="225" y="80" text-anchor="middle" font-size="11" font-family="SF Mono, monospace" fill="#6b6b6b">list_source_notes</text>
+        <text x="225" y="50" text-anchor="middle" font-size="10" font-style="italic" fill="#6b6b6b" font-family="-apple-system, sans-serif">reuse corpus first</text>
+
+        <!-- scout fan-out -->
+        <rect x="150" y="110" width="150" height="28" rx="4" fill="#fef2e6" stroke="#b45309"/>
+        <text x="225" y="128" text-anchor="middle" font-size="11" font-family="SF Mono, monospace" fill="#b45309">scout(angle_1)</text>
+        <rect x="150" y="142" width="150" height="28" rx="4" fill="#fef2e6" stroke="#b45309"/>
+        <text x="225" y="160" text-anchor="middle" font-size="11" font-family="SF Mono, monospace" fill="#b45309">scout(angle_2)</text>
+        <rect x="150" y="174" width="150" height="28" rx="4" fill="#fef2e6" stroke="#b45309"/>
+        <text x="225" y="192" text-anchor="middle" font-size="11" font-family="SF Mono, monospace" fill="#b45309">scout(angle_3)</text>
+        <text x="225" y="218" text-anchor="middle" font-size="10.5" font-style="italic" fill="#b45309" font-family="-apple-system, sans-serif">up to 4 in parallel</text>
+
+        <!-- Per-source read loop -->
+        <rect x="345" y="90" width="170" height="130" rx="6" fill="#fff9ee" stroke="#b45309" stroke-width="1.5" stroke-dasharray="5 3"/>
+        <text x="430" y="108" text-anchor="middle" font-size="11" font-weight="700" fill="#b45309" font-family="-apple-system, sans-serif">for each source:</text>
+
+        <rect x="360" y="120" width="140" height="28" rx="4" fill="#ffffff" stroke="#c9c6ba"/>
+        <text x="430" y="138" text-anchor="middle" font-size="10.5" font-family="SF Mono, monospace" fill="#1a1a1a">load_note(source_id)</text>
+
+        <rect x="360" y="154" width="140" height="28" rx="4" fill="#ffffff" stroke="#c9c6ba"/>
+        <text x="430" y="172" text-anchor="middle" font-size="10.5" font-family="-apple-system, sans-serif" fill="#1a1a1a">deep-read · verbatim quotes</text>
+
+        <rect x="360" y="188" width="140" height="28" rx="4" fill="#ffffff" stroke="#c9c6ba"/>
+        <text x="430" y="206" text-anchor="middle" font-size="9.5" font-family="SF Mono, monospace" fill="#1a1a1a">update_source_after_reading</text>
+
+        <!-- ReadingEntry append -->
+        <rect x="545" y="150" width="120" height="44" rx="5" fill="#fef7e6" stroke="#e6c265"/>
+        <text x="605" y="168" text-anchor="middle" font-size="10.5" font-family="SF Mono, monospace" fill="#8a6200" font-weight="700">ReadingEntry</text>
+        <text x="605" y="182" text-anchor="middle" font-size="9.5" font-family="-apple-system, sans-serif" fill="#6b6b6b">appended to source</text>
+
+        <!-- answer_question terminal -->
+        <rect x="640" y="40" width="110" height="50" rx="5" fill="#fff4d6" stroke="#e6c265" stroke-width="1.5"/>
+        <text x="695" y="60" text-anchor="middle" font-size="11" font-family="SF Mono, monospace" fill="#8a6200" font-weight="700">answer_</text>
+        <text x="695" y="74" text-anchor="middle" font-size="11" font-family="SF Mono, monospace" fill="#8a6200" font-weight="700">question</text>
+
+        <!-- arrows -->
+        <line x1="115" y1="148" x2="150" y2="80"  stroke="#6b6b6b" stroke-dasharray="3 2" marker-end="url(#arr-an)"/>
+        <line x1="115" y1="150" x2="150" y2="124" stroke="#6b6b6b" marker-end="url(#arr-an)"/>
+        <line x1="115" y1="152" x2="150" y2="156" stroke="#6b6b6b" marker-end="url(#arr-an)"/>
+        <line x1="115" y1="154" x2="150" y2="188" stroke="#6b6b6b" marker-end="url(#arr-an)"/>
+
+        <line x1="300" y1="124" x2="345" y2="140" stroke="#6b6b6b" marker-end="url(#arr-an)"/>
+        <line x1="300" y1="156" x2="345" y2="156" stroke="#6b6b6b" marker-end="url(#arr-an)"/>
+        <line x1="300" y1="188" x2="345" y2="175" stroke="#6b6b6b" marker-end="url(#arr-an)"/>
+
+        <line x1="500" y1="202" x2="545" y2="175" stroke="#6b6b6b" marker-end="url(#arr-an)"/>
+
+        <!-- to terminal -->
+        <path d="M 515 110 Q 600 90 640 70" fill="none" stroke="#6b6b6b" stroke-dasharray="4 2" marker-end="url(#arr-an)"/>
+        <text x="530" y="80" font-size="10" font-style="italic" fill="#6b6b6b" font-family="-apple-system, sans-serif">after reading is enough</text>
+
+        <!-- budget box -->
+        <rect x="10" y="250" width="170" height="30" rx="4" fill="#fdfcf7" stroke="#c9c6ba"/>
+        <text x="95" y="270" text-anchor="middle" font-size="11" font-family="-apple-system, sans-serif" fill="#6b6b6b">budget: <tspan font-family="SF Mono, monospace" fill="#b45309" font-weight="700">4 scouts</tspan></text>
+      </svg>
+      <div class="mini-caption">Scout fan-out → per-source deep-read loop → append ReadingEntry → commit synthesis. Analyst never searches directly.</div>
+    </div>
+
+    <details class="nested">
+      <summary>Mode routing</summary>
+      <div class="inner">
+        <p>The mode parameter conditionally routes the model (<code class="ref">analyst.py:221-231</code>):</p>
+        <table>
+          <thead>
+            <tr><th>Mode</th><th>Role class</th><th>Tier</th><th>Prompt emphasis</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>explore</code></td>
+              <td><code>GENERATIVE</code></td>
+              <td><code>MID</code></td>
+              <td>Fresh investigation of the sub-question.</td>
+            </tr>
+            <tr>
+              <td><code>verify</code></td>
+              <td><code>JUDGMENT</code></td>
+              <td><code>MID</code></td>
+              <td>Load a prior claim note; phrase queries to find counter-evidence; explicitly state SUPPORTS / REFUTES / INCONCLUSIVE.</td>
+            </tr>
+            <tr>
+              <td><code>adversarial</code></td>
+              <td><code>JUDGMENT</code></td>
+              <td><code>MID</code></td>
+              <td>Load a prior position note; steelman the opposite; lead with the counter-case.</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          Verify/adversarial come from a <em>different model family</em> than
+          explore, enforced by the routing config
+          (<code>config/routing_diverse.yaml</code>).
+        </p>
+      </div>
+    </details>
+
+    <details class="nested">
+      <summary>Reading protocol &amp; prompt emphasis</summary>
+      <div class="inner">
+        <p>
+          <code>ANALYST_SYSTEM</code> (<code class="ref">analyst.py:100-218</code>) is
+          explicit about the scout/read separation:
+        </p>
+        <ul>
+          <li>Call <code>list_source_notes()</code> first — reuse what's already in the graph before launching scouts.</li>
+          <li>Dispatch scouts only for uncovered angles (up to 4 parallel).</li>
+          <li>For each candidate, <code>load_note(source_id)</code> to read the full cleaned markdown (populated by <code>scout_fetch</code> onto <code>note.content</code>).</li>
+          <li>After reading, <code>update_source_after_reading(...)</code> appends a <code>ReadingEntry</code> tagged with <em>this analyst</em> and <em>this question</em> — so the same source can be read differently by different analysts for different questions without overwriting.</li>
+          <li>Claims must be <strong>verbatim-quoted</strong>; relevance_note explains why the claim matters for <em>this angle</em>.</li>
+          <li>Tier-4 (community blog) sources are background only — never anchor a core claim to one.</li>
+          <li>Limitations and competing approaches are stated explicitly; they are not optional.</li>
+        </ul>
+      </div>
+    </details>
+  </div>
+</details>
+
+<!-- SCOUT -->
+<details class="agent" data-a="scout">
+  <summary>
+    <span class="caret">▸</span>
+    <span>
+      <span class="agent-title" style="color:var(--scout)">④ Scout</span>
+      <span class="agent-tag">CHEAP_DETERMINISTIC · MID</span>
+      <span class="agent-kicker">search → triage → skim — pre-digests a source list for the analyst</span>
+    </span>
+    <span class="ref">scout.py:203-245</span>
+  </summary>
+  <div class="agent-body">
+    <dl class="kv">
+      <dt>Role</dt>
+      <dd>
+        Retrieval grunt work. Runs searches, triages results into tiers, and does a
+        <em>skim-level</em> fetch. Does not read deeply and does not extract claims —
+        those are analyst responsibilities.
+      </dd>
+
+      <dt>When</dt>
+      <dd>
+        Dispatched by the analyst through <code>scout(request)</code>
+        (<code class="ref">analyst.py:294</code>). Up to 4 concurrent scouts per analyst.
+      </dd>
+
+      <dt>Inputs</dt>
+      <dd>
+        A single <code>request</code> string describing the angle
+        (e.g. <em>"methodology critiques of MMLU, 2023–2025"</em>).
+      </dd>
+
+      <dt>Outputs</dt>
+      <dd>
+        A <code>ScoutResult</code>: a list of <code>ScoutedSource</code> entries
+        (source_id, url, title, tier_guess, relevance_guess, short preview) and a
+        one-paragraph <code>coverage_note</code>. Full cleaned markdown lives on each
+        SOURCE note's <code>content</code> field, not in the return value.
+      </dd>
+
+      <dt>Budget</dt>
+      <dd>~3 total search rounds, prompt-enforced (<code class="ref">scout.py:42-134</code>).</dd>
+
+      <dt>Terminal tool</dt>
+      <dd><span class="tool-pill terminal">commit_scout_result</span> (outbox pattern)</dd>
+
+      <dt>Tools</dt>
+      <dd>
+        <span class="tool-pill">list_source_notes</span>
+        <span class="tool-pill">search_web</span>
+        <span class="tool-pill">search_academic</span>
+        <span class="tool-pill">create_source_note</span>
+        <span class="tool-pill">scout_fetch</span>
+        <span class="tool-pill">find_related_papers</span>
+        <span class="tool-pill terminal">commit_scout_result</span>
+      </dd>
+    </dl>
+
+    <div class="mini-diagram">
+      <svg viewBox="0 0 760 260" xmlns="http://www.w3.org/2000/svg" role="img">
+        <defs>
+          <marker id="arr-sc" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#6b6b6b"/>
+          </marker>
+        </defs>
+
+        <!-- Round column headers -->
+        <text x="90" y="20" text-anchor="middle" font-size="10.5" font-weight="700" fill="#6b6b6b" font-family="-apple-system, sans-serif" letter-spacing="1">CHECK</text>
+        <text x="235" y="20" text-anchor="middle" font-size="10.5" font-weight="700" fill="#6b6b6b" font-family="-apple-system, sans-serif" letter-spacing="1">ROUND 1</text>
+        <text x="380" y="20" text-anchor="middle" font-size="10.5" font-weight="700" fill="#6b6b6b" font-family="-apple-system, sans-serif" letter-spacing="1">CREATE</text>
+        <text x="525" y="20" text-anchor="middle" font-size="10.5" font-weight="700" fill="#6b6b6b" font-family="-apple-system, sans-serif" letter-spacing="1">ROUND 2</text>
+        <text x="680" y="20" text-anchor="middle" font-size="10.5" font-weight="700" fill="#6b6b6b" font-family="-apple-system, sans-serif" letter-spacing="1">COMMIT</text>
+
+        <!-- Request -->
+        <rect x="10" y="100" width="68" height="50" rx="5" fill="#ffffff" stroke="#c9c6ba"/>
+        <text x="44" y="128" text-anchor="middle" font-size="11" font-family="-apple-system, sans-serif" fill="#1a1a1a" font-weight="600">request</text>
+
+        <!-- Column 1: corpus check -->
+        <rect x="100" y="100" width="140" height="50" rx="5" fill="#fdfcf7" stroke="#c9c6ba" stroke-dasharray="3 2"/>
+        <text x="170" y="120" text-anchor="middle" font-size="11" font-family="SF Mono, monospace" fill="#6b6b6b">list_source_notes</text>
+        <text x="170" y="138" text-anchor="middle" font-size="10" font-style="italic" fill="#6b6b6b" font-family="-apple-system, sans-serif">is it already there?</text>
+
+        <!-- Column 2: parallel searches -->
+        <rect x="260" y="40" width="150" height="28" rx="4" fill="#eef0f3" stroke="#475569"/>
+        <text x="335" y="58" text-anchor="middle" font-size="11" font-family="SF Mono, monospace" fill="#475569">search_web (q₁)</text>
+        <rect x="260" y="72" width="150" height="28" rx="4" fill="#eef0f3" stroke="#475569"/>
+        <text x="335" y="90" text-anchor="middle" font-size="11" font-family="SF Mono, monospace" fill="#475569">search_academic (q₂)</text>
+        <rect x="260" y="104" width="150" height="28" rx="4" fill="#eef0f3" stroke="#475569"/>
+        <text x="335" y="122" text-anchor="middle" font-size="11" font-family="SF Mono, monospace" fill="#475569">search_web (q₃)</text>
+        <rect x="260" y="136" width="150" height="28" rx="4" fill="#eef0f3" stroke="#475569"/>
+        <text x="335" y="154" text-anchor="middle" font-size="11" font-family="SF Mono, monospace" fill="#475569">search_academic (q₄)</text>
+        <text x="335" y="180" text-anchor="middle" font-size="10" fill="#475569" font-style="italic" font-family="-apple-system, sans-serif">2–4 parallel, varied</text>
+
+        <!-- Column 3: create_source_note -->
+        <rect x="430" y="90" width="135" height="60" rx="5" fill="#eef0f3" stroke="#475569" stroke-width="1.5"/>
+        <text x="497" y="112" text-anchor="middle" font-size="11" font-family="SF Mono, monospace" fill="#475569" font-weight="600">create_source_note</text>
+        <text x="497" y="128" text-anchor="middle" font-size="10" fill="#6b6b6b" font-family="-apple-system, sans-serif">URL-deduped</text>
+        <text x="497" y="142" text-anchor="middle" font-size="10" fill="#6b6b6b" font-family="-apple-system, sans-serif">SCOUTED state</text>
+
+        <!-- Column 4: scout_fetch -->
+        <rect x="580" y="50" width="130" height="50" rx="5" fill="#eef0f3" stroke="#475569" stroke-width="1.5"/>
+        <text x="645" y="70" text-anchor="middle" font-size="11" font-family="SF Mono, monospace" fill="#475569" font-weight="600">scout_fetch</text>
+        <text x="645" y="86" text-anchor="middle" font-size="9.5" fill="#6b6b6b" font-family="-apple-system, sans-serif">skim top 6–8</text>
+
+        <rect x="580" y="110" width="130" height="40" rx="5" fill="#fdfcf7" stroke="#c9c6ba" stroke-dasharray="3 2"/>
+        <text x="645" y="128" text-anchor="middle" font-size="10" font-family="SF Mono, monospace" fill="#6b6b6b">find_related_papers</text>
+        <text x="645" y="142" text-anchor="middle" font-size="9.5" font-style="italic" fill="#6b6b6b" font-family="-apple-system, sans-serif">optional (citation walk)</text>
+
+        <!-- Column 5: commit -->
+        <rect x="660" y="190" width="90" height="50" rx="5" fill="#fff4d6" stroke="#e6c265" stroke-width="1.5"/>
+        <text x="705" y="210" text-anchor="middle" font-size="11" font-family="SF Mono, monospace" fill="#8a6200" font-weight="700">commit_</text>
+        <text x="705" y="224" text-anchor="middle" font-size="11" font-family="SF Mono, monospace" fill="#8a6200" font-weight="700">scout_result</text>
+
+        <!-- arrows left-to-right -->
+        <line x1="78" y1="125" x2="100" y2="125" stroke="#6b6b6b" marker-end="url(#arr-sc)"/>
+        <line x1="240" y1="125" x2="260" y2="54"  stroke="#6b6b6b" marker-end="url(#arr-sc)"/>
+        <line x1="240" y1="125" x2="260" y2="86"  stroke="#6b6b6b" marker-end="url(#arr-sc)"/>
+        <line x1="240" y1="125" x2="260" y2="118" stroke="#6b6b6b" marker-end="url(#arr-sc)"/>
+        <line x1="240" y1="125" x2="260" y2="150" stroke="#6b6b6b" marker-end="url(#arr-sc)"/>
+
+        <line x1="410" y1="54"  x2="430" y2="108" stroke="#6b6b6b" marker-end="url(#arr-sc)"/>
+        <line x1="410" y1="86"  x2="430" y2="116" stroke="#6b6b6b" marker-end="url(#arr-sc)"/>
+        <line x1="410" y1="118" x2="430" y2="124" stroke="#6b6b6b" marker-end="url(#arr-sc)"/>
+        <line x1="410" y1="150" x2="430" y2="132" stroke="#6b6b6b" marker-end="url(#arr-sc)"/>
+
+        <line x1="565" y1="120" x2="580" y2="75"  stroke="#6b6b6b" marker-end="url(#arr-sc)"/>
+        <line x1="565" y1="120" x2="580" y2="130" stroke="#6b6b6b" stroke-dasharray="3 2" marker-end="url(#arr-sc)"/>
+
+        <line x1="645" y1="100" x2="705" y2="190" stroke="#6b6b6b" marker-end="url(#arr-sc)"/>
+
+        <!-- optional re-round loop-back -->
+        <path d="M 335 170 Q 170 230 170 150" fill="none" stroke="#475569" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#arr-sc)"/>
+        <text x="180" y="228" font-size="10" font-style="italic" fill="#475569" font-family="-apple-system, sans-serif">thin? re-phrase (up to ~3 total rounds)</text>
+      </svg>
+      <div class="mini-caption">Columnar search-skim-commit flow. Optional citation walk branches off round 2; thin rounds loop back with re-phrased queries.</div>
+    </div>
+
+    <details class="nested">
+      <summary>Strategy — the 3-round search-skim loop</summary>
+      <div class="inner">
+        <ol>
+          <li>
+            <strong>Check the corpus first.</strong> <code>list_source_notes()</code> shows
+            what the graph already has. Prefer existing hits to re-searching.
+          </li>
+          <li>
+            <strong>Round 1 — broad searches.</strong> 2–4 parallel
+            <code>search_web</code> / <code>search_academic</code> calls with varied query
+            formulations. Every candidate gets <code>create_source_note</code> (automatic
+            URL dedup).
+          </li>
+          <li>
+            <strong>Round 2 — skim.</strong> <code>scout_fetch</code> the top 6–8
+            candidates. This does a light fetch (HTML via trafilatura or PDF via
+            MarkItDown), writes cleaned markdown onto <code>note.content</code>, and
+            returns a 2–3 sentence preview.
+          </li>
+          <li>
+            <strong>Optional — citation traversal.</strong> For high-signal sources with
+            a DOI or arXiv id, <code>find_related_papers</code> can walk the citation
+            graph (citing / cited_by) via Semantic Scholar.
+          </li>
+          <li>
+            <strong>Optional — reformulate.</strong> If the first pass came up thin,
+            one more round of searches with different phrasings.
+          </li>
+          <li>
+            <strong>Commit.</strong> <code>commit_scout_result</code> appends to a
+            closure-scoped outbox list on the caller; the scout returns.
+          </li>
+        </ol>
+      </div>
+    </details>
+
+    <details class="nested">
+      <summary>Tier guesses &amp; relevance</summary>
+      <div class="inner">
+        <p>Scouts attach two rough signals per source:</p>
+        <ul>
+          <li><strong>tier_guess</strong> ∈ 1..5 — 1 peer-reviewed · 2 arXiv · 3 industry · 4 community · 5 low-quality.</li>
+          <li><strong>relevance_guess</strong> — is this source about <em>the specific angle</em>, not just the broad topic?</li>
+        </ul>
+        <p>
+          Both are guesses; the analyst is free to overrule them when they read the source
+          and append a <code>ReadingEntry</code> with the final tier.
+        </p>
+      </div>
+    </details>
+  </div>
+</details>
+
+<!-- ======================================================= -->
+<h2>Shared state — the note graph</h2>
+
+<p>
+  <code>NoteMemory</code> (<code class="ref">agents/memory.py:45-140</code>) is the <strong>only</strong>
+  mutable state shared across agents. It is an async-safe dict protected by
+  <code>asyncio.Lock</code>, with two secondary indexes for fast lookup by note type and
+  by source URL. All <code>create()</code> / <code>update()</code> operations serialize
+  under the lock; <code>get()</code> takes stale snapshots without locking.
+</p>
+
+<details class="nested" open>
+  <summary>Note types</summary>
+  <div class="inner">
+
+    <h4>LANDSCAPE</h4>
+    <p>One per run. Created eagerly in <code>research_run</code>, updated by the landscape agent.
+       <code>content</code> holds the markdown brief; <code>LandscapeMetadata</code> holds
+       structured fields (themes, positions, key_sources, under_covered_areas, tier_distribution,
+       peer_review_fraction).</p>
+
+    <h4>SOURCE</h4>
+    <div class="states">
+      <span class="state">SCOUTED</span>
+      <span class="arrow">→</span>
+      <span class="state">FETCHED</span>
+      <span class="arrow">→</span>
+      <span class="state">ANALYZED</span>
+    </div>
+    <ul>
+      <li><code>SCOUTED</code> — created from a search result, title + snippet only.</li>
+      <li><code>FETCHED</code> — after <code>scout_fetch</code>: cleaned markdown on <code>content</code>, tier classified.</li>
+      <li><code>ANALYZED</code> — one or more analysts have appended a <code>ReadingEntry</code>.</li>
+    </ul>
+    <p>
+      Secondary index <code>_by_source_url</code> keeps create operations idempotent
+      under URL normalization. Each source carries an append-only
+      <code>readings: list[ReadingEntry]</code>, so N analysts can read the same source
+      for different questions without losing any perspective.
+    </p>
+
+    <h4>QUESTION</h4>
+    <div class="states">
+      <span class="state">IN_PROGRESS</span>
+      <span class="arrow">→</span>
+      <span class="state">SYNTHESIZED</span>
+    </div>
+    <p>
+      Root question created by <code>research_run</code> for the user's query; sub-questions
+      created by the researcher via <code>investigate_question</code>.
+      <code>QuestionMetadata</code> carries <code>classification</code>, <code>status</code>,
+      <code>parent_question_id</code>, <code>report_markdown</code>,
+      <code>confidence</code>, <code>sources_cited</code>, <code>disagreements</code>,
+      <code>open_issues</code>, and <code>answered_by_agent_id</code>.
+    </p>
+
+  </div>
+</details>
+
+<details class="nested">
+  <summary>Concurrency model</summary>
+  <div class="inner">
+    <ul>
+      <li>Single asyncio event loop for the whole run.</li>
+      <li>PydanticAI dispatches parallel tool calls naturally (<code>asyncio.gather</code>-style).</li>
+      <li><code>NoteMemory</code> mutations serialize under <code>asyncio.Lock</code>.</li>
+      <li>Event publisher calls happen <em>after</em> the lock is released.</li>
+      <li><code>_CURRENT_AGENT_ID</code> is an <code>asyncio</code>-aware contextvar set by <code>drive_agent</code>, so nested tool invocations are automatically tagged with the right agent.</li>
+    </ul>
+  </div>
+</details>
+
+<!-- ======================================================= -->
+<h2>Tools</h2>
+
+<p>
+  Three tool families, declared once and attached to the relevant agents. Every tool is
+  wrapped with <code>@instrumented</code> (<code class="ref">agents/events.py:172-225</code>),
+  which emits <code>on_tool_start</code> / <code>on_tool_end</code> events tagged with the
+  current agent id.
+</p>
+
+<details class="nested">
+  <summary>Search tools — <code>agents/tools/search.py</code></summary>
+  <div class="inner">
+    <ul>
+      <li><code>search_web(query, count=8)</code> — Brave web search.</li>
+      <li><code>search_academic(query, limit=6)</code> — Semantic Scholar + arXiv.</li>
+      <li><code>find_related_papers(source_id, direction, limit)</code> — citation traversal via Semantic Scholar.</li>
+    </ul>
+    <p>All return a uniform <code>SearchResult</code> shape (title, url, snippet, source, authors, venue, year, citation_count, pdf_url, doi).</p>
+  </div>
+</details>
+
+<details class="nested">
+  <summary>Fetch tools — <code>agents/tools/fetch.py</code></summary>
+  <div class="inner">
+    <ul>
+      <li><code>fetch_url(url)</code> — HTML via trafilatura, PDF via MarkItDown. Returns a <code>FetchedContent</code> capped at 60KB.</li>
+      <li><code>scout_fetch(source_id)</code> — skim variant: fetches url or pdf_url, writes cleaned markdown onto the source note's <code>content</code>, returns a short preview.</li>
+    </ul>
+  </div>
+</details>
+
+<details class="nested">
+  <summary>Note tools — <code>agents/tools/notes.py</code></summary>
+  <div class="inner">
+    <ul>
+      <li><code>create_source_note(...)</code> — create or return existing SCOUTED note (URL-deduplicated).</li>
+      <li><code>load_note(note_id)</code> — read any note by id.</li>
+      <li><code>list_source_notes()</code> — compact inventory (state, has_content, n_readings, analyzed_for_questions, tier, topics, summary).</li>
+      <li><code>update_source_after_reading(...)</code> — append a <code>ReadingEntry</code> (by_agent_id, for_question_id, claims, relevance_note).</li>
+      <li><code>answer_question(...)</code> — terminal for analyst/researcher.</li>
+      <li><code>write_landscape_brief(...)</code> — terminal for landscape.</li>
+      <li><code>commit_scout_result(...)</code> — terminal for scout, via outbox closure.</li>
+    </ul>
+  </div>
+</details>
+
+<!-- ======================================================= -->
+<h2>Retrieval layer</h2>
+
+<details class="nested">
+  <summary>Clients &amp; rate limiting — <code>retrieval/</code></summary>
+  <div class="inner">
+    <ul>
+      <li><code>BraveClient</code> — web search; rate-limited (default 1 req/s).</li>
+      <li><code>SemanticScholarClient</code> — academic search, <code>get_paper</code>, <code>get_citations</code>, <code>get_references</code>.</li>
+      <li><code>ArxivClient</code> — preprint search.</li>
+      <li><code>fetch_and_extract()</code> — HTML via trafilatura, PDF via MarkItDown (cap 15MB / 20 pages / 45s).</li>
+    </ul>
+    <p>
+      Rate limits are process-wide token buckets configured once at CLI startup
+      (<code class="ref">cli.py:125</code> → <code>apply_retrieval_rate_limits</code>).
+      A single pooled <code>httpx.AsyncClient</code> is shared across all retrieval.
+    </p>
+  </div>
+</details>
+
+<!-- ======================================================= -->
+<h2>Model routing</h2>
+
+<p>
+  <code>RoutingConfig</code> resolves <code>(RoleClass, TaskTier) → model_id</code>
+  (<code class="ref">config.py:30-60</code>). Default policy lives in
+  <code>config/routing_diverse.yaml</code>:
+</p>
+
+<table>
+  <thead>
+    <tr><th>Tier</th><th>GENERATIVE</th><th>JUDGMENT</th><th>CHEAP_DETERMINISTIC</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>LOW</td> <td>claude-haiku-4-5</td><td>claude-opus-4-7</td> <td>claude-haiku-4-5</td></tr>
+    <tr><td>MID</td> <td>claude-sonnet-4-5</td><td>claude-opus-4-7</td><td>claude-haiku-4-5</td></tr>
+    <tr><td>HIGH</td><td>claude-opus-4-7</td> <td>claude-opus-4-7</td> <td>claude-haiku-4-5</td></tr>
+  </tbody>
+</table>
+
+<details class="nested">
+  <summary>Which agent lands where</summary>
+  <div class="inner">
+    <ul>
+      <li><strong>Landscape</strong> → GENERATIVE · MID</li>
+      <li><strong>Researcher</strong> → GENERATIVE · HIGH</li>
+      <li><strong>Analyst (explore)</strong> → GENERATIVE · MID</li>
+      <li><strong>Analyst (verify, adversarial)</strong> → JUDGMENT · MID <span class="ref">— different model family from explore</span></li>
+      <li><strong>Scout</strong> → CHEAP_DETERMINISTIC · MID</li>
+    </ul>
+  </div>
+</details>
+
+<!-- ======================================================= -->
+<h2>Events &amp; observability</h2>
+
+<p>
+  <code>EventPublisher</code> (<code class="ref">agents/events.py:51-108</code>) is a
+  protocol with six hooks. The CLI run path uses a no-op publisher; the server path uses
+  <code>SessionPublisher</code>, which writes events into a <code>RunSession</code> for
+  WebSocket replay.
+</p>
+
+<details class="nested">
+  <summary>Hook list</summary>
+  <div class="inner">
+    <ul>
+      <li><code>on_agent_start(agent_id, agent_type, goal, tier, role, model_id, mode)</code></li>
+      <li><code>on_agent_done(agent_id, agent_type, status, verdict)</code></li>
+      <li><code>on_note_created(note)</code></li>
+      <li><code>on_note_replaced(note)</code></li>
+      <li><code>on_tool_start(agent_id, tool_call_id, tool, summary)</code></li>
+      <li><code>on_tool_end(agent_id, tool_call_id, tool, status, summary, duration_ms)</code></li>
+      <li><code>on_token_usage(agent_id, agent_type, model_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)</code></li>
+    </ul>
+  </div>
+</details>
+
+<!-- ======================================================= -->
+<h2>Design principles</h2>
+<ol>
+  <li><strong>Memory is the graph.</strong> No RunState, no <code>agent_outputs</code>. Agents communicate through shared NoteMemory.</li>
+  <li><strong>Tool commits are terminal.</strong> Each agent type has exactly one commit tool (<code>answer_question</code>, <code>write_landscape_brief</code>, <code>commit_scout_result</code>).</li>
+  <li><strong>URL dedup at creation.</strong> Scouts and landscape can race; <code>find_source_by_url</code> guarantees idempotency.</li>
+  <li><strong>Tier-conditional routing.</strong> Verify/adversarial always come from a different model family than explore.</li>
+  <li><strong>Multi-reader sources.</strong> <code>ReadingEntry</code> stack lets N analysts read the same source for different questions without overwriting.</li>
+  <li><strong>Progressive disclosure up the tree.</strong> Researcher never sees raw source text — only scout previews + analyst syntheses. Analyst never calls search directly — scout does.</li>
+  <li><strong>Async concurrency with locked mutations.</strong> PydanticAI fans out parallel tool calls; NoteMemory serializes writes under a lock; contextvars propagate agent_id.</li>
+</ol>
+
+<footer>
+  Generated from <code>src/deep_research_agent/</code>. Reflects the code as it
+  exists today.
+</footer>
+
+</div>
+
+<script>
+  // Expand/collapse all
+  document.getElementById('expand-all').addEventListener('click', () => {
+    document.querySelectorAll('details').forEach(d => d.open = true);
+  });
+  document.getElementById('collapse-all').addEventListener('click', () => {
+    document.querySelectorAll('details').forEach(d => d.open = false);
+  });
+</script>
+
+</body>
+</html>

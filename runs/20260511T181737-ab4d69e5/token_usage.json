@@ -1,0 +1,68 @@
+{
+  "grand_totals": {
+    "by_task_type": {
+      "ANALYST": 7,
+      "LANDSCAPE": 1,
+      "RESEARCHER": 1,
+      "SCOUT": 29
+    },
+    "cache_read_tokens": 763136,
+    "cache_write_tokens": 0,
+    "calls": 38,
+    "input_tokens": 22539101,
+    "output_tokens": 321664,
+    "tool_calls": 1348,
+    "total_tokens": 22860765
+  },
+  "per_model": {
+    "anthropic/claude-haiku-4-5": {
+      "by_task_type": {
+        "SCOUT": 29
+      },
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls": 29,
+      "input_tokens": 14634394,
+      "output_tokens": 209712,
+      "tool_calls": 1099,
+      "total_tokens": 14844106
+    },
+    "anthropic/claude-opus-4-7": {
+      "by_task_type": {
+        "RESEARCHER": 1
+      },
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls": 1,
+      "input_tokens": 283604,
+      "output_tokens": 13792,
+      "tool_calls": 9,
+      "total_tokens": 297396
+    },
+    "anthropic/claude-sonnet-4-6": {
+      "by_task_type": {
+        "ANALYST": 6,
+        "LANDSCAPE": 1
+      },
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "calls": 7,
+      "input_tokens": 6622447,
+      "output_tokens": 86338,
+      "tool_calls": 205,
+      "total_tokens": 6708785
+    },
+    "openai/gpt-5.5": {
+      "by_task_type": {
+        "ANALYST": 1
+      },
+      "cache_read_tokens": 763136,
+      "cache_write_tokens": 0,
+      "calls": 1,
+      "input_tokens": 998656,
+      "output_tokens": 11822,
+      "tool_calls": 35,
+      "total_tokens": 1010478
+    }
+  }
+}
