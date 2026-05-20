@@ -8,6 +8,8 @@ verbatim quote on a typed source note.
 
 The whole system is built on [pydantic-ai](https://ai.pydantic.dev/). Agents talk to each other only through a shared, async-safe **note graph**.
 
+![Live UI mid-run](docs/images/live-ui-overview.png)
+
 ## What this gets you
 
 - **Evidence-grounded output.** Every material claim in the final report
@@ -34,7 +36,12 @@ All LLM traffic goes through one OpenAI-compatible endpoint (a LiteLLM
 router, typically). Which model answers each `(role, tier)` pair is decided
 by a **routing config** — see `config/routing_diverse.yaml` for the default
 policy (Claude for generative, GPT for judgment, Haiku for cheap
-deterministic).
+deterministic). The live UI exposes per-run overrides for budgets and the
+model assigned to each `(role, tier)` slot:
+
+<p align="center">
+  <img src="docs/images/run-settings.png" alt="Run settings panel" width="420">
+</p>
 
 ## Usage
 
@@ -52,6 +59,19 @@ uv run dra serve
 uv run dra serve --host 0.0.0.0 --port 8080
 ```
 
+## Note graph
+
+The note graph is the system's central state — every agent reads from
+and writes to it. Triangles are sub-questions, circles (`s`) are source
+notes, edges record which sources each analyst pulled into which
+sub-question. A few examples from real runs:
+
+<p align="center">
+  <img src="docs/images/note-graph-spread.png" alt="Note graph — wide spread across sub-questions" width="32%">
+  <img src="docs/images/note-graph-clustered.png" alt="Note graph — dense cluster" width="32%">
+  <img src="docs/images/note-graph-hub.png" alt="Note graph — hub-and-spoke" width="32%">
+</p>
+
 ## Where to go next
 
 - **[docs/architecture.md](docs/architecture.md)** — how the agent actually
@@ -65,7 +85,6 @@ uv run dra serve --host 0.0.0.0 --port 8080
 ```
 src/deep_research_agent/   # all code
 config/                    # routing policies (yaml) + local.toml (gitignored)
-runs/                      # per-run artifacts (gitignored)
-design/                    # phase-0 research + phase-1 design notes (historical)
-docs/                      # current architecture + codebase map
+runs/                      # per-run artifacts
+docs/                      # architecture, codebase map, experiments, example reports
 ```
