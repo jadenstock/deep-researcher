@@ -1,0 +1,83 @@
+{
+  "run_id": "20260518T222827-11dd2f2e",
+  "query": "What are the empirically validated defenses against prompt injection in agentic LLM systems with tool-calling capabilities, and where does the gap between frontier lab safety claims and independent red-team findings reveal architectural blind spots? ## Purpose  Tailor research subquestions to the production agentic stack described below. The three systems are the deployment targets the findings will be applied against. Bias source filtering and synthesis toward architectures that resemble these.  This context describes where the findings will be applied. It does not narrow the original research question. Both clauses of the prompt \u2014 empirical defenses, and the frontier-lab-vs-red-team credibility gap \u2014 remain primary. Treat the architectures below as deployment context for shaping examples and prioritization, not as a scope reduction.  ---  ## AIMIS (Agentic Memory and Intelligence System)  AIMIS is a Python-backed agentic memory layer running on PostgreSQL + pgvector. Content flows through a five-stage PSMER pipeline (Parse, Store, Match, Enrich, Respond) ingesting security content from ServiceNow SIR cases, external threat intel feeds, and analyst-authored case narratives. Three memory scopes are maintained: episodic (case events, persisted as `memory_type=\"episodic\"`), semantic (patterns consolidated from episodes), and procedural (runbook templates extracted via skill consolidation).  Write path is atomic at the L0 storage layer: all six index signals (384-dim MiniLM-L6-v2 embedding, BM25 tokens, entity_refs, topic_tags, metadata, trust_tier) are pre-computed before insertion, so partial state is structurally impossible. Trust-tier weighting is the primary content-quality signal at the storage layer; LLM-generated content writes back at trust_tier=0.25.  Retrieval implements HSR-RAG across L0\u2013L8. L0 raw fragments, L1 embedding compute, L3 dense search via pgvector IVFFlat, L4 BM25 via PostgreSQL full-text search, L5 document grouping, L6 RRF fusion against locked weights (Semantic \u00d72.5, Topic \u00d71.5, Entity \u00d71.3, BM25 \u00d70.4, Authority \u00d70.5) using GIN-indexed entity_refs and topic_tags, L7 authority re-ranking by trust_tier, L8 five-section context payload assembly handed to the LLM Router for Claude Sonnet response generation with structured JSON output.  A parallel IOC graph (NetworkX-backed, ~400 LOC) holds six IOC types (address, host, url, email, file, asn) with four edge types, deduplicated via SHA256(value), persisted to JSON. Recall consumption: downstream agents call `recall-agent.py`, which searches all memory types via embedding similarity + BM25 + optional time-range filtering, ranks by the same fusion weights, and returns formatted JSON context that lands directly in the consuming model's prompt.  ---  ## IQ (Self-Aware Agent Architecture)  IQ trains autonomous agents through a seven-stage developmental lifecycle: Birth (soul document instillation), Infancy (raw signal accumulation), Childhood (pattern recognition via Learning Progress), Adolescence (gap awareness and autonomous planning), Competency (mastery threshold), Specialization (Lamarckian-inheritance fork into sub-specialist), Orchestration (meta-level coordination across forks).  The competency engine ships in two implementations behind a common protocol, selectable at runtime via a factory. The binary variant is a four-parameter BKT hidden Markov model (defaults P(L0)=0.10, P(T)=0.05, P(G)=0.33, P(S)=0.10) tracking a single P(Ln) per signal category with novelty-modulated transition; mastery threshold 0.95. The production variant is a 21-state Multi-State BKT (MS-BKT) maintaining a discrete posterior over knowledge levels (0% to 100% in equal increments) per category. MS-BKT runs a sliding observation window of 75, recency-weighted log-space Bayesian updates (R=0.05), per-category guess/slip parameters with sparse-category interpolation toward defaults under 20 observations, and MAP estimation for mastery readout. An optional TD averaging layer smooths the readout across a ring buffer of recent posteriors; an optional FAST emission overrides the per-state likelihood with a logistic difficulty modifier driven by signal rarity, complexity, and novelty.  Six signal categories are tracked (Identity, Detection, Risk, Network, Endpoint, Cloud), each with its own guess/slip parameters (Identity p_g=0.17, Cloud 0.12, Detection 0.08, Risk 0.07, Endpoint 0.05, slip 0.10 across all). Delegation gates fire at MS-BKT mastery >= 0.70: 75% autonomous tool execution, 25% routed to human oversight.  Fork payload assembly draws from a SQLite-backed EntityProfileStore (12GB+ at F500 scale, keyed by `canonical_id` + `entity_type`), a ThreatKnowledgeGraph (subject-predicate-object triples), and a ProceduralSkillLibrary, allocated against a default $4,350 token budget across task anchor, entity context, knowledge graph, and procedural sections. EntityProfile retrieval at F500 scale requires hybrid pre-filter + semantic rank + budget pack; linear scan is non-viable. Forks dispatch by anomaly_score query with 50-iteration cooldown per entity to avoid thrashing. Output: Markdown payload with YAML frontmatter + body, written to disk for downstream consumption.  Sub-specialist architecture (18 specialists across 5 departments) emerges via specialization fork: parent BKT parameters carry forward; entity profiles, skill libraries, and case histories diverge per specialist. CurriculumSampler biases signal selection toward low-mastery categories using Efraimidis-Spirakis weighted sampling without replacement.  Inference is mediated by a MessageBus with eight channels (signals, predictions, lp_scores, reflections, critiques, mastery, actions, consolidation) feeding the CoreLoop for actor/witness reflection, mastery scoring, and delegation.  ---  ## Solis (Agent Orchestration Layer)  Status: pre-build. Architecture and design documentation exist; no Python modules implemented.  Solis is the dispatch layer for IQ-trained agents into dynamic task forces. Five departments (Threat Hunt, Incident Response, Detection & Response Engineering, Vulnerability Management, Cyber Threat Intelligence) field 18 sub-specialists assembled on demand per incident type. Orchestration model is task-force assembly rather than sequential pipeline: lead and support agents share context via in-memory payloads, no file-based handoffs. Three routing strategies are under evaluation: static rule-based, tag-based matching, orchestrator-agent.  Solis-deployed agents consume external threat feeds, a ThreatConnect-sourced IOC corpus, and user-authored case narratives. Memory persistence inherits from IQ's episodic and semantic layers. Tool grants are scoped per specialist via actor-declared capabilities. Tool-execution gates are governed by BKT delegation thresholds inherited from IQ. Direct LLM tool-calling is not wired yet; current design routes agent decisions through a SOAR control plane.  ---  ## What the Output Will Be Used For  The findings feed four downstream artifacts:  1. A threat-model document for AIMIS ingest paths and recall consumption 2. Design constraints on IQ fork payload assembly, EntityProfile retrieval, and per-specialist tool-grant scoping 3. Architecture decisions for Solis agent dispatch, memory inheritance, and tool-execution gates 4. An ADR recording defense decisions, the evidence base behind them, and residual risks accepted  Findings should be specific enough to be quoted directly into those artifacts.",
+  "finished": true,
+  "started_at": "2026-05-18T22:28:27.646939+00:00",
+  "finished_at": "2026-05-18T23:23:39.518200+00:00",
+  "duration_s": 3311.871261,
+  "report_note_id": "question-84cabe929d97",
+  "tokens": {
+    "per_model": {
+      "anthropic/claude-sonnet-4-6": {
+        "calls": 48,
+        "input_tokens": 27988594,
+        "output_tokens": 388856,
+        "total_tokens": 28377450,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "tool_calls": 1562,
+        "by_task_type": {
+          "LANDSCAPE": 1,
+          "SCOUT": 40,
+          "ANALYST": 7
+        }
+      },
+      "openai/gpt-5.4": {
+        "calls": 2,
+        "input_tokens": 950645,
+        "output_tokens": 15542,
+        "total_tokens": 966187,
+        "cache_read_tokens": 636416,
+        "cache_write_tokens": 0,
+        "tool_calls": 36,
+        "by_task_type": {
+          "ANALYST": 2
+        }
+      },
+      "anthropic/claude-opus-4-7": {
+        "calls": 1,
+        "input_tokens": 331075,
+        "output_tokens": 21852,
+        "total_tokens": 352927,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "tool_calls": 10,
+        "by_task_type": {
+          "RESEARCHER": 1
+        }
+      }
+    },
+    "grand_totals": {
+      "calls": 51,
+      "input_tokens": 29270314,
+      "output_tokens": 426250,
+      "total_tokens": 29696564,
+      "cache_read_tokens": 636416,
+      "cache_write_tokens": 0,
+      "tool_calls": 1608,
+      "by_task_type": {
+        "LANDSCAPE": 1,
+        "SCOUT": 40,
+        "ANALYST": 9,
+        "RESEARCHER": 1
+      }
+    }
+  },
+  "notes_by_type": {
+    "question_note": 10,
+    "landscape_note": 1,
+    "source_note": 383
+  },
+  "sources_by_state": {
+    "FETCHED": 286,
+    "ANALYZED": 68,
+    "SCOUTED": 29
+  },
+  "questions_by_status": {
+    "OPEN": 0,
+    "IN_PROGRESS": 0,
+    "SYNTHESIZED": 10
+  },
+  "tasks": 0,
+  "notes_total": 394
+}

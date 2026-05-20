@@ -1,5 +1,6 @@
 # Design docs — kept locally, not tracked
 /design/
+/dev-history/
 
 # Per-run outputs + Obsidian vaults
 # Not gitignoreing for now so others may pull runs to have pre-populated history and example reports.

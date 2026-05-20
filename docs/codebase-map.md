@@ -256,10 +256,9 @@ FastAPI app + live UI. Mirrors the CLI path but streams events.
 | `runs/<run_id>/` | Artifacts: report.md, report.json, notes.json, token_usage.json, run.log | Written by CLI path and `server/runner.py` |
 | `/api/ws/{run_id}` | Event stream (JSON-per-message) | UI's single-page client |
 
-## What's *not* in the codebase (anymore)
+## What's *not* in the codebase
 
-If you came from the phase-1 design under `design/` or old `docs/` pages,
-be aware that the current architecture has no:
+The current architecture has no:
 
 - Central scheduler / task graph / deterministic dispatcher.
 - Separate `SEARCH` / `SCAN_SEARCH_RESULTS` / `FETCH_AND_EXTRACT` /
@@ -268,6 +267,5 @@ be aware that the current architecture has no:
 - `tiering/`, `confidence.py`, `phases/`, `replanner/`, `patterns/`,
   `export/`, `scheduler/`, `executor/` modules.
 
-Those ideas were the phase-1 technical design. The codebase pivoted to an
-agentic shape — budgets + prompts + tools do the work the scheduler used
-to do.
+The codebase is agentic: budgets + prompts + tools do the work that a
+scheduler/task-graph would.
