@@ -13,6 +13,7 @@ layer on top once we see what the agents actually reach for.
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Annotated
 
@@ -561,3 +562,81 @@ async def write_landscape_brief(
         content=brief_markdown,
     )
     return f"committed landscape brief to {existing.id}"
+
+
+# --- Builders for closure-scoped tools --------------------------------------
+# Tools that need to capture a per-run/session value (a root question id, a
+# mutable budget box) are built via factories instead of being defined as
+# top-level functions. Researcher and chat agents both use the same builders.
+
+
+def build_research_state_tool(
+    root_question_id: NoteID,
+    budget_box: list[int],
+) -> Callable[[RunContext[Deps]], Awaitable[dict[str, object]]]:
+    """Build the `get_research_state` tool with a captured root + budget.
+
+    The returned coroutine has `__name__ == "get_research_state"` (via
+    `functools.wraps` in `@instrumented`), so the tool name pydantic-ai
+    derives is identical to the previous inline closure. Researcher
+    passes its analyst-dispatch budget; the chat agent passes its
+    session budget (0 for Ask mode, since no dispatches are possible).
+    """
+
+    @instrumented
+    async def get_research_state(ctx: RunContext[Deps]) -> dict[str, object]:
+        """Compact snapshot of the note graph for the orchestrator.
+
+        Returns:
+          {
+            "root_question": {...} | None,
+            "questions": [{id, question, status, confidence,
+                           parent_id, n_sources_cited}, ...],
+            "sources_by_tier": {"unclassified": N, "1": N, "2": N, ...},
+            "sources_by_state": {"SCOUTED": N, "FETCHED": N, "ANALYZED": N},
+            "budget": {"analyst_dispatches_remaining": int},
+          }
+
+        This is the primary way to inspect the note graph between rounds
+        without pulling raw source content into the orchestrator's context.
+        """
+        questions: list[dict[str, object]] = []
+        root_summary: dict[str, object] | None = None
+        for n in ctx.deps.memory.list_by_type(NoteType.QUESTION):
+            meta = n.metadata
+            if not isinstance(meta, QuestionMetadata):
+                continue
+            entry = {
+                "id": n.id,
+                "question": n.description or n.title,
+                "status": meta.status,
+                "confidence": meta.confidence,
+                "parent_id": meta.parent_question_id,
+                "n_sources_cited": len(meta.sources_cited),
+            }
+            if n.id == root_question_id:
+                root_summary = entry
+            else:
+                questions.append(entry)
+
+        sources_by_tier: dict[str, int] = {}
+        sources_by_state: dict[str, int] = {}
+        for n in ctx.deps.memory.list_by_type(NoteType.SOURCE):
+            meta = n.metadata
+            if not isinstance(meta, SourceNoteMetadata):
+                continue
+            tier_key = str(meta.tier.value) if meta.tier is not None else "unclassified"
+            sources_by_tier[tier_key] = sources_by_tier.get(tier_key, 0) + 1
+            sources_by_state[meta.state.value] = sources_by_state.get(meta.state.value, 0) + 1
+
+        return {
+            "root_question": root_summary,
+            "questions": questions,
+            "sources_by_tier": sources_by_tier,
+            "sources_by_state": sources_by_state,
+            "budget": {
+                "analyst_dispatches_remaining": budget_box[0],
+            },
+        }
+
+    return get_research_state

@@ -53,12 +53,15 @@ class ConfidenceLevel(StrEnum):
 
 
 class AgentType(StrEnum):
-    """The four agent roles in the research pipeline."""
+    """Agent roles. The first four are the research pipeline; CHAT is
+    the post-report interactive agent that reads / extends a finished
+    run's note graph."""
 
     LANDSCAPE = "LANDSCAPE"
     SCOUT = "SCOUT"
     ANALYST = "ANALYST"
     RESEARCHER = "RESEARCHER"
+    CHAT = "CHAT"
 
 
 class AgentRunStatus(StrEnum):

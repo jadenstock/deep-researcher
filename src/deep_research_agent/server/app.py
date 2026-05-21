@@ -23,6 +23,7 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from ..agents.chat import chat_default_model_id
 from ..agents.run_config import RunConfig, defaults_payload
 from ..config import (
     LocalConfig,
@@ -34,6 +35,7 @@ from ..retrieval import apply_retrieval_rate_limits
 from ..run_artifacts import summarize_notes
 from ..run_id import new_run_id
 from . import history
+from .chat import ChatRegistry, hydrate_chat_session, run_chat_turn
 from .events import SessionRegistry
 from .runner import run_session
 
@@ -99,6 +101,16 @@ class RunRequest(BaseModel):
     config: dict | None = None
 
 
+class ChatMessageRequest(BaseModel):
+    mode: str = "ask"
+    content: str
+    # Optional per-message model override; when None, falls back to
+    # the routing config's GENERATIVE/MID default. Validated only at
+    # the LiteLLM router on first use, so any string the catalog
+    # exposes works.
+    model_id: str | None = None
+
+
 @dataclass(frozen=True)
 class ServerState:
     """Holds the configs + registry for the lifetime of the server."""
@@ -107,6 +119,7 @@ class ServerState:
     local: LocalConfig
     runs_dir: Path
     registry: SessionRegistry
+    chat_registry: ChatRegistry
 
 
 def create_app(
@@ -124,6 +137,7 @@ def create_app(
         local=local,
         runs_dir=Path(runs_dir),
         registry=SessionRegistry(),
+        chat_registry=ChatRegistry(),
     )
 
     app = FastAPI(title="deep-research-agent live UI")
@@ -277,6 +291,117 @@ def create_app(
             "tasks": tasks_count,
             "notes_total": len(session.notes),
         }
+
+    # --- Chat endpoints (Phase 1: Ask mode over a finished run) -------------
+
+    @app.post("/api/runs/{run_id}/chat/sessions")
+    async def chat_start_session(run_id: str) -> dict:
+        """Open a chat session over a finished run's note graph.
+
+        Hydrates a NoteMemory from the run's persisted notes.json and
+        returns a session_id the client connects via WS to drive a
+        conversation.
+        """
+        if not history.is_valid_run_id(run_id):
+            raise HTTPException(status_code=400, detail="invalid run_id")
+        raw_notes = await asyncio.to_thread(history.read_notes, state.runs_dir, run_id)
+        if raw_notes is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        try:
+            session = await hydrate_chat_session(
+                run_id=run_id,
+                raw_notes=raw_notes,
+                routing=state.routing,
+                local=state.local,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        state.chat_registry.add(session)
+        logger.info(
+            "chat session started session_id=%s run_id=%s notes=%d",
+            session.session_id,
+            run_id,
+            len(list(session.deps.memory.all())),
+        )
+        return {
+            "session_id": session.session_id,
+            "run_id": run_id,
+            "root_question_id": session.root_question_id,
+            "default_model_id": chat_default_model_id(session.deps),
+        }
+
+    @app.post("/api/runs/{run_id}/chat/sessions/{session_id}/messages")
+    async def chat_send_message(run_id: str, session_id: str, body: ChatMessageRequest) -> dict:
+        """Submit a user message; the server runs the turn in the background.
+
+        Returns the turn_id immediately (202-style). Progress + the
+        eventual assistant reply land on the WS as
+        chat_turn_started / chat_message_assistant / chat_turn_done.
+        """
+        session = state.chat_registry.get(session_id)
+        if session is None or session.run_id != run_id:
+            raise HTTPException(status_code=404, detail="chat session not found")
+        if not body.content.strip():
+            raise HTTPException(status_code=400, detail="content must not be empty")
+        if body.mode != "ask":
+            # Phase 1: only Ask mode wired through the agent. Phase 2/3
+            # add investigate / new_report.
+            raise HTTPException(
+                status_code=400, detail=f"chat mode {body.mode!r} not supported yet"
+            )
+        if session.pending_turn is not None and not session.pending_turn.done():
+            raise HTTPException(status_code=409, detail="another turn is in progress")
+
+        turn_id = f"turn-{len(session.history):04d}"
+        session.pending_turn = asyncio.create_task(
+            run_chat_turn(
+                session=session,
+                mode="ask",
+                content=body.content,
+                turn_id=turn_id,
+                model_id_override=body.model_id,
+            )
+        )
+        return {"turn_id": turn_id, "session_id": session_id}
+
+    @app.get("/api/runs/{run_id}/chat/sessions/{session_id}")
+    async def chat_get_session(run_id: str, session_id: str) -> dict:
+        session = state.chat_registry.get(session_id)
+        if session is None or session.run_id != run_id:
+            raise HTTPException(status_code=404, detail="chat session not found")
+        return {
+            "session_id": session.session_id,
+            "run_id": session.run_id,
+            "root_question_id": session.root_question_id,
+            "created_at": session.created_at.isoformat(),
+            "last_activity_at": session.last_activity_at.isoformat(),
+            "events": [e.model_dump(mode="json") for e in session.history],
+        }
+
+    @app.websocket("/api/ws/chat/{session_id}")
+    async def chat_ws(websocket: WebSocket, session_id: str) -> None:
+        session = state.chat_registry.get(session_id)
+        if session is None:
+            await websocket.close(code=4040, reason="chat session not found")
+            return
+        await websocket.accept()
+        queue = session.subscribe()
+        n_sent = 0
+        try:
+            history_snapshot = list(session.history)
+            for event in history_snapshot:
+                await websocket.send_text(event.model_dump_json())
+                n_sent += 1
+            while True:
+                event = await queue.get()
+                await websocket.send_text(event.model_dump_json())
+                n_sent += 1
+        except WebSocketDisconnect:
+            logger.info("chat ws disconnect session=%s sent=%d", session_id, n_sent)
+        except Exception:
+            logger.exception("chat ws error session=%s sent=%d", session_id, n_sent)
+        finally:
+            session.unsubscribe(queue)
 
     @app.websocket("/api/ws/{run_id}")
     async def ws(websocket: WebSocket, run_id: str) -> None:

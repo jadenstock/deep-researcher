@@ -666,6 +666,95 @@
     100% { opacity: 1;   transform: scale(1);   box-shadow: 0 0 0 0 rgba(100, 200, 255, 0); }
   }
 
+  /* Chat view — interactive Q&A over a finished run's note graph. */
+  #chat-view { display: flex; flex-direction: column; min-height: 0; min-width: 0;
+               background: var(--bg); }
+  #chat-view[hidden] { display: none !important; }
+  #chat-view .chat-container {
+    display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0;
+    max-width: 960px; width: 100%; margin: 0 auto;
+    padding: 16px 24px 24px;
+  }
+  #chat-view .chat-head {
+    display: flex; gap: 12px; align-items: center; padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  #chat-view .chat-modes { display: flex; gap: 4px; }
+  #chat-view .chat-mode {
+    background: var(--panel); border: 1px solid var(--border);
+    color: var(--muted); padding: 5px 12px; border-radius: 14px;
+    font-size: 11px; cursor: pointer; transition: all 0.12s;
+  }
+  #chat-view .chat-mode.active {
+    background: var(--accent); border-color: var(--accent);
+    color: #001018; font-weight: 600;
+  }
+  #chat-view .chat-mode:disabled {
+    cursor: not-allowed; opacity: 0.45;
+  }
+  #chat-view .chat-model {
+    background: var(--panel); border: 1px solid var(--border);
+    color: var(--text); padding: 4px 8px; border-radius: 4px;
+    font-size: 11px; font-family: ui-monospace, Menlo, monospace;
+    max-width: 240px;
+  }
+  #chat-view .chat-model:disabled { opacity: 0.5; cursor: not-allowed; }
+  #chat-view .chat-status {
+    margin-left: auto; color: var(--muted); font-size: 11px;
+    font-family: ui-monospace, Menlo, monospace;
+  }
+  #chat-view .chat-status.thinking { color: var(--accent); }
+  #chat-view .chat-status.error { color: #ff7878; }
+  #chat-view .chat-messages {
+    flex: 1 1 auto; overflow-y: auto; padding: 16px 0;
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  #chat-view .chat-empty {
+    color: var(--muted); font-style: italic; text-align: center; padding: 40px 0;
+  }
+  #chat-view .chat-msg {
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  #chat-view .chat-msg .who {
+    font-size: 10px; color: var(--muted); letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  #chat-view .chat-msg .body {
+    background: var(--panel); border: 1px solid var(--border);
+    padding: 10px 14px; border-radius: 8px;
+    line-height: 1.55; font-size: 13px;
+    white-space: pre-wrap; word-wrap: break-word;
+  }
+  #chat-view .chat-msg.user .body {
+    background: var(--panel-2); align-self: flex-end; max-width: 70%;
+  }
+  #chat-view .chat-msg.assistant .body {
+    background: var(--panel);
+  }
+  #chat-view .chat-msg.assistant .body p:first-child { margin-top: 0; }
+  #chat-view .chat-msg.assistant .body p:last-child { margin-bottom: 0; }
+  #chat-view .chat-msg.assistant .body code {
+    background: var(--panel-2); padding: 1px 4px; border-radius: 3px;
+    font-size: 12px;
+  }
+  #chat-view .chat-form {
+    display: flex; gap: 8px; padding-top: 12px; border-top: 1px solid var(--border);
+  }
+  #chat-view .chat-form textarea {
+    flex: 1; resize: vertical; min-height: 36px; max-height: 200px;
+    background: var(--panel); border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; padding: 8px 10px; font-size: 13px;
+    font-family: inherit;
+  }
+  #chat-view .chat-form textarea:focus { outline: none; border-color: var(--accent); }
+  #chat-view .chat-form button {
+    background: var(--accent); color: #001018; border: none;
+    padding: 0 18px; border-radius: 6px; font-weight: 600; cursor: pointer;
+  }
+  #chat-view .chat-form button:disabled {
+    opacity: 0.45; cursor: not-allowed;
+  }
+
   /* Summary view — end-of-run debrief: tokens, counts, duration. */
   #summary-view { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
   #summary-view[hidden] { display: none !important; }
@@ -811,6 +900,7 @@
     <button class="tab active" id="tab-graph" data-view="live" role="tab">Graph</button>
     <button class="tab" id="tab-report" data-view="report" role="tab" hidden>Report</button>
     <button class="tab" id="tab-summary" data-view="summary" role="tab" hidden>Summary</button>
+    <button class="tab" id="tab-chat" data-view="chat" role="tab" hidden>Chat</button>
     <button class="tab" id="tab-history" data-view="history" role="tab">History</button>
   </div>
   <div id="tokens" title="Total tokens used by this run (hover for per-model breakdown)"><span class="label">tokens:</span> <span class="n" id="tokens-in">0</span> in / <span class="n" id="tokens-out">0</span> out</div>
@@ -869,6 +959,28 @@
     <div id="history-list"><div class="history-empty">Loading…</div></div>
   </div>
 </section>
+<section id="chat-view" hidden>
+  <div class="chat-container">
+    <div class="chat-head">
+      <div class="chat-modes" role="tablist" aria-label="Chat mode">
+        <button class="chat-mode active" data-mode="ask" type="button">Ask</button>
+        <button class="chat-mode" data-mode="investigate" type="button" disabled title="Coming in Phase 2">Investigate</button>
+        <button class="chat-mode" data-mode="new_report" type="button" disabled title="Coming in Phase 3">New report</button>
+      </div>
+      <select id="chat-model" class="chat-model" title="Model used for the next chat turn" disabled>
+        <option value="">model: default</option>
+      </select>
+      <div class="chat-status" id="chat-status">No session</div>
+    </div>
+    <div id="chat-messages" class="chat-messages">
+      <div class="chat-empty">Open a finished run from History, then ask a question about its sources.</div>
+    </div>
+    <form id="chat-form" class="chat-form">
+      <textarea id="chat-input" placeholder="Ask about this run's sources, claims, or findings…" rows="2" disabled></textarea>
+      <button type="submit" id="chat-send" disabled>Send</button>
+    </form>
+  </div>
+</section>
 <div id="completion-banner" hidden>
   <span class="banner-text" id="banner-text"></span>
   <a class="banner-link" id="banner-link">See summary</a>
@@ -903,10 +1015,18 @@
   const tabReport = document.getElementById("tab-report");
   const tabSummary = document.getElementById("tab-summary");
   const tabHistory = document.getElementById("tab-history");
+  const tabChat = document.getElementById("tab-chat");
   const summaryView = document.getElementById("summary-view");
   const summaryContent = document.getElementById("summary-content");
   const historyView = document.getElementById("history-view");
   const historyListEl = document.getElementById("history-list");
+  const chatView = document.getElementById("chat-view");
+  const chatMessagesEl = document.getElementById("chat-messages");
+  const chatFormEl = document.getElementById("chat-form");
+  const chatInputEl = document.getElementById("chat-input");
+  const chatSendBtn = document.getElementById("chat-send");
+  const chatStatusEl = document.getElementById("chat-status");
+  const chatModelEl = document.getElementById("chat-model");
   const bannerEl = document.getElementById("completion-banner");
   const bannerTextEl = document.getElementById("banner-text");
   const bannerLinkEl = document.getElementById("banner-link");
@@ -982,21 +1102,29 @@
     reportView.hidden = view !== "report";
     summaryView.hidden = view !== "summary";
     historyView.hidden = view !== "history";
+    chatView.hidden = view !== "chat";
     tabGraph.classList.toggle("active", view === "live");
     tabReport.classList.toggle("active", view === "report");
     tabSummary.classList.toggle("active", view === "summary");
     tabHistory.classList.toggle("active", view === "history");
+    tabChat.classList.toggle("active", view === "chat");
     // Cytoscape needs a resize + relayout kick when the graph container
     // transitions from hidden to visible — it caches container dims.
     if (view === "live") {
       setTimeout(() => { try { cy.resize(); cy.fit(undefined, 40); } catch {} }, 0);
     }
     if (view === "history") loadHistory();
+    if (view === "chat") {
+      // Lazy-create the chat session for the loaded historical run.
+      ensureChatSessionForCurrentRun();
+      setTimeout(() => { try { chatInputEl.focus(); } catch {} }, 0);
+    }
   }
   tabGraph.addEventListener("click", () => switchView("live"));
   tabReport.addEventListener("click", () => switchView("report"));
   tabSummary.addEventListener("click", () => switchView("summary"));
   tabHistory.addEventListener("click", () => switchView("history"));
+  tabChat.addEventListener("click", () => switchView("chat"));
 
   // Verification decision_notes (subtype "verification") get their own
   // visual treatment so checked claims stand out from AIMS / final-report
@@ -2130,6 +2258,8 @@
     tabSummary.hidden = true;
     tabSummary.classList.remove("flash");
     summaryContent.innerHTML = `<div class="summary-empty">Summary appears when the run finishes.</div>`;
+    tabChat.hidden = true;
+    teardownChat();
     hideBanner();
     closeNoteOverlay();
     switchView("live");
@@ -2320,6 +2450,8 @@
     tabSummary.hidden = true;
     tabSummary.classList.remove("flash");
     summaryContent.innerHTML = `<div class="summary-empty">Summary appears when the run finishes.</div>`;
+    tabChat.hidden = true;
+    teardownChat();
     hideBanner();
     closeNoteOverlay();
     switchView("live");
@@ -2462,8 +2594,217 @@
     } catch {}
 
     setStatus("history loaded");
+    // Reset any chat session bound to the previous run before
+    // exposing the Chat tab for this one.
+    teardownChat();
+    tabChat.hidden = false;
     switchView("report");
   }
+
+  // --- Chat (Phase 1: Ask mode over a finished historical run) ----------
+  // One chat session per loaded historical run. Lazy-created on first
+  // visit to the Chat tab; torn down when the user loads a different run.
+
+  let chatSessionId = null;
+  let chatRunId = null;
+  let chatWs = null;
+  let chatMode = "ask";
+  let chatCatalogLoaded = false;
+  // Track turn ids whose user-message we already optimistically rendered,
+  // so the WS replay/echo of chat_message_user doesn't double-paint.
+  const chatRenderedUserTurns = new Set();
+
+  async function ensureChatModelCatalog(defaultModelId) {
+    // Populate the model dropdown once per page load. Sources from
+    // /api/config/defaults — same catalog the run-settings panel uses,
+    // so chat picks from a vetted list. Runs idempotently; preserves
+    // user selection across re-calls.
+    const userSelected = chatModelEl.value;
+    if (chatCatalogLoaded) {
+      if (defaultModelId && !userSelected) chatModelEl.value = defaultModelId;
+      return;
+    }
+    try {
+      const res = await fetch("/api/config/defaults");
+      if (!res.ok) throw new Error(`${res.status}`);
+      const cfg = await res.json();
+      const catalog = cfg.model_catalog || {};
+      const groups = [
+        ["Generative", catalog.generative || []],
+        ["Judgment", catalog.judgment || []],
+      ];
+      // Build option list. First option is the routing default
+      // (sentinel value="" means "let server pick").
+      const opts = [`<option value="">model: default${defaultModelId ? " (" + escape(defaultModelId.split("/").pop()) + ")" : ""}</option>`];
+      for (const [label, models] of groups) {
+        if (!models.length) continue;
+        opts.push(`<optgroup label="${escape(label)}">`);
+        for (const m of models) {
+          opts.push(`<option value="${escape(m)}">${escape(m)}</option>`);
+        }
+        opts.push(`</optgroup>`);
+      }
+      chatModelEl.innerHTML = opts.join("");
+      chatCatalogLoaded = true;
+      if (defaultModelId && !userSelected) chatModelEl.value = ""; // leave on "default" sentinel
+    } catch (err) {
+      // Non-fatal: dropdown stays as the static placeholder.
+      console.warn("chat model catalog load failed", err);
+    }
+  }
+
+  function setChatStatus(text, level) {
+    chatStatusEl.textContent = text;
+    chatStatusEl.classList.remove("thinking", "error");
+    if (level) chatStatusEl.classList.add(level);
+  }
+
+  function teardownChat() {
+    if (chatWs) { try { chatWs.close(); } catch {} chatWs = null; }
+    chatSessionId = null;
+    chatRunId = null;
+    chatRenderedUserTurns.clear();
+    chatMessagesEl.innerHTML = `<div class="chat-empty">Open a finished run from History, then ask a question about its sources.</div>`;
+    chatInputEl.disabled = true;
+    chatSendBtn.disabled = true;
+    chatModelEl.disabled = true;
+    setChatStatus("No session");
+  }
+
+  function appendChatMessage(role, content) {
+    // Drop the empty-state placeholder on first message.
+    const empty = chatMessagesEl.querySelector(".chat-empty");
+    if (empty) empty.remove();
+    const wrap = document.createElement("div");
+    wrap.className = `chat-msg ${role}`;
+    const who = document.createElement("div");
+    who.className = "who";
+    who.textContent = role === "user" ? "you" : "assistant";
+    const body = document.createElement("div");
+    body.className = "body";
+    if (role === "assistant" && typeof marked !== "undefined") {
+      try { body.innerHTML = marked.parse(content || ""); }
+      catch { body.textContent = content || ""; }
+    } else {
+      body.textContent = content || "";
+    }
+    wrap.appendChild(who);
+    wrap.appendChild(body);
+    chatMessagesEl.appendChild(wrap);
+    chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+  }
+
+  function handleChatEvent(e) {
+    const k = e.kind;
+    const d = e.data || {};
+    if (k === "chat_message_user") {
+      if (chatRenderedUserTurns.has(d.turn_id)) return;
+      chatRenderedUserTurns.add(d.turn_id);
+      appendChatMessage("user", d.content || "");
+    } else if (k === "chat_message_assistant") {
+      appendChatMessage("assistant", d.content || "");
+    } else if (k === "chat_turn_started") {
+      setChatStatus("thinking…", "thinking");
+    } else if (k === "chat_turn_done") {
+      if (d.status === "error") {
+        setChatStatus(`error: ${d.error || "unknown"}`, "error");
+      } else {
+        setChatStatus("ready");
+      }
+      chatInputEl.disabled = false;
+      chatSendBtn.disabled = false;
+    }
+    // Other event kinds (tool_call_*, agent_started/done, token_usage)
+    // flow through the same WS so Phase 2 graph mutations will surface
+    // automatically. Phase 1 ignores them in chat UI.
+  }
+
+  async function ensureChatSessionForCurrentRun() {
+    if (!currentRunId) {
+      setChatStatus("Load a run from History first");
+      return;
+    }
+    if (chatSessionId && chatRunId === currentRunId && chatWs) {
+      return; // already have a session for this run
+    }
+    teardownChat();
+    setChatStatus("starting session…", "thinking");
+    let payload;
+    try {
+      const res = await fetch(`/api/runs/${currentRunId}/chat/sessions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+      payload = await res.json();
+    } catch (err) {
+      setChatStatus(`failed to start: ${err}`, "error");
+      return;
+    }
+    chatSessionId = payload.session_id;
+    chatRunId = currentRunId;
+    chatInputEl.disabled = false;
+    chatSendBtn.disabled = false;
+    chatModelEl.disabled = false;
+    await ensureChatModelCatalog(payload.default_model_id);
+    setChatStatus("ready");
+
+    const wsScheme = location.protocol === "https:" ? "wss" : "ws";
+    chatWs = new WebSocket(`${wsScheme}://${location.host}/api/ws/chat/${chatSessionId}`);
+    chatWs.onmessage = (ev) => {
+      try { handleChatEvent(JSON.parse(ev.data)); }
+      catch (err) { console.warn("chat ws bad payload", err); }
+    };
+    chatWs.onclose = () => { /* server-side TTL or user nav; no-op */ };
+    chatWs.onerror = () => { setChatStatus("ws error", "error"); };
+  }
+
+  chatFormEl.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const text = chatInputEl.value.trim();
+    if (!text || !chatSessionId || !chatRunId) return;
+    chatInputEl.value = "";
+    chatInputEl.disabled = true;
+    chatSendBtn.disabled = true;
+    try {
+      const body = { mode: chatMode, content: text };
+      const selectedModel = chatModelEl.value;
+      if (selectedModel) body.model_id = selectedModel;
+      const res = await fetch(
+        `/api/runs/${chatRunId}/chat/sessions/${chatSessionId}/messages`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        }
+      );
+      if (!res.ok) {
+        const errText = await res.text();
+        setChatStatus(`send failed: ${errText}`, "error");
+        chatInputEl.disabled = false;
+        chatSendBtn.disabled = false;
+        return;
+      }
+      const { turn_id } = await res.json();
+      // Optimistically render the user message; the matching
+      // chat_message_user echo on the WS will be deduped by turn_id.
+      chatRenderedUserTurns.add(turn_id);
+      appendChatMessage("user", text);
+    } catch (err) {
+      setChatStatus(`send failed: ${err}`, "error");
+      chatInputEl.disabled = false;
+      chatSendBtn.disabled = false;
+    }
+  });
+
+  // Cmd/Ctrl+Enter submits; plain Enter inserts a newline (textarea default).
+  chatInputEl.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+      e.preventDefault();
+      chatFormEl.requestSubmit();
+    }
+  });
 
   // Reduce a full Note JSON to the fields addOrUpdateNode needs to render
   // one graph node. Mirrors the payload shape that the live event stream

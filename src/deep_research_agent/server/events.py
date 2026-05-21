@@ -106,6 +106,10 @@ class Event(BaseModel):
         "token_usage",
         "run_done",
         "run_failed",
+        "chat_message_user",
+        "chat_message_assistant",
+        "chat_turn_started",
+        "chat_turn_done",
     ]
     at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     data: dict[str, Any]
@@ -244,6 +248,62 @@ def event_run_done(report_note_id: str | None) -> Event:
 
 def event_run_failed(error: str) -> Event:
     return Event(kind="run_failed", data={"error": error})
+
+
+# --- Chat events ------------------------------------------------------------
+# Phase 1 ships read-only chat over a finished run's note graph. The four
+# event kinds below carry the chat-specific UI updates; everything else
+# (agent_started/done, tool_call_*, note_created) reuses the live-run
+# event helpers above so the existing UI graph viz / tool ticker work
+# unchanged when investigate mode lands in Phase 2.
+
+
+def event_chat_message_user(
+    *, session_id: str, mode: str, content: str, turn_id: str
+) -> Event:
+    return Event(
+        kind="chat_message_user",
+        data={
+            "session_id": session_id,
+            "mode": mode,
+            "content": content,
+            "turn_id": turn_id,
+        },
+    )
+
+
+def event_chat_message_assistant(
+    *, session_id: str, content: str, turn_id: str
+) -> Event:
+    return Event(
+        kind="chat_message_assistant",
+        data={
+            "session_id": session_id,
+            "content": content,
+            "turn_id": turn_id,
+        },
+    )
+
+
+def event_chat_turn_started(*, session_id: str, turn_id: str, mode: str) -> Event:
+    return Event(
+        kind="chat_turn_started",
+        data={"session_id": session_id, "turn_id": turn_id, "mode": mode},
+    )
+
+
+def event_chat_turn_done(
+    *, session_id: str, turn_id: str, status: str, error: str | None = None
+) -> Event:
+    return Event(
+        kind="chat_turn_done",
+        data={
+            "session_id": session_id,
+            "turn_id": turn_id,
+            "status": status,
+            "error": error,
+        },
+    )
 
 
 # --- Per-run session --------------------------------------------------------

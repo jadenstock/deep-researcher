@@ -133,3 +133,31 @@ class NoteMemory:
 
     def all(self) -> Iterable[Note]:
         return list(self._notes.values())
+
+    @classmethod
+    async def from_notes(
+        cls,
+        notes: Iterable[Note],
+        publisher: EventPublisher | None = None,
+    ) -> NoteMemory:
+        """Rebuild a NoteMemory from a sequence of pre-existing Notes.
+
+        Used by chat sessions to hydrate the graph from a run's
+        persisted `notes.json`. Insertion order is preserved so the
+        secondary indexes (`_by_type`, `_by_source_url`) stay
+        consistent with how the run originally built up. The publisher
+        is intentionally None during rebuild — hydration is not a
+        user-visible event stream — so callers should pass the real
+        publisher only after the returned memory is fully populated by
+        constructing a new NoteMemory or reassigning `_publisher`.
+
+        Note: re-uses the standard `create()` path so URL dedup +
+        index updates run identically to a live run; concurrent calls
+        on the returned instance after hydration are safe.
+        """
+        memory = cls(publisher=NoOpPublisher())
+        for note in notes:
+            await memory.create(note)
+        if publisher is not None:
+            memory._publisher = publisher
+        return memory

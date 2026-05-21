@@ -84,3 +84,71 @@ async def drive_agent(
             raise
     finally:
         reset_current_agent_id(token)
+
+
+async def drive_agent_with_history(
+    *,
+    deps: Deps,
+    agent: Agent[Deps, Any],
+    agent_id: str,
+    agent_type: AgentType,
+    goal: str,
+    tier: TaskTier,
+    role: RoleClass,
+    model_id: str,
+    prompt: str,
+    message_history: list[Any] | None = None,
+    mode: str | None = None,
+) -> tuple[Any, list[Any]]:
+    """Variant of drive_agent that threads a chat history through.
+
+    Used by the chat agent across multi-turn conversations: the
+    caller persists the returned `messages` and feeds them back on
+    the next turn. Returns `(output, all_messages)` where `output`
+    is the agent's final response (whatever pydantic-ai produces as
+    `run.result.output`) and `all_messages` is the post-turn message
+    list to carry forward.
+    """
+    deps.events.on_agent_start(
+        agent_id=agent_id,
+        agent_type=agent_type,
+        goal=goal,
+        tier=tier,
+        role=role,
+        model_id=model_id,
+        mode=mode,
+    )
+    token = set_current_agent_id(agent_id)
+    try:
+        try:
+            async with agent.iter(
+                prompt, deps=deps, message_history=message_history
+            ) as run:
+                try:
+                    async for node in run:
+                        log_run_node(agent_id, node)
+                finally:
+                    await record_run_usage(
+                        deps,
+                        run.usage(),
+                        agent_id=agent_id,
+                        agent_type=agent_type,
+                        model_id=model_id,
+                    )
+                # `run.all_messages()` is canonical on the AgentRun and
+                # returns the full history (incl. prior turns threaded in
+                # via message_history). `run.result.all_messages()` does
+                # NOT — it returns only the new messages from this run.
+                output = run.result.output if run.result is not None else None
+                messages = list(run.all_messages())
+                return output, messages
+        except Exception as exc:
+            deps.events.on_agent_done(
+                agent_id=agent_id,
+                agent_type=agent_type,
+                status=AgentRunStatus.ABANDONED,
+                verdict=f"failed: {type(exc).__name__}: {exc}"[:200],
+            )
+            raise
+    finally:
+        reset_current_agent_id(token)

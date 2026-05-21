@@ -41,11 +41,10 @@ from ..schemas.note import Note, QuestionMetadata, SourceNoteMetadata
 from ._run import drive_agent
 from .analyst import AnalystMode, analyst_run
 from .deps import Deps
-from .events import instrumented
 from .landscape import landscape_run
 from .memory import new_note_id
 from .schemas import QuestionSynthesis, ResearcherReport, question_synthesis_from_note
-from .tools.notes import answer_question, load_note
+from .tools.notes import answer_question, build_research_state_tool, load_note
 
 logger = logging.getLogger(__name__)
 
@@ -265,64 +264,7 @@ def build_researcher(
     agent.tool(answer_question)
 
     budget = [analyst_budget_start]  # mutable box for closure mutation
-
-    @agent.tool
-    @instrumented
-    async def get_research_state(ctx: RunContext[Deps]) -> dict[str, object]:
-        """Compact snapshot of the note graph for the orchestrator.
-
-        Returns:
-          {
-            "root_question": {...} | None,
-            "questions": [{id, question, status, confidence,
-                           parent_id, n_sources_cited}, ...],
-            "sources_by_tier": {"unclassified": N, "1": N, "2": N, ...},
-            "sources_by_state": {"SCOUTED": N, "FETCHED": N, "ANALYZED": N},
-            "budget": {"analyst_dispatches_remaining": int},
-          }
-
-        This is the ONLY way the researcher should inspect the note graph
-        between rounds - it keeps the researcher's context free of raw
-        source content.
-        """
-        questions = []
-        root_summary: dict[str, object] | None = None
-        for n in ctx.deps.memory.list_by_type(NoteType.QUESTION):
-            meta = n.metadata
-            if not isinstance(meta, QuestionMetadata):
-                continue
-            entry = {
-                "id": n.id,
-                "question": n.description or n.title,
-                "status": meta.status,
-                "confidence": meta.confidence,
-                "parent_id": meta.parent_question_id,
-                "n_sources_cited": len(meta.sources_cited),
-            }
-            if n.id == root_question_id:
-                root_summary = entry
-            else:
-                questions.append(entry)
-
-        sources_by_tier: dict[str, int] = {}
-        sources_by_state: dict[str, int] = {}
-        for n in ctx.deps.memory.list_by_type(NoteType.SOURCE):
-            meta = n.metadata
-            if not isinstance(meta, SourceNoteMetadata):
-                continue
-            tier_key = str(meta.tier.value) if meta.tier is not None else "unclassified"
-            sources_by_tier[tier_key] = sources_by_tier.get(tier_key, 0) + 1
-            sources_by_state[meta.state.value] = sources_by_state.get(meta.state.value, 0) + 1
-
-        return {
-            "root_question": root_summary,
-            "questions": questions,
-            "sources_by_tier": sources_by_tier,
-            "sources_by_state": sources_by_state,
-            "budget": {
-                "analyst_dispatches_remaining": budget[0],
-            },
-        }
+    agent.tool(build_research_state_tool(root_question_id, budget))
 
     @agent.tool
     async def investigate_question(
