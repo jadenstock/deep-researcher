@@ -8,6 +8,7 @@ tier / claims / quotes live on source notes, not in these payloads.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
@@ -180,7 +181,86 @@ class ResearcherReport(BaseModel):
     )
 
 
+class ReportRenderOptions(BaseModel):
+    """Presentation options for the human-readable markdown artifact."""
+
+    inline_reference_links: bool = Field(
+        True,
+        description="When true, inline source labels link to the bibliography entry.",
+    )
+    bibliography_source_scope: str = Field(
+        "all",
+        description=(
+            "'all' includes every source note; 'inline' includes only inline-cited sources."
+        ),
+    )
+    source_label_style: str = Field(
+        "numbered",
+        description="'numbered' renders Source 1/2; 'note_id' preserves raw source note ids.",
+    )
+
+    def normalized(self) -> ReportRenderOptions:
+        scope = self.bibliography_source_scope
+        if scope not in {"all", "inline"}:
+            scope = "all"
+        style = self.source_label_style.replace("-", "_")
+        if style not in {"numbered", "note_id"}:
+            style = "numbered"
+        return self.model_copy(
+            update={
+                "bibliography_source_scope": scope,
+                "source_label_style": style,
+            }
+        )
+
+
 # --- Report composition ----------------------------------------------------
+
+
+_SOURCE_REF_RE = re.compile(r"\[(source-[A-Za-z0-9]+(?:\s*,\s*source-[A-Za-z0-9]+)*)\]")
+
+
+def _source_ids_in_markdown(markdown: str) -> list[NoteID]:
+    seen: set[str] = set()
+    ordered: list[NoteID] = []
+    for match in _SOURCE_REF_RE.finditer(markdown):
+        for part in match.group(1).split(","):
+            source_id = part.strip()
+            if source_id not in seen:
+                seen.add(source_id)
+                ordered.append(NoteID(source_id))
+    return ordered
+
+
+def _source_label(source_id: NoteID, number: int, options: ReportRenderOptions) -> str:
+    if options.source_label_style == "note_id":
+        return str(source_id)
+    return f"Source {number}"
+
+
+def _replace_inline_source_refs(
+    markdown: str,
+    *,
+    numbers_by_source_id: dict[NoteID, int],
+    options: ReportRenderOptions,
+) -> str:
+    def repl(match: re.Match[str]) -> str:
+        labels: list[str] = []
+        for part in match.group(1).split(","):
+            source_id = NoteID(part.strip())
+            number = numbers_by_source_id[source_id]
+            label = _source_label(source_id, number, options)
+            if options.inline_reference_links:
+                labels.append(f"[{label}](#source-{number})")
+            else:
+                labels.append(label)
+        return f"[{', '.join(labels)}]"
+
+    return _SOURCE_REF_RE.sub(repl, markdown)
+
+
+def _md_escape(text: str) -> str:
+    return re.sub(r"([\\\[\]])", r"\\\1", text)
 
 
 def compose_report_markdown(
@@ -188,6 +268,7 @@ def compose_report_markdown(
     query: str,
     report: ResearcherReport | None,
     memory: NoteMemory | None = None,
+    render_options: ReportRenderOptions | None = None,
 ) -> str:
     """Build a human-readable markdown report.
 
@@ -201,6 +282,7 @@ def compose_report_markdown(
     from ..schemas.enums import NoteType, QuestionStatus
     from ..schemas.note import QuestionMetadata, SourceNoteMetadata
 
+    options = (render_options or ReportRenderOptions()).normalized()
     parts: list[str] = ["# Research report", "", f"**Query:** {query}", ""]
 
     if report is not None and report.report_markdown.strip():
@@ -240,19 +322,54 @@ def compose_report_markdown(
             parts.append("_No answered questions in memory._")
             parts.append("")
 
-    # Sources appendix - always available from memory.
+    body_markdown = "\n".join(parts)
+    inline_source_ids = _source_ids_in_markdown(body_markdown)
+    numbers_by_source_id = {source_id: i + 1 for i, source_id in enumerate(inline_source_ids)}
+    body_markdown = _replace_inline_source_refs(
+        body_markdown,
+        numbers_by_source_id=numbers_by_source_id,
+        options=options,
+    )
+
+    parts = [body_markdown]
+
+    # Sources appendix - available from memory on normal and crash paths.
     if memory is not None:
-        sources = memory.list_by_type(NoteType.SOURCE)
-        if sources:
+        source_notes = memory.list_by_type(NoteType.SOURCE)
+        source_by_id = {n.id: n for n in source_notes}
+        bibliography_source_ids = list(inline_source_ids)
+        if options.bibliography_source_scope == "all":
+            seen = set(bibliography_source_ids)
+            for n in source_notes:
+                if n.id not in seen:
+                    seen.add(n.id)
+                    bibliography_source_ids.append(n.id)
+
+        if bibliography_source_ids:
             parts.append("## Sources")
             parts.append("")
-            for n in sources:
+            for source_id in bibliography_source_ids:
+                if source_id not in numbers_by_source_id:
+                    numbers_by_source_id[source_id] = len(numbers_by_source_id) + 1
+                source_num = numbers_by_source_id[source_id]
+                anchor = f'<a id="source-{source_num}"></a>'
+                n = source_by_id.get(source_id)
+                if n is None:
+                    label = _source_label(source_id, source_num, options)
+                    parts.append(f"{source_num}. {anchor}**{label}:** `{source_id}` *(not found)*")
+                    continue
+
                 meta = n.metadata
                 if not isinstance(meta, SourceNoteMetadata):
                     continue
                 tier_label = f"tier {meta.tier.value}" if meta.tier is not None else "not-tiered"
                 pr = " - peer-reviewed" if meta.peer_reviewed else ""
-                parts.append(f"- **[{n.id}]** [{meta.title}]({meta.url}) - {tier_label}{pr}")
+                label = _source_label(source_id, source_num, options)
+                title = _md_escape(meta.title or n.title or str(source_id))
+                title_md = f"[{title}]({meta.url})" if meta.url else title
+                parts.append(
+                    f"{source_num}. {anchor}**{label}:** {title_md} - {tier_label}{pr}"
+                )
                 if meta.summary:
                     parts.append(f"  - {meta.summary}")
             parts.append("")

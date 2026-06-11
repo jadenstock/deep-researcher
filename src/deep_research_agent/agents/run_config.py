@@ -23,6 +23,7 @@ from typing import Any
 
 from ..config import RoutingConfig, TierRouting
 from ..schemas.enums import RoleClass, TaskTier
+from .schemas import ReportRenderOptions
 
 # Budget defaults. These are the ceilings the current prompts assume,
 # so changing them requires no prompt rewrite for the agent to behave
@@ -74,6 +75,7 @@ class RunConfig:
     scout_search_budget: int = DEFAULT_SCOUT_SEARCH_BUDGET
     model_overrides: dict[tuple[TaskTier, RoleClass], str] = field(default_factory=dict)
     skip_landscape: bool = False
+    report_render_options: ReportRenderOptions = field(default_factory=ReportRenderOptions)
 
     @staticmethod
     def from_payload(payload: dict[str, Any] | None) -> RunConfig:
@@ -137,12 +139,41 @@ class RunConfig:
 
         skip_landscape = bool(payload.get("skip_landscape", False))
 
+        raw_report_options = payload.get("report_render") or {}
+        if not isinstance(raw_report_options, dict):
+            raw_report_options = {}
+        report_options = ReportRenderOptions(
+            inline_reference_links=bool(
+                raw_report_options.get(
+                    "inline_reference_links",
+                    payload.get("report_inline_reference_links", True),
+                )
+            ),
+            bibliography_source_scope=(
+                raw_report_options.get("bibliography_source_scope")
+                or (
+                    "all"
+                    if bool(payload.get("report_bibliography_all_sources", True))
+                    else "inline"
+                )
+            ),
+            source_label_style=(
+                raw_report_options.get("source_label_style")
+                or (
+                    "note_id"
+                    if bool(payload.get("report_source_labels_note_ids", False))
+                    else "numbered"
+                )
+            ),
+        ).normalized()
+
         return RunConfig(
             analyst_budget=ab,
             scout_budget_per_analyst=sb,
             scout_search_budget=ssb,
             model_overrides=overrides,
             skip_landscape=skip_landscape,
+            report_render_options=report_options,
         )
 
     def apply_to_routing(self, routing: RoutingConfig) -> RoutingConfig:
@@ -209,6 +240,30 @@ def defaults_payload(routing: RoutingConfig) -> dict[str, Any]:
                 "help": (
                     "Bypass the landscape agent. The researcher starts with no brief "
                     "and no pre-scouted sources. Use to A/B whether landscape helps."
+                ),
+            },
+            "report_inline_reference_links": {
+                "default": True,
+                "label": "Link inline source refs",
+                "help": (
+                    "Turn Source 1 / Source 2 references in the report body into "
+                    "links to Sources."
+                ),
+            },
+            "report_bibliography_all_sources": {
+                "default": True,
+                "label": "List all found sources",
+                "help": (
+                    "When off, Sources includes only source notes cited inline in "
+                    "the report body."
+                ),
+            },
+            "report_source_labels_note_ids": {
+                "default": False,
+                "label": "Use raw source IDs",
+                "help": (
+                    "When off, reports use numbered labels like Source 1 instead "
+                    "of source-note ids."
                 ),
             },
         },

@@ -25,6 +25,7 @@ from pydantic import BaseModel
 
 from ..agents.chat import chat_default_model_id
 from ..agents.run_config import RunConfig, defaults_payload
+from ..agents.schemas import ReportRenderOptions
 from ..config import (
     LocalConfig,
     RoutingConfig,
@@ -189,6 +190,7 @@ def create_app(
                     for (tier, role), model in run_config.model_overrides.items()
                 },
                 "skip_landscape": run_config.skip_landscape,
+                "report_render_options": run_config.report_render_options.model_dump(),
             },
         )
         return {"run_id": run_id}
@@ -231,8 +233,23 @@ def create_app(
         return notes
 
     @app.get("/api/history/{run_id}/report", response_class=PlainTextResponse)
-    async def history_report(run_id: str) -> PlainTextResponse:
-        md = await asyncio.to_thread(history.read_report_md, state.runs_dir, run_id)
+    async def history_report(
+        run_id: str,
+        inline_reference_links: bool = True,
+        bibliography: str = "all",
+        source_label_style: str = "numbered",
+    ) -> PlainTextResponse:
+        options = ReportRenderOptions(
+            inline_reference_links=inline_reference_links,
+            bibliography_source_scope=bibliography,
+            source_label_style=source_label_style,
+        ).normalized()
+        md = await asyncio.to_thread(
+            history.render_report_md,
+            state.runs_dir,
+            run_id,
+            render_options=options,
+        )
         if md is None:
             raise HTTPException(status_code=404, detail="run not found")
         return PlainTextResponse(md, media_type="text/markdown; charset=utf-8")

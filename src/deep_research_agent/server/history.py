@@ -16,9 +16,22 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from ..agents.schemas import ReportRenderOptions, ResearcherReport, compose_report_markdown
 from ..run_artifacts import summarize_notes
+from ..schemas.enums import NoteType
+from ..schemas.note import Note
 
 RUN_ID_RE = re.compile(r"^\d{8}T\d{6}-[0-9a-f]{8}$")
+
+
+class _HistoryMemory:
+    """Minimal NoteMemory-compatible wrapper for persisted notes."""
+
+    def __init__(self, notes: list[Note]) -> None:
+        self._notes = notes
+
+    def list_by_type(self, note_type: NoteType) -> list[Note]:
+        return [n for n in self._notes if n.type == note_type]
 
 
 def is_valid_run_id(run_id: str) -> bool:
@@ -117,6 +130,43 @@ def read_report_md(runs_dir: Path, run_id: str) -> str | None:
         return path.read_text()
     except OSError:
         return None
+
+
+def render_report_md(
+    runs_dir: Path,
+    run_id: str,
+    *,
+    render_options: ReportRenderOptions,
+) -> str | None:
+    """Render a report from structured artifacts when available.
+
+    Older or failed runs may not have `report.json`; those fall back to
+    the persisted `report.md`, which is already a fixed rendering.
+    """
+    if not is_valid_run_id(run_id):
+        return None
+
+    report_raw = _read_json(runs_dir / run_id / "report.json")
+    notes_raw = _read_json(runs_dir / run_id / "notes.json")
+    summary = _read_json(runs_dir / run_id / "run_summary.json")
+    if not isinstance(report_raw, dict) or not isinstance(notes_raw, list):
+        return read_report_md(runs_dir, run_id)
+
+    try:
+        report = ResearcherReport.model_validate(report_raw)
+        notes = [Note.model_validate(raw) for raw in notes_raw if isinstance(raw, dict)]
+    except Exception:
+        return read_report_md(runs_dir, run_id)
+
+    query = report.query
+    if isinstance(summary, dict) and isinstance(summary.get("query"), str):
+        query = summary["query"]
+    return compose_report_markdown(
+        query=query,
+        report=report,
+        memory=_HistoryMemory(notes),
+        render_options=render_options,
+    )
 
 
 def _read_token_usage(runs_dir: Path, run_id: str) -> dict[str, Any]:

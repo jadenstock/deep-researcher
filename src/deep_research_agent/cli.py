@@ -24,7 +24,7 @@ from rich.console import Console
 
 from .agents.deps import build_deps, close_deps
 from .agents.researcher import research_run
-from .agents.schemas import ResearcherReport, compose_report_markdown
+from .agents.schemas import ReportRenderOptions, ResearcherReport, compose_report_markdown
 from .config import load_local_config, load_routing_config
 from .observability import silence_noisy_loggers
 from .retrieval import apply_retrieval_rate_limits
@@ -66,6 +66,25 @@ def main(argv: list[str] | None = None) -> int:
         "--verbose",
         action="store_true",
         help="Log at INFO level to stderr",
+    )
+    p_research.add_argument(
+        "--inline-reference-links",
+        dest="inline_reference_links",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Render inline source references as links to the Sources section",
+    )
+    p_research.add_argument(
+        "--bibliography",
+        choices=("all", "inline"),
+        default="all",
+        help="Sources section scope: all found sources, or only inline-cited sources",
+    )
+    p_research.add_argument(
+        "--source-label-style",
+        choices=("numbered", "note-id"),
+        default="numbered",
+        help="Render source labels as Source 1/2 or raw source note ids",
     )
 
     p_serve = sub.add_parser("serve", help="Start the live UI server")
@@ -150,7 +169,15 @@ async def _run_research(args: argparse.Namespace) -> int:
         # Always dump what we have - notes accumulated up to the failure point
         # are usually the most useful artifact for debugging.
         try:
-            await _dump_run(run_id, run_dir, args.query, started_at, deps, report)
+            await _dump_run(
+                run_id,
+                run_dir,
+                args.query,
+                started_at,
+                deps,
+                report,
+                _report_render_options_from_args(args),
+            )
         except Exception:
             logger.exception("dump failed")
     finally:
@@ -179,12 +206,18 @@ async def _dump_run(
     started_at,
     deps,
     report: ResearcherReport | None,
+    render_options: ReportRenderOptions,
 ) -> None:
     """Write per-run artifacts to disk. `compose_report_markdown`
     handles happy-path (use ResearcherReport) and crash-path
     (reconstruct from synthesis/source notes) uniformly.
     """
-    md = compose_report_markdown(query=query, report=report, memory=deps.memory)
+    md = compose_report_markdown(
+        query=query,
+        report=report,
+        memory=deps.memory,
+        render_options=render_options,
+    )
     summary = build_run_summary(
         run_id=run_id,
         query=query,
@@ -206,6 +239,14 @@ async def _dump_run(
     except Exception:
         logger.exception("token_usage save failed")
     logger.info("%s", deps.tracker.format_table())
+
+
+def _report_render_options_from_args(args: argparse.Namespace) -> ReportRenderOptions:
+    return ReportRenderOptions(
+        inline_reference_links=args.inline_reference_links,
+        bibliography_source_scope=args.bibliography,
+        source_label_style="note_id" if args.source_label_style == "note-id" else "numbered",
+    )
 
 
 if __name__ == "__main__":

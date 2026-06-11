@@ -531,6 +531,40 @@
     font-size: 16px;
     line-height: 1.7;
   }
+  #report-view .report-options {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 10px 0 18px; margin-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+    color: var(--muted); font-size: 12px; line-height: 1.3;
+  }
+  #report-view .report-options[hidden] { display: none !important; }
+  #report-view .report-options .label {
+    color: var(--text); font-weight: 600; margin-right: 2px;
+  }
+  #report-view .report-options label {
+    display: inline-flex; align-items: center; gap: 6px;
+    cursor: pointer; white-space: nowrap;
+  }
+  #report-view .report-options input[type="checkbox"] { accent-color: var(--accent); }
+  #report-view .report-options .modified::after {
+    content: "modified"; margin-left: 4px; color: var(--accent); font-size: 10px;
+  }
+  #report-view .report-actions {
+    display: inline-flex; align-items: center; gap: 6px; margin-left: auto;
+  }
+  #report-view .report-action {
+    border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
+    border-radius: 4px; padding: 5px 10px; font-size: 12px; cursor: pointer;
+  }
+  #report-view .report-action:hover:not(:disabled) {
+    border-color: var(--accent); color: var(--accent);
+  }
+  #report-view .report-action:disabled {
+    opacity: 0.45; cursor: not-allowed;
+  }
+  #report-view .report-action-status {
+    min-width: 52px; color: var(--muted); font-size: 11px;
+  }
   #report-view .report-empty {
     color: var(--muted); font-style: italic; text-align: center; padding: 80px 0;
   }
@@ -944,6 +978,7 @@
 </main>
 <section id="report-view" hidden>
   <div class="report-container">
+    <div id="report-options" class="report-options" hidden></div>
     <div id="report-content"><div class="report-empty">No report yet — start a run.</div></div>
   </div>
 </section>
@@ -1010,6 +1045,7 @@
   const debugEl = document.getElementById("debug");
   const liveView = document.getElementById("live-view");
   const reportView = document.getElementById("report-view");
+  const reportOptionsEl = document.getElementById("report-options");
   const reportContent = document.getElementById("report-content");
   const tabGraph = document.getElementById("tab-graph");
   const tabReport = document.getElementById("tab-report");
@@ -1035,6 +1071,8 @@
   const tokensInEl = document.getElementById("tokens-in");
   const tokensOutEl = document.getElementById("tokens-out");
   let lastReportNoteId = null;
+  let currentReportMarkdown = "";
+  let reportActionStatusTimer = null;
   let eventCount = 0;
 
   // Running token totals for the current run. Keys: "in", "out",
@@ -1565,8 +1603,68 @@
     })[c]);
   }
 
+  function setCurrentReportMarkdown(markdown) {
+    currentReportMarkdown = markdown || "";
+    renderReportOptions();
+  }
+
+  function safeReportFilename() {
+    const base = currentRunId || "report";
+    return `${String(base).replace(/[^a-zA-Z0-9_.-]+/g, "-")}.md`;
+  }
+
+  function setReportActionStatus(text) {
+    const el = reportOptionsEl?.querySelector("[data-report-action-status]");
+    if (!el) return;
+    el.textContent = text || "";
+    if (reportActionStatusTimer) clearTimeout(reportActionStatusTimer);
+    if (text) {
+      reportActionStatusTimer = setTimeout(() => {
+        const statusEl = reportOptionsEl?.querySelector("[data-report-action-status]");
+        if (statusEl) statusEl.textContent = "";
+      }, 1800);
+    }
+  }
+
+  async function copyReportMarkdown() {
+    if (!currentReportMarkdown) return;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(currentReportMarkdown);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = currentReportMarkdown;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        ta.remove();
+      }
+      setReportActionStatus("Copied");
+    } catch (err) {
+      console.warn("copy report failed", err);
+      setReportActionStatus("Copy failed");
+    }
+  }
+
+  function downloadReportMarkdown() {
+    if (!currentReportMarkdown) return;
+    const blob = new Blob([currentReportMarkdown], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = safeReportFilename();
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    setReportActionStatus("Downloaded");
+  }
+
   async function loadReport(noteId) {
     if (!currentRunId) return;
+    setCurrentReportMarkdown("");
     reportContent.innerHTML = `<div class="report-empty">Loading report…</div>`;
     try {
       const res = await fetch(`/api/note/${currentRunId}/${noteId}`);
@@ -1574,6 +1672,7 @@
       const note = await res.json();
       await renderReport(note);
     } catch (err) {
+      setCurrentReportMarkdown("");
       reportContent.innerHTML = `<div class="report-empty">Failed to load: ${escape(String(err))}</div>`;
     }
   }
@@ -1808,13 +1907,32 @@
     return `\n\n## References\n\n${lines.join("\n")}\n`;
   }
 
+  async function loadPersistedReport(runId) {
+    const qs = currentReportOptionsQuery();
+    const res = await fetch(`/api/history/${runId}/report${qs ? `?${qs}` : ""}`);
+    if (!res.ok) throw new Error(`${res.status}`);
+    const md = await res.text();
+    const { content, refs } = await transformReportCitations(md);
+    const rendered = marked.parse(content + renderReferencesMarkdown(refs));
+    setCurrentReportMarkdown(md);
+    reportContent.innerHTML = `
+      <div class="report-head">
+        <h1>Report</h1>
+        <div class="sub">${escape(runId)}</div>
+      </div>
+      <div class="report-body">${rendered}</div>
+    `;
+  }
+
   async function renderReport(note) {
     const meta = JSON.stringify(note.metadata || {}, null, 2);
     let body;
     if (note.content) {
+      setCurrentReportMarkdown(note.content);
       const { content, refs } = await transformReportCitations(note.content);
       body = marked.parse(content + renderReferencesMarkdown(refs));
     } else {
+      setCurrentReportMarkdown("");
       body = "<em>(no content)</em>";
     }
     reportContent.innerHTML = `
@@ -2200,7 +2318,7 @@
           tabReport.classList.remove("flash");
           void tabReport.offsetWidth;
           tabReport.classList.add("flash");
-          loadReport(data.report_note_id);
+          loadPersistedReport(currentRunId).catch(() => loadReport(data.report_note_id));
           switchView("report");
         }
         // Summary is available whether or not a report was produced.
@@ -2254,6 +2372,7 @@
     lastReportNoteId = null;
     tabReport.hidden = true;
     tabReport.classList.remove("has-report", "flash");
+    setCurrentReportMarkdown("");
     reportContent.innerHTML = `<div class="report-empty">No report yet — start a run.</div>`;
     tabSummary.hidden = true;
     tabSummary.classList.remove("flash");
@@ -2446,6 +2565,7 @@
     lastReportNoteId = null;
     tabReport.hidden = true;
     tabReport.classList.remove("has-report", "flash");
+    setCurrentReportMarkdown("");
     reportContent.innerHTML = `<div class="report-empty">No report yet — start a run.</div>`;
     tabSummary.hidden = true;
     tabSummary.classList.remove("flash");
@@ -2576,21 +2696,9 @@
 
     // Report tab — serve report.md directly, render via marked.
     try {
-      const res = await fetch(`/api/history/${runId}/report`);
-      if (res.ok) {
-        const md = await res.text();
-        const { content, refs } = await transformReportCitations(md);
-        const rendered = marked.parse(content + renderReferencesMarkdown(refs));
-        reportContent.innerHTML = `
-          <div class="report-head">
-            <h1>Report</h1>
-            <div class="sub">${escape(runId)}</div>
-          </div>
-          <div class="report-body">${rendered}</div>
-        `;
-        tabReport.hidden = false;
-        tabReport.classList.add("has-report");
-      }
+      await loadPersistedReport(runId);
+      tabReport.hidden = false;
+      tabReport.classList.add("has-report");
     } catch {}
 
     setStatus("history loaded");
@@ -2879,6 +2987,11 @@
       help: "Hard cap on web/academic/citation searches inside one scout run. Exhaustion forces the scout to commit with what it has.",
     },
   ];
+  const REPORT_TOGGLE_KEYS = [
+    "report_inline_reference_links",
+    "report_bibliography_all_sources",
+    "report_source_labels_note_ids",
+  ];
 
   const settingsBtn = document.getElementById("settings-btn");
   const settingsPanel = document.getElementById("settings-panel");
@@ -2891,8 +3004,29 @@
     defaults: null,       // { budgets, model_catalog, routing_defaults, toggles } from /api/config/defaults
     budgets: {},          // current slider values { key: int }
     modelSelections: {},  // { "<tier>.<role>": "<model_id>" } — every slot's current selection
-    toggles: {},          // { "<toggle_key>": bool } — experimental on/off switches
+    toggles: {},          // { "<toggle_key>": bool } — boolean run/report options
   };
+
+  function isReportToggle(key) {
+    return REPORT_TOGGLE_KEYS.includes(key);
+  }
+
+  function currentReportOptionsQuery() {
+    const params = new URLSearchParams();
+    params.set(
+      "inline_reference_links",
+      settingsState.toggles.report_inline_reference_links === false ? "false" : "true",
+    );
+    params.set(
+      "bibliography",
+      settingsState.toggles.report_bibliography_all_sources === false ? "inline" : "all",
+    );
+    params.set(
+      "source_label_style",
+      settingsState.toggles.report_source_labels_note_ids ? "note_id" : "numbered",
+    );
+    return params.toString();
+  }
 
   function modelOverridesDiff() {
     // Return only the (tier, role) slots where the current selection
@@ -2955,11 +3089,70 @@
     if (Object.keys(modelOverridesDiff()).length > 0) return true;
     if (BUDGET_KNOBS.some(k => budgetIsModified(k.key))) return true;
     const toggleDefs = settingsState.defaults?.toggles || {};
-    return Object.keys(toggleDefs).some(toggleIsModified);
+    return Object.keys(toggleDefs).filter(k => !isReportToggle(k)).some(toggleIsModified);
   }
 
   function updateSettingsButtonIndicator() {
     settingsBtn.classList.toggle("has-changes", anyModified());
+  }
+
+  function rerenderVisibleReport() {
+    if (reportView.hidden || !currentRunId) return;
+    loadPersistedReport(currentRunId).catch(() => {
+      if (lastReportNoteId) loadReport(lastReportNoteId);
+    });
+  }
+
+  function renderReportOptions() {
+    if (!reportOptionsEl) return;
+    const toggleDefs = settingsState.defaults?.toggles || {};
+    const keys = REPORT_TOGGLE_KEYS.filter(k => toggleDefs[k]);
+    if (!keys.length) {
+      reportOptionsEl.hidden = true;
+      reportOptionsEl.innerHTML = "";
+      return;
+    }
+    const parts = [`<span class="label">Report options</span>`];
+    const disabled = currentReportMarkdown ? "" : "disabled";
+    for (const key of keys) {
+      const spec = toggleDefs[key];
+      const current = settingsState.toggles[key];
+      const checked = current ? "checked" : "";
+      const modCls = current !== spec.default ? " class=\"modified\"" : "";
+      parts.push(`
+        <label title="${escape(spec.help || "")}"${modCls}>
+          <input type="checkbox" data-report-toggle="${key}" ${checked} />
+          <span>${escape(spec.label)}</span>
+        </label>
+      `);
+    }
+    parts.push(`
+      <span class="report-actions">
+        <button type="button" class="report-action" data-report-action="copy" ${disabled}>Copy markdown</button>
+        <button type="button" class="report-action" data-report-action="download" ${disabled}>Download .md</button>
+        <span class="report-action-status" data-report-action-status></span>
+      </span>
+    `);
+    reportOptionsEl.innerHTML = parts.join("");
+    reportOptionsEl.hidden = false;
+    reportOptionsEl.querySelector('[data-report-action="copy"]')?.addEventListener(
+      "click",
+      copyReportMarkdown,
+    );
+    reportOptionsEl.querySelector('[data-report-action="download"]')?.addEventListener(
+      "click",
+      downloadReportMarkdown,
+    );
+    reportOptionsEl.querySelectorAll("input[data-report-toggle]").forEach(cb => {
+      cb.addEventListener("change", e => {
+        const key = e.target.getAttribute("data-report-toggle");
+        settingsState.toggles[key] = e.target.checked;
+        saveSettings();
+        renderReportOptions();
+        updateSettingsButtonIndicator();
+        rerenderVisibleReport();
+      });
+    });
   }
 
   function renderSettings() {
@@ -3015,7 +3208,9 @@
       parts.push(`</div></div>`);
     }
 
-    const toggleDefs = defaults.toggles || {};
+    const toggleDefs = Object.fromEntries(
+      Object.entries(defaults.toggles || {}).filter(([key]) => !isReportToggle(key))
+    );
     if (Object.keys(toggleDefs).length > 0) {
       parts.push(`<h3>Experimental</h3>`);
       for (const [key, spec] of Object.entries(toggleDefs)) {
@@ -3111,6 +3306,7 @@
     }
     saveSettings();
     renderSettings();
+    renderReportOptions();
     updateSettingsButtonIndicator();
   }
 
@@ -3182,6 +3378,7 @@
       settingsState.toggles[key] = val;
     }
     renderSettings();
+    renderReportOptions();
     updateSettingsButtonIndicator();
   })();
 

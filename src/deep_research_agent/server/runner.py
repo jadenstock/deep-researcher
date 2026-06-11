@@ -23,7 +23,7 @@ from ..agents.events import EventPublisher
 from ..agents.memory import NoteMemory, new_note_id
 from ..agents.researcher import research_run
 from ..agents.run_config import RunConfig
-from ..agents.schemas import ResearcherReport, compose_report_markdown
+from ..agents.schemas import ReportRenderOptions, ResearcherReport, compose_report_markdown
 from ..config import LocalConfig, RoutingConfig
 from ..observability import silence_noisy_loggers
 from ..run_artifacts import build_run_summary, persist_run_artifacts
@@ -257,6 +257,7 @@ async def _resolve_report_note(
     deps,
     publisher: SessionPublisher,
     report,
+    render_options: ReportRenderOptions,
 ) -> NoteID:
     """Find (or materialize) the note id the UI should load as the report.
 
@@ -273,7 +274,12 @@ async def _resolve_report_note(
         "materializing composed report from available notes",
         session.run_id,
     )
-    fallback_md = compose_report_markdown(query=session.query, report=report, memory=deps.memory)
+    fallback_md = compose_report_markdown(
+        query=session.query,
+        report=report,
+        memory=deps.memory,
+        render_options=render_options,
+    )
     return await _materialize_fallback_report_note(
         publisher=publisher,
         report_markdown=fallback_md,
@@ -288,8 +294,14 @@ async def _dump_success(
     run_dir: Path,
     report: ResearcherReport,
     report_note_id: NoteID,
+    render_options: ReportRenderOptions,
 ) -> None:
-    final_md = compose_report_markdown(query=session.query, report=report, memory=deps.memory)
+    final_md = compose_report_markdown(
+        query=session.query,
+        report=report,
+        memory=deps.memory,
+        render_options=render_options,
+    )
     summary = build_run_summary(
         run_id=session.run_id,
         query=session.query,
@@ -315,8 +327,14 @@ async def _dump_failure(
     publisher: SessionPublisher,
     run_dir: Path,
     exc: BaseException,
+    render_options: ReportRenderOptions,
 ) -> NoteID:
-    partial_md = compose_report_markdown(query=session.query, report=None, memory=deps.memory)
+    partial_md = compose_report_markdown(
+        query=session.query,
+        report=None,
+        memory=deps.memory,
+        render_options=render_options,
+    )
     partial_note_id = await _materialize_fallback_report_note(
         publisher=publisher,
         report_markdown=partial_md,
@@ -390,13 +408,18 @@ async def run_session(
     run_log_handler = _attach_run_log_handler(run_dir, session.run_id)
 
     publisher = SessionPublisher(session)
+    run_config = run_config or RunConfig()
     deps = build_deps(local, routing, events=publisher, run_config=run_config)
     session.tracker = deps.tracker
 
     try:
         report = await research_run(deps, session.query)
         report_note_id = await _resolve_report_note(
-            session=session, deps=deps, publisher=publisher, report=report
+            session=session,
+            deps=deps,
+            publisher=publisher,
+            report=report,
+            render_options=run_config.report_render_options,
         )
         await _dump_success(
             session=session,
@@ -404,6 +427,7 @@ async def run_session(
             run_dir=run_dir,
             report=report,
             report_note_id=report_note_id,
+            render_options=run_config.report_render_options,
         )
         session.report_note_id = report_note_id
         session.publish(event_run_done(report_note_id))
@@ -424,7 +448,12 @@ async def run_session(
         logger.exception("run failed run_id=%s", session.run_id)
         try:
             partial_note_id = await _dump_failure(
-                session=session, deps=deps, publisher=publisher, run_dir=run_dir, exc=exc
+                session=session,
+                deps=deps,
+                publisher=publisher,
+                run_dir=run_dir,
+                exc=exc,
+                render_options=run_config.report_render_options,
             )
             logger.info(
                 "partial report materialized run_id=%s note=%s",
