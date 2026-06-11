@@ -38,6 +38,7 @@ from ..run_id import new_run_id
 from . import history
 from .chat import ChatRegistry, hydrate_chat_session, run_chat_turn
 from .events import SessionRegistry
+from .report_filename import suggest_report_filename
 from .runner import run_session
 
 _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -253,6 +254,37 @@ def create_app(
         if md is None:
             raise HTTPException(status_code=404, detail="run not found")
         return PlainTextResponse(md, media_type="text/markdown; charset=utf-8")
+
+    @app.get("/api/history/{run_id}/report/filename")
+    async def history_report_filename(
+        run_id: str,
+        inline_reference_links: bool = True,
+        bibliography: str = "all",
+        source_label_style: str = "numbered",
+    ) -> dict[str, str]:
+        options = ReportRenderOptions(
+            inline_reference_links=inline_reference_links,
+            bibliography_source_scope=bibliography,
+            source_label_style=source_label_style,
+        ).normalized()
+        md = await asyncio.to_thread(
+            history.render_report_md,
+            state.runs_dir,
+            run_id,
+            render_options=options,
+        )
+        if md is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        summary = await asyncio.to_thread(history.summarize, state.runs_dir, run_id)
+        query = summary.get("query", "") if isinstance(summary, dict) else ""
+        filename = await suggest_report_filename(
+            local=state.local,
+            routing=state.routing,
+            query=query,
+            report_markdown=md,
+            run_id=run_id,
+        )
+        return {"filename": filename}
 
     @app.get("/api/history/{run_id}/summary")
     async def history_summary(run_id: str) -> dict:

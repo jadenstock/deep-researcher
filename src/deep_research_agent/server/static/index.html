@@ -1072,6 +1072,7 @@
   const tokensOutEl = document.getElementById("tokens-out");
   let lastReportNoteId = null;
   let currentReportMarkdown = "";
+  const reportFilenameCache = new Map();
   let reportActionStatusTimer = null;
   let eventCount = 0;
 
@@ -1613,6 +1614,25 @@
     return `${String(base).replace(/[^a-zA-Z0-9_.-]+/g, "-")}.md`;
   }
 
+  async function suggestedReportFilename() {
+    if (!currentRunId) return safeReportFilename();
+    const qs = currentReportOptionsQuery();
+    const cacheKey = `${currentRunId}?${qs}`;
+    if (reportFilenameCache.has(cacheKey)) return reportFilenameCache.get(cacheKey);
+    setReportActionStatus("Naming...");
+    try {
+      const res = await fetch(`/api/history/${currentRunId}/report/filename?${qs}`);
+      if (!res.ok) throw new Error(`${res.status}`);
+      const data = await res.json();
+      const filename = data.filename || safeReportFilename();
+      reportFilenameCache.set(cacheKey, filename);
+      return filename;
+    } catch (err) {
+      console.warn("report filename suggestion failed", err);
+      return safeReportFilename();
+    }
+  }
+
   function setReportActionStatus(text) {
     const el = reportOptionsEl?.querySelector("[data-report-action-status]");
     if (!el) return;
@@ -1648,13 +1668,14 @@
     }
   }
 
-  function downloadReportMarkdown() {
+  async function downloadReportMarkdown() {
     if (!currentReportMarkdown) return;
+    const filename = await suggestedReportFilename();
     const blob = new Blob([currentReportMarkdown], { type: "text/markdown;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = safeReportFilename();
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     a.remove();
