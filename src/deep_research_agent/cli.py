@@ -48,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     p_research.add_argument("query", help="Natural-language research query")
     p_research.add_argument(
         "--routing",
-        default="config/routing_diverse.yaml",
+        default="config/routing_lean.yaml",
         help="Path to the routing config",
     )
     p_research.add_argument(
@@ -77,7 +77,7 @@ def main(argv: list[str] | None = None) -> int:
     p_research.add_argument(
         "--bibliography",
         choices=("all", "inline"),
-        default="all",
+        default="inline",
         help="Sources section scope: all found sources, or only inline-cited sources",
     )
     p_research.add_argument(
@@ -90,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
     p_serve = sub.add_parser("serve", help="Start the live UI server")
     p_serve.add_argument(
         "--routing",
-        default="config/routing_diverse.yaml",
+        default="config/routing_lean.yaml",
         help="Path to the routing config",
     )
     p_serve.add_argument(

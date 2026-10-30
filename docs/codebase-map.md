@@ -30,11 +30,17 @@ Both paths share `research_run` from `agents/researcher.py`.
   retrieval API keys, rate-limit overrides.
 - `RoutingConfig` (YAML, tracked): `tiers[LOW|MID|HIGH]` each with
   `generative` / `judgment` / `cheap_deterministic` → model_id strings.
+  Profiles: `routing_lean.yaml` (default; Haiku 5.5 + Luna-high) and
+  `routing_diverse.yaml` (Haiku/Sonnet/Opus 5.5 + GPT-6 Luna/Sol/Astra).
 
 **`agent_factory.py`** — pure glue. Takes a routing model_id like
-`anthropic/claude-opus-4-7`, strips the family prefix, and builds an
+`anthropic/claude-opus-5-5`, strips the family prefix, and builds an
 `OpenAIChatModel` pointed at the local endpoint. Pins
-`max_tokens=16384`.
+`max_tokens=16384`. A `:<effort>` suffix (`openai/gpt-6-luna:high`) is
+sent as `reasoning_effort`. Claude models get LiteLLM
+`cache_control_injection_points` (system prompt + trailing message) so
+each tool turn reads the previous turn's prefix from the prompt cache;
+GPT models cache automatically.
 
 **`observability.py`** — pins noisy third-party loggers (pdfminer,
 httpx, urllib3, …) at WARNING so their DEBUG streams don't drown real

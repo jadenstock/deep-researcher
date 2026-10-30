@@ -10,9 +10,8 @@ from __future__ import annotations
 
 import httpx
 from openai import AsyncOpenAI
-from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings
 from pydantic_ai.providers.openai import OpenAIProvider
-from pydantic_ai.settings import ModelSettings
 
 from .config import LocalConfig, RoutingConfig
 
@@ -31,14 +30,32 @@ _CONNECT_TIMEOUT_S = 30.0
 _READ_TIMEOUT_S = 600.0
 _MAX_RETRIES = 5
 
+# Anthropic only caches prompts that carry `cache_control` markers, which
+# pydantic-ai's OpenAI-compatible client never sends - so every Claude tool
+# turn re-paid its full context. LiteLLM injects the markers for us: one on
+# the system prompt and one on the trailing message, so the cached prefix
+# advances with the agent loop. GPT models on the router cache automatically.
+_ANTHROPIC_CACHE_POINTS = [
+    {"location": "message", "role": "system"},
+    {"location": "message", "index": -1},
+]
+
 
 def make_model(model_id: str, local: LocalConfig) -> OpenAIChatModel:
     """Build a PydanticAI model for the given routing model_id.
 
-    Routing identifiers are `family/model` (e.g. "anthropic/claude-opus-4-7");
+    Routing identifiers are `family/model` (e.g. "anthropic/claude-opus-5-5");
     the family prefix is a local convention for the cross-family invariant.
     The router expects the bare model name, so we strip before dispatch.
+    An optional ':<effort>' suffix (e.g. "openai/gpt-6-luna:high") is sent
+    as `reasoning_effort`.
     """
+    settings = OpenAIChatModelSettings(max_tokens=_DEFAULT_MAX_TOKENS)
+    if model_id.startswith("anthropic/"):
+        settings["extra_body"] = {"cache_control_injection_points": _ANTHROPIC_CACHE_POINTS}
+    effort = RoutingConfig.reasoning_effort(model_id)
+    if effort:
+        settings["openai_reasoning_effort"] = effort  # type: ignore[typeddict-item]
     http_client = httpx.AsyncClient(
         timeout=httpx.Timeout(_READ_TIMEOUT_S, connect=_CONNECT_TIMEOUT_S),
     )
@@ -52,5 +69,5 @@ def make_model(model_id: str, local: LocalConfig) -> OpenAIChatModel:
     return OpenAIChatModel(
         RoutingConfig.router_name(model_id),
         provider=provider,
-        settings=ModelSettings(max_tokens=_DEFAULT_MAX_TOKENS),
+        settings=settings,
     )

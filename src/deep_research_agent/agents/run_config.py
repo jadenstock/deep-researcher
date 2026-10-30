@@ -41,21 +41,24 @@ SCOUT_SEARCH_BUDGET_RANGE = (3, 20)
 # Curated model catalog for the UI dropdowns. Anything not in this list
 # is still acceptable via the API (arbitrary string), but the UI only
 # surfaces these options. Family prefix is required (ADR 0008 invariant
-# reads the prefix at runtime).
+# reads the prefix at runtime). An optional ':<effort>' suffix sets
+# reasoning_effort (see `RoutingConfig.reasoning_effort`).
 MODEL_CATALOG: dict[RoleClass, list[str]] = {
     RoleClass.GENERATIVE: [
-        "anthropic/claude-haiku-4-5",
-        "anthropic/claude-sonnet-4-6",
-        "anthropic/claude-opus-4-7",
+        "anthropic/claude-haiku-5-5",
+        "anthropic/claude-sonnet-5-5",
+        "anthropic/claude-opus-5-5",
+        "anthropic/claude-fable-5-1",
     ],
     RoleClass.JUDGMENT: [
-        "openai/gpt-5.2",
-        "openai/gpt-5.4",
-        "openai/gpt-5.5",
+        "openai/gpt-6-luna",
+        "openai/gpt-6-luna:high",
+        "openai/gpt-6.1-sol",
+        "openai/gpt-6-astra",
     ],
     RoleClass.CHEAP_DETERMINISTIC: [
-        "anthropic/claude-haiku-4-5",
-        "anthropic/claude-sonnet-4-6",
+        "anthropic/claude-haiku-5-5",
+        "anthropic/claude-sonnet-5-5",
     ],
 }
 
@@ -87,8 +90,8 @@ class RunConfig:
             "scout_budget_per_analyst": int,
             "scout_search_budget": int,
             "model_overrides": {
-              "MID": {"generative": "anthropic/claude-opus-4-7"},
-              "HIGH": {"judgment": "openai/gpt-5.5"},
+              "MID": {"generative": "anthropic/claude-opus-5-5"},
+              "HIGH": {"judgment": "openai/gpt-6-astra"},
               ...
             }
           }
@@ -153,7 +156,7 @@ class RunConfig:
                 raw_report_options.get("bibliography_source_scope")
                 or (
                     "all"
-                    if bool(payload.get("report_bibliography_all_sources", True))
+                    if bool(payload.get("report_bibliography_all_sources", False))
                     else "inline"
                 )
             ),
@@ -251,7 +254,7 @@ def defaults_payload(routing: RoutingConfig) -> dict[str, Any]:
                 ),
             },
             "report_bibliography_all_sources": {
-                "default": True,
+                "default": False,
                 "label": "List all found sources",
                 "help": (
                     "When off, Sources includes only source notes cited inline in "

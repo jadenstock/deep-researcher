@@ -46,11 +46,23 @@ class RoutingConfig(BaseModel):
     def router_name(model_id: str) -> str:
         """Strip the family prefix to get the name expected by the router.
 
-        The full identifier 'anthropic/claude-opus-4-7' carries family
+        The full identifier 'anthropic/claude-opus-5-5' carries family
         information for the ADR 0008 invariant check; the router itself
-        expects the bare model name 'claude-opus-4-7'.
+        expects the bare model name 'claude-opus-5-5'. An optional
+        ':<effort>' suffix (see `reasoning_effort`) is stripped too.
         """
-        return model_id.split("/", 1)[1] if "/" in model_id else model_id
+        name = model_id.split("/", 1)[1] if "/" in model_id else model_id
+        return name.split(":", 1)[0]
+
+    @staticmethod
+    def reasoning_effort(model_id: str) -> str | None:
+        """Read the optional reasoning-effort suffix off a model_id.
+
+        'openai/gpt-6-luna:high' -> 'high'; no suffix -> None (router
+        default). Keeping effort inside the model_id string lets the YAML,
+        UI dropdowns, and per-run overrides carry it without a schema change.
+        """
+        return model_id.rsplit(":", 1)[1] if ":" in model_id else None
 
 
 def load_routing_config(path: Path | str) -> RoutingConfig:

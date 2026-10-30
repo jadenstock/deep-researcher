@@ -1,0 +1,29 @@
+# Default routing: Haiku 5.5 for every Claude-family slot, GPT-6 Luna at high
+# reasoning effort for judgment. Both are the cheapest tier of their family.
+# On the 2026-06-22 benchmark query this cost $1.54 vs $51.81 for the older
+# large-model routing, and a blind judge preferred its report.
+#
+# The ADR 0008 cross-family invariant still holds: explore analysts run on
+# Claude, verify/adversarial analysts on GPT.
+#
+# A ':<effort>' suffix on a model_id is sent as `reasoning_effort` and
+# stripped before the name reaches the router.
+
+name: lean
+description: |
+  Haiku 5.5 for generative and cheap-deterministic roles, GPT-6 Luna (high
+  reasoning effort) for judgment roles. Lowest-cost profile.
+
+tiers:
+  LOW:
+    generative: anthropic/claude-haiku-5-5
+    judgment: openai/gpt-6-luna:high
+    cheap_deterministic: anthropic/claude-haiku-5-5
+  MID:
+    generative: anthropic/claude-haiku-5-5
+    judgment: openai/gpt-6-luna:high
+    cheap_deterministic: anthropic/claude-haiku-5-5
+  HIGH:
+    generative: anthropic/claude-haiku-5-5
+    judgment: openai/gpt-6-luna:high
+    cheap_deterministic: anthropic/claude-haiku-5-5

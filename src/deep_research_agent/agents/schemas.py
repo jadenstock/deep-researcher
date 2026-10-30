@@ -189,7 +189,7 @@ class ReportRenderOptions(BaseModel):
         description="When true, inline source labels link to the bibliography entry.",
     )
     bibliography_source_scope: str = Field(
-        "all",
+        "inline",
         description=(
             "'all' includes every source note; 'inline' includes only inline-cited sources."
         ),
@@ -202,7 +202,7 @@ class ReportRenderOptions(BaseModel):
     def normalized(self) -> ReportRenderOptions:
         scope = self.bibliography_source_scope
         if scope not in {"all", "inline"}:
-            scope = "all"
+            scope = "inline"
         style = self.source_label_style.replace("-", "_")
         if style not in {"numbered", "note_id"}:
             style = "numbered"
@@ -367,9 +367,7 @@ def compose_report_markdown(
                 label = _source_label(source_id, source_num, options)
                 title = _md_escape(meta.title or n.title or str(source_id))
                 title_md = f"[{title}]({meta.url})" if meta.url else title
-                parts.append(
-                    f"{source_num}. {anchor}**{label}:** {title_md} - {tier_label}{pr}"
-                )
+                parts.append(f"{source_num}. {anchor}**{label}:** {title_md} - {tier_label}{pr}")
                 if meta.summary:
                     parts.append(f"  - {meta.summary}")
             parts.append("")

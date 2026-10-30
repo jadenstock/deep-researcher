@@ -33,7 +33,7 @@ def _source_note(source_id: str, title: str, url: str, summary: str | None = Non
     )
 
 
-def test_default_report_rendering_uses_numbered_linked_sources_and_all_bibliography() -> None:
+def test_default_rendering_uses_numbered_linked_sources_and_cited_only_bibliography() -> None:
     memory = FakeMemory(
         [
             _source_note("source-aaa111", "Alpha", "https://a.test", "Alpha summary."),
@@ -44,8 +44,7 @@ def test_default_report_rendering_uses_numbered_linked_sources_and_all_bibliogra
     report = ResearcherReport(
         query="q",
         report_markdown=(
-            "One claim [source-bbb222, source-aaa111]. "
-            "Repeated evidence [source-bbb222]."
+            "One claim [source-bbb222, source-aaa111]. " "Repeated evidence [source-bbb222]."
         ),
     )
 
@@ -53,10 +52,28 @@ def test_default_report_rendering_uses_numbered_linked_sources_and_all_bibliogra
 
     assert "[[Source 1](#source-1), [Source 2](#source-2)]" in rendered
     assert "[[Source 1](#source-1)]" in rendered
-    assert "1. <a id=\"source-1\"></a>**Source 1:** [Beta](https://b.test)" in rendered
-    assert "2. <a id=\"source-2\"></a>**Source 2:** [Alpha](https://a.test)" in rendered
-    assert "3. <a id=\"source-3\"></a>**Source 3:** [Gamma](https://c.test)" in rendered
+    assert '1. <a id="source-1"></a>**Source 1:** [Beta](https://b.test)' in rendered
+    assert '2. <a id="source-2"></a>**Source 2:** [Alpha](https://a.test)' in rendered
+    assert "Gamma" not in rendered
     assert "Alpha summary." in rendered
+
+
+def test_report_rendering_can_list_all_found_sources() -> None:
+    memory = FakeMemory(
+        [
+            _source_note("source-aaa111", "Alpha", "https://a.test"),
+            _source_note("source-bbb222", "Beta", "https://b.test"),
+        ]
+    )
+    report = ResearcherReport(query="q", report_markdown="One claim [source-aaa111].")
+    options = ReportRenderOptions(bibliography_source_scope="all")
+
+    rendered = compose_report_markdown(
+        query="q", report=report, memory=memory, render_options=options
+    )
+
+    assert "**Source 1:** [Alpha](https://a.test)" in rendered
+    assert "**Source 2:** [Beta](https://b.test)" in rendered
 
 
 def test_report_rendering_can_disable_inline_links_and_limit_bibliography_to_inline() -> None:

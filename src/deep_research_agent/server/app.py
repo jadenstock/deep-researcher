@@ -125,7 +125,7 @@ class ServerState:
 
 
 def create_app(
-    routing_path: Path | str = "config/routing_diverse.yaml",
+    routing_path: Path | str = "config/routing_lean.yaml",
     local_path: Path | str = "config/local.toml",
     runs_dir: Path | str = "runs",
 ) -> FastAPI:
@@ -237,7 +237,7 @@ def create_app(
     async def history_report(
         run_id: str,
         inline_reference_links: bool = True,
-        bibliography: str = "all",
+        bibliography: str = "inline",
         source_label_style: str = "numbered",
     ) -> PlainTextResponse:
         options = ReportRenderOptions(
@@ -259,7 +259,7 @@ def create_app(
     async def history_report_filename(
         run_id: str,
         inline_reference_links: bool = True,
-        bibliography: str = "all",
+        bibliography: str = "inline",
         source_label_style: str = "numbered",
     ) -> dict[str, str]:
         options = ReportRenderOptions(

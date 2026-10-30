@@ -1977,7 +1977,7 @@
 
   function shortModel(modelId) {
     if (!modelId) return "";
-    // Strip the family prefix ("anthropic/claude-opus-4-7" -> "claude-opus-4-7")
+    // Strip the family prefix ("anthropic/claude-opus-5-5" -> "claude-opus-5-5")
     // so the card label stays compact.
     const slash = modelId.indexOf("/");
     return slash >= 0 ? modelId.slice(slash + 1) : modelId;
@@ -3040,7 +3040,7 @@
     );
     params.set(
       "bibliography",
-      settingsState.toggles.report_bibliography_all_sources === false ? "inline" : "all",
+      settingsState.toggles.report_bibliography_all_sources === true ? "all" : "inline",
     );
     params.set(
       "source_label_style",

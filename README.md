@@ -34,9 +34,12 @@ cp config/local.toml.example config/local.toml   # fill in api_base_url, api_key
 
 All LLM traffic goes through one OpenAI-compatible endpoint (a LiteLLM
 router, typically). Which model answers each `(role, tier)` pair is decided
-by a **routing config** — see `config/routing_diverse.yaml` for the default
-policy (Claude for generative, GPT for judgment, Haiku for cheap
-deterministic). The live UI exposes per-run overrides for budgets and the
+by a **routing config**. The default is `config/routing_lean.yaml`
+(Claude Haiku 5.5 for generative and cheap deterministic roles, GPT-6 Luna at
+high reasoning effort for judgment); `config/routing_diverse.yaml` is the
+larger-model profile (Haiku/Sonnet/Opus 5.5 + GPT-6 Luna/Sol/Astra). Claude
+calls use prompt caching, so each agent tool turn re-reads its context at
+cache prices. The live UI exposes per-run overrides for budgets and the
 model assigned to each `(role, tier)` slot:
 
 <p align="center">
@@ -49,7 +52,7 @@ Headless — prints run status, writes artifacts under `runs/<run_id>/`:
 
 ```bash
 uv run dra research "your query here"
-uv run dra research "..." --routing config/routing_diverse.yaml
+uv run dra research "..." --routing config/routing_diverse.yaml   # larger models
 ```
 
 Live UI — FastAPI + WebSocket on `http://127.0.0.1:8000`:
