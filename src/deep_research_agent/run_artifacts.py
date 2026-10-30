@@ -57,6 +57,7 @@ def build_run_summary(
     report_note_id: str | None,
     notes: Iterable[Note],
     tokens: dict[str, Any],
+    cost: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the run-summary payload matching `/api/run/{run_id}/summary`.
 
@@ -75,6 +76,9 @@ def build_run_summary(
         "duration_s": duration_s,
         "report_note_id": report_note_id,
         "tokens": tokens,
+        # From router prices (`pricing.tracker_cost_usd`); None = unknown.
+        "cost_usd": (cost or {}).get("total"),
+        "cost_per_model": (cost or {}).get("per_model", {}),
         **summarize_notes(note_dicts),
         # Tasks count is a live-only concept (comes from event history);
         # 0 on disk keeps the payload shape consistent with the history

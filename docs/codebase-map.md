@@ -5,11 +5,13 @@ fit together*, read [architecture.md](architecture.md) first.
 
 ```
 src/deep_research_agent/
-├─ cli.py                CLI entry point (`dra research` / `dra serve`)
+├─ cli.py                CLI entry point (`dra research` / `status` / `wait` / `serve`)
 ├─ config.py             LocalConfig (TOML) + RoutingConfig (YAML) loaders
 ├─ agent_factory.py      model_id → pydantic-ai OpenAIChatModel
 ├─ observability.py      Silences noisy third-party loggers
 ├─ token_usage.py        Per-agent-per-model token tracker
+├─ pricing.py            Router `/model/info` prices + cost math
+├─ progress.py           Live `progress.json` publisher + run status reader
 ├─ run_id.py             `new_run_id()` — shared CLI/server id format
 ├─ run_artifacts.py      Writes notes.json / report.md / report.json to a run dir
 ├─ _time.py              `utc_now()` helper shared across layers
@@ -24,6 +26,24 @@ src/deep_research_agent/
 **`cli.py`** — `dra research "query"` runs one session headless and writes
 artifacts under `runs/<run_id>/`. `dra serve` starts the FastAPI app.
 Both paths share `research_run` from `agents/researcher.py`.
+`--detach` re-launches the same command as `python -m
+deep_research_agent.cli` in a new session (output to
+`runs/<id>/console.log`) and returns the run id; `dra status` / `dra
+wait` read `progress.json` back through `progress.read_status`.
+
+**`pricing.py`** — fetches per-token prices from the router's
+`/model/info` once per run (best effort; unknown prices → cost `None`)
+and prices token totals, billing cached input at the cache-read rate.
+
+**`progress.py`** — `ProgressPublisher` is an `EventPublisher` that
+keeps a rolling run picture (phase, analyst dispatches vs budget, notes
+by type, tokens, cost so far) and writes `progress.json` atomically,
+throttled with a deferred flush. Agents emit `on_usage_progress` after
+every step (cumulative per agent), so cost moves during long agent
+runs, not only when they finish. The server fans events out to its UI
+publisher and a `ProgressPublisher` via `agents/events.FanoutPublisher`.
+`read_status` prefers `run_summary.json`, and reports an unfinished run
+whose pid is gone as `crashed`.
 
 **`config.py`** — two config shapes:
 - `LocalConfig` (TOML, gitignored): `llm.api_base_url`, `llm.api_key`,

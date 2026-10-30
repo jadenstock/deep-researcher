@@ -22,7 +22,7 @@ from pydantic_ai import Agent
 
 from ..schemas.enums import AgentRunStatus, AgentType, RoleClass, TaskTier
 from ._debug import log_run_node
-from ._usage import record_run_usage
+from ._usage import publish_usage_progress, record_run_usage
 from .deps import Deps
 from .events import reset_current_agent_id, set_current_agent_id
 
@@ -66,6 +66,13 @@ async def drive_agent(
                 try:
                     async for node in run:
                         log_run_node(agent_id, node)
+                        publish_usage_progress(
+                            deps,
+                            run.usage(),
+                            agent_id=agent_id,
+                            agent_type=agent_type,
+                            model_id=model_id,
+                        )
                 finally:
                     await record_run_usage(
                         deps,
@@ -121,12 +128,17 @@ async def drive_agent_with_history(
     token = set_current_agent_id(agent_id)
     try:
         try:
-            async with agent.iter(
-                prompt, deps=deps, message_history=message_history
-            ) as run:
+            async with agent.iter(prompt, deps=deps, message_history=message_history) as run:
                 try:
                     async for node in run:
                         log_run_node(agent_id, node)
+                        publish_usage_progress(
+                            deps,
+                            run.usage(),
+                            agent_id=agent_id,
+                            agent_type=agent_type,
+                            model_id=model_id,
+                        )
                 finally:
                     await record_run_usage(
                         deps,

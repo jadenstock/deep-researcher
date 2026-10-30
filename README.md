@@ -53,7 +53,24 @@ Headless — prints run status, writes artifacts under `runs/<run_id>/`:
 ```bash
 uv run dra research "your query here"
 uv run dra research "..." --routing config/routing_diverse.yaml   # larger models
+uv run dra research --query-file query.md --analyst-budget 6      # long query, smaller run
 ```
+
+Background runs — `--detach` starts the run as its own process (it keeps
+going if the terminal closes) and prints its `run_id`. Each run writes a
+live `runs/<run_id>/progress.json` (phase, analysts used vs budget,
+sources, questions, tokens, cost so far):
+
+```bash
+uv run dra research --query-file query.md --detach   # prints run_id=...
+uv run dra status [RUN_ID]          # one-line progress; newest run by default
+uv run dra status --active          # runs still in progress
+uv run dra wait RUN_ID --timeout 540   # exit 0 done, 1 failed/crashed, 3 still running
+```
+
+Cost comes from the router's `/model/info` prices and is also recorded in
+`run_summary.json` (`cost_usd`). The UI opens a specific live run with
+`http://127.0.0.1:8000/?run=<run_id>`.
 
 Live UI — FastAPI + WebSocket on `http://127.0.0.1:8000`:
 

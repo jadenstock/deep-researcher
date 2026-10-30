@@ -19,13 +19,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from ..agents.deps import build_deps, close_deps
-from ..agents.events import EventPublisher
+from ..agents.events import EventPublisher, FanoutPublisher
 from ..agents.memory import NoteMemory, new_note_id
 from ..agents.researcher import research_run
 from ..agents.run_config import RunConfig
 from ..agents.schemas import ReportRenderOptions, ResearcherReport, compose_report_markdown
 from ..config import LocalConfig, RoutingConfig
 from ..observability import silence_noisy_loggers
+from ..pricing import fetch_router_prices, tracker_cost_usd
+from ..progress import ProgressPublisher
 from ..run_artifacts import build_run_summary, persist_run_artifacts
 from ..schemas.enums import AgentRunStatus, AgentType, NoteType, QuestionStatus, RoleClass, TaskTier
 from ..schemas.ids import NoteID
@@ -200,6 +202,20 @@ class SessionPublisher(EventPublisher):
             )
         )
 
+    def on_usage_progress(
+        self,
+        *,
+        agent_id: str,
+        agent_type: AgentType,
+        model_id: str,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int,
+    ) -> None:
+        # The UI updates its token totals from the final per-agent
+        # `on_token_usage` event; running totals feed progress.json only.
+        pass
+
 
 def _find_answered_root_question_id(memory: NoteMemory) -> NoteID | None:
     """Return the id of the root QUESTION note if it was answered.
@@ -310,6 +326,7 @@ async def _dump_success(
         report_note_id=report_note_id,
         notes=deps.memory.all(),
         tokens=deps.tracker.to_dict(),
+        cost=tracker_cost_usd(deps.prices, deps.tracker.to_dict()),
     )
     await persist_run_artifacts(
         run_dir,
@@ -348,6 +365,7 @@ async def _dump_failure(
         report_note_id=partial_note_id,
         notes=deps.memory.all(),
         tokens=deps.tracker.to_dict(),
+        cost=tracker_cost_usd(deps.prices, deps.tracker.to_dict()),
     )
     await persist_run_artifacts(
         run_dir,
@@ -409,7 +427,22 @@ async def run_session(
 
     publisher = SessionPublisher(session)
     run_config = run_config or RunConfig()
-    deps = build_deps(local, routing, events=publisher, run_config=run_config)
+    prices = await fetch_router_prices(local)
+    progress = ProgressPublisher(
+        run_dir,
+        run_id=session.run_id,
+        query=session.query,
+        analyst_budget=run_config.analyst_budget,
+        prices=prices,
+    )
+    deps = build_deps(
+        local,
+        routing,
+        events=FanoutPublisher(publisher, progress),
+        run_config=run_config,
+        prices=prices,
+    )
+    run_ok = False
     session.tracker = deps.tracker
 
     try:
@@ -431,6 +464,7 @@ async def run_session(
         )
         session.report_note_id = report_note_id
         session.publish(event_run_done(report_note_id))
+        run_ok = True
         answered_subs = sum(
             1
             for n in deps.memory.list_by_type(NoteType.QUESTION)
@@ -464,6 +498,7 @@ async def run_session(
             logger.exception("partial dump failed run_id=%s", session.run_id)
         session.publish(event_run_failed(f"{type(exc).__name__}: {exc}"))
     finally:
+        progress.finish(ok=run_ok)
         await _finalize(
             session=session, deps=deps, run_dir=run_dir, run_log_handler=run_log_handler
         )

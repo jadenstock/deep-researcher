@@ -67,3 +67,30 @@ async def record_run_usage(
             "token_usage event emit failed agent_id=%s",
             agent_id,
         )
+
+
+def publish_usage_progress(
+    deps: Deps,
+    usage: Any,
+    *,
+    agent_id: str,
+    agent_type: AgentType,
+    model_id: str,
+) -> None:
+    """Emit an agent's running token totals mid-run (after each step).
+
+    The tracker is only updated once, at the end of the agent's run; this
+    just lets listeners such as the progress file show live spend for
+    long-running agents like the researcher.
+    """
+    try:
+        deps.events.on_usage_progress(
+            agent_id=agent_id,
+            agent_type=agent_type,
+            model_id=model_id,
+            input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
+            output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
+            cache_read_tokens=int(getattr(usage, "cache_read_tokens", 0) or 0),
+        )
+    except Exception:
+        logger.exception("usage progress emit failed agent_id=%s", agent_id)

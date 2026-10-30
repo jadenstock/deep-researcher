@@ -2950,11 +2950,12 @@
     };
   }
 
-  // On page load: try to reconnect to whatever run the user was last on
-  // (if the server still has it in its registry — disk history is the
-  // History tab's job, not this path).
+  // On page load: try to reconnect to the run named in `?run=<id>` (how
+  // external launchers such as a Claude skill deep-link to a live run),
+  // else whatever run the user was last on - if the server still has it
+  // in its registry. Disk history is the History tab's job, not this path.
   (async () => {
-    const saved = loadSavedRunId();
+    const saved = new URLSearchParams(location.search).get("run") || loadSavedRunId();
     if (!saved) return;
     let known = false;
     try {

@@ -256,6 +256,19 @@ class ChatPublisher(EventPublisher):
             )
         )
 
+    def on_usage_progress(
+        self,
+        *,
+        agent_id: str,
+        agent_type: AgentType,
+        model_id: str,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int,
+    ) -> None:
+        # Chat turns report spend via the final `on_token_usage` event.
+        pass
+
 
 async def hydrate_chat_session(
     *,

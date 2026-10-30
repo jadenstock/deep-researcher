@@ -12,11 +12,12 @@ surface between agents.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx
 
 from ..config import LocalConfig, RoutingConfig
+from ..pricing import ModelPrices
 from ..retrieval.arxiv import ArxivClient
 from ..retrieval.brave import BraveClient
 from ..retrieval.semantic_scholar import SemanticScholarClient
@@ -38,6 +39,8 @@ class Deps:
     events: EventPublisher
     http_client: httpx.AsyncClient
     run_config: RunConfig
+    # Router per-token prices for cost reporting; empty = cost unknown.
+    prices: ModelPrices = field(default_factory=dict)
 
 
 def build_deps(
@@ -45,6 +48,7 @@ def build_deps(
     routing: RoutingConfig,
     events: EventPublisher | None = None,
     run_config: RunConfig | None = None,
+    prices: ModelPrices | None = None,
 ) -> Deps:
     """Assemble Deps from config. Web search is optional - some
     environments only have academic search (S2 + arXiv are
@@ -85,6 +89,7 @@ def build_deps(
         events=publisher,
         http_client=http_client,
         run_config=effective_run_config,
+        prices=prices or {},
     )
 
 

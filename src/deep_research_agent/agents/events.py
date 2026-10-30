@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import contextvars
 import functools
+import logging
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -30,6 +31,8 @@ from ..schemas.note import Note
 
 # Scoped per asyncio task. Each agent run function sets this at entry;
 # tools read it to know which parent agent their call belongs to.
+logger = logging.getLogger(__name__)
+
 _CURRENT_AGENT_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "dra_current_agent_id", default=None
 )
@@ -107,6 +110,22 @@ class EventPublisher(Protocol):
         cache_write_tokens: int,
     ) -> None: ...
 
+    def on_usage_progress(
+        self,
+        *,
+        agent_id: str,
+        agent_type: AgentType,
+        model_id: str,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int,
+    ) -> None:
+        """Running token totals for one in-flight agent, emitted after
+        every agent step. Values are cumulative for that agent (not
+        deltas), so a listener can overwrite rather than add.
+        `on_token_usage` still fires once with the final totals."""
+        ...
+
 
 class NoOpPublisher:
     """Default publisher - swallow every event. Used by the CLI path
@@ -132,6 +151,135 @@ class NoOpPublisher:
 
     def on_token_usage(self, **_: object) -> None:  # pragma: no cover
         pass
+
+    def on_usage_progress(self, **_: object) -> None:  # pragma: no cover
+        pass
+
+
+class FanoutPublisher(EventPublisher):
+    """Forward every event to several publishers (e.g. the server's UI
+    session publisher plus a `ProgressPublisher`). A failing listener is
+    logged and skipped so it can't break the run."""
+
+    def __init__(self, *publishers: EventPublisher) -> None:
+        self._publishers = publishers
+
+    def _each(self, method: str, *args: Any, **kwargs: Any) -> None:
+        for pub in self._publishers:
+            try:
+                getattr(pub, method)(*args, **kwargs)
+            except Exception:
+                logger.exception("event publisher %s.%s failed", type(pub).__name__, method)
+
+    def on_agent_start(
+        self,
+        *,
+        agent_id: str,
+        agent_type: AgentType,
+        goal: str,
+        tier: TaskTier,
+        role: RoleClass,
+        model_id: str | None,
+        mode: str | None = None,
+    ) -> None:
+        self._each(
+            "on_agent_start",
+            agent_id=agent_id,
+            agent_type=agent_type,
+            goal=goal,
+            tier=tier,
+            role=role,
+            model_id=model_id,
+            mode=mode,
+        )
+
+    def on_agent_done(
+        self, *, agent_id: str, agent_type: AgentType, status: AgentRunStatus, verdict: str
+    ) -> None:
+        self._each(
+            "on_agent_done",
+            agent_id=agent_id,
+            agent_type=agent_type,
+            status=status,
+            verdict=verdict,
+        )
+
+    def on_note_created(self, note: Note) -> None:
+        self._each("on_note_created", note)
+
+    def on_note_replaced(self, note: Note) -> None:
+        self._each("on_note_replaced", note)
+
+    def on_tool_start(self, *, agent_id: str, tool_call_id: str, tool: str, summary: str) -> None:
+        self._each(
+            "on_tool_start",
+            agent_id=agent_id,
+            tool_call_id=tool_call_id,
+            tool=tool,
+            summary=summary,
+        )
+
+    def on_tool_end(
+        self,
+        *,
+        agent_id: str,
+        tool_call_id: str,
+        tool: str,
+        status: str,
+        summary: str,
+        duration_ms: int,
+    ) -> None:
+        self._each(
+            "on_tool_end",
+            agent_id=agent_id,
+            tool_call_id=tool_call_id,
+            tool=tool,
+            status=status,
+            summary=summary,
+            duration_ms=duration_ms,
+        )
+
+    def on_token_usage(
+        self,
+        *,
+        agent_id: str,
+        agent_type: AgentType,
+        model_id: str,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int,
+        cache_write_tokens: int,
+    ) -> None:
+        self._each(
+            "on_token_usage",
+            agent_id=agent_id,
+            agent_type=agent_type,
+            model_id=model_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_write_tokens=cache_write_tokens,
+        )
+
+    def on_usage_progress(
+        self,
+        *,
+        agent_id: str,
+        agent_type: AgentType,
+        model_id: str,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int,
+    ) -> None:
+        self._each(
+            "on_usage_progress",
+            agent_id=agent_id,
+            agent_type=agent_type,
+            model_id=model_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=cache_read_tokens,
+        )
 
 
 # --- Tool instrumentation --------------------------------------------------
